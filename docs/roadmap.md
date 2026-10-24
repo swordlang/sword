@@ -2,8 +2,8 @@
 
 Where Sword is going, in the order it is likely to get there. Versions stay
 below 1.0 until the language stops changing under people's feet, and each one
-is named for a step in making a blade: Tamahagane and Fold are out, Quench is
-next, and the last is Edge, at 1.0.
+is named for a step in making a blade: Tamahagane, Fold and Quench are out,
+Temper is next, and the last is Edge, at 1.0.
 
 Nothing here has a date. A version ships when what it promises works and has
 been measured, and the [changelog](../CHANGELOG.md) says what each one actually
@@ -34,8 +34,8 @@ everything below.
 
 ## 0.3 Quench — packages
 
-Until now a program could use the standard library and code sitting next to it,
-and nothing else. Quench adds packages, fetched from git:
+Before Quench a program could use the standard library and code sitting next
+to it, and nothing else. Quench added packages, fetched from git:
 
 ```
 module github.com/pedro/site
@@ -57,8 +57,7 @@ A package is compiled with the program, from source, the way the standard
 library already is. That is what lets the race checker and `det` see through
 it.
 
-Quench also changes some things that compiled under Fold. These are already in
-`develop`:
+Quench also changed some things that compiled under Fold:
 
 - a copy of a slice or pointer lent read-only cannot be written through, and the
   race checker sees two names for the same memory as the same memory;
@@ -68,9 +67,11 @@ Quench also changes some things that compiled under Fold. These are already in
 - tests check with `t.Equal` and carry on, `try t.Must` to stop, and neither the
   JSON writer nor an HTTP response asks for `try` at every write.
 
-Also in `develop`: `extern blocking func`, for a C call that blocks without
+It also brought `extern blocking func`, for a C call that blocks without
 holding a scheduler thread; `import name "path"`, for two packages that would
-otherwise have one name; and `shield new` and `shield doc`.
+otherwise have one name; `shield new` and `shield doc`; and `shield --split`,
+which keeps each package's object between builds for a quicker edit-and-run
+cycle.
 
 ## 0.4 Temper — speed
 
