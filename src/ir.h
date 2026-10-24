@@ -74,9 +74,15 @@ struct IrFunc {
   bool is_c_variadic = false;
   bool is_weak = false; // may be missing at run time: its address is then null
   bool is_internal = false; // synthesized: droppable when unused
+  // Reached only from the function that made it, so it never leaves its unit.
+  bool is_local = false;
   // Aggregate returns go through a hidden pointer parameter, ahead of the
   // declared ones.
   bool ret_by_pointer = false;
+  // Which object the function goes into when a build is split by package:
+  // the package's prefix, that plus "inst" for the generic instances it owns,
+  // or empty for what only the whole program can write.
+  std::string unit;
   std::vector<IrBlock> blocks;
   std::vector<Type *> value_type; // indexed by value id
 };

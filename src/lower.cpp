@@ -1,6 +1,7 @@
 #include "lower.h"
 
 #include <functional>
+#include <map>
 #include <set>
 
 namespace {
@@ -51,6 +52,7 @@ struct Lowerer {
     std::string callee;
     Type *args;
     Type *box; // the callee's !void type, or null when it cannot fail
+    std::string unit;
   };
   std::vector<Thunk> thunks;
 
@@ -67,9 +69,18 @@ struct Lowerer {
     Node *loop;
     Type *env;
     std::vector<Symbol *> captured;
+    std::string unit;
   };
   std::vector<Chunk> chunks;
-  int task_serial = 0;
+  // The package being lowered. Thunks are numbered within it, so a package's
+  // code reads the same whatever else the program holds, which is what lets
+  // its object be reused by a split build.
+  std::string unit;
+  std::map<std::string, int> task_serial;
+
+  std::string next_task_id() {
+    return unit + std::to_string(task_serial[unit]++);
+  }
   // Whether anything hashed a string, which is the only thing that needs the
   // loop written out.
   bool wants_hash_bytes = false;
@@ -417,7 +428,7 @@ struct Lowerer {
   void spawn_stmt(Node *n) {
     Node *call = n->lhs;
     Type *sig = call->sym->type;
-    std::string id = std::to_string(task_serial++);
+    std::string id = next_task_id();
 
     // The arguments are copied into one block the runtime owns, so the task
     // does not depend on the caller's frame staying put.
@@ -437,7 +448,7 @@ struct Lowerer {
     std::string thunk = "sword.task." + id;
     thunks.push_back(
         {thunk, call->name,
-         args, sig->ret->is_error_union ? sig->ret : nullptr});
+         args, sig->ret->is_error_union ? sig->ret : nullptr, unit});
 
     call_runtime("sword_scope_spawn",
                  {scope_blobs.back(), func_address(thunk), slot,
@@ -456,6 +467,8 @@ struct Lowerer {
     scope_blobs.clear();
 
     out.name = t.name;
+    out.unit = t.unit;
+    out.is_local = true;
     out.ret = types.error_ty;
     out.params.push_back(types.rawptr(types.u8_ty));
 
@@ -621,7 +634,7 @@ struct Lowerer {
   }
 
   void parallel_for(Node *n) {
-    std::string id = std::to_string(task_serial++);
+    std::string id = next_task_id();
     std::vector<Symbol *> captured;
     captures_of(n, captured);
 
@@ -664,7 +677,7 @@ struct Lowerer {
     }
 
     std::string name = "sword.chunk." + id;
-    chunks.push_back({name, n, env, captured});
+    chunks.push_back({name, n, env, captured, unit});
 
     int lo = to_word(expr(n->lhs));
     int hi = to_word(expr(n->rhs));
@@ -770,6 +783,8 @@ struct Lowerer {
     scope_blobs.clear();
 
     out.name = c.name;
+    out.unit = c.unit;
+    out.is_local = true;
     out.ret = types.error_ty;
     out.params = {types.rawptr(types.u8_ty), types.usize_ty, types.usize_ty,
                   types.usize_ty};
@@ -2515,19 +2530,26 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   // Dependencies come first, so a package is always lowered after everything
   // it refers to.
   for (Package *pkg : prog.order) {
+    lowerer.unit = pkg->prefix.empty() ? "main." : pkg->prefix;
     for (Node *decl : pkg->unit->kids) {
       // A generic is never compiled, only its instantiations are; and a
       // declaration with no symbol is a template or a rejected one.
       if (decl->kind != ND_FUNC || !decl->tparams.empty()) continue;
       if (!decl->sym) continue;
       mod.funcs.emplace_back();
+      mod.funcs.back().unit = lowerer.unit;
       lowerer.func(decl, mod.funcs.back());
     }
+    // Which instances a package owns depends on the program using it, so they
+    // are kept apart from the code that does not.
+    lowerer.unit += "inst.";
     for (Node *decl : pkg->instances) {
       mod.funcs.emplace_back();
+      mod.funcs.back().unit = lowerer.unit;
       lowerer.func(decl, mod.funcs.back());
     }
   }
+  lowerer.unit.clear();
 
   // After everything else: the tables are only complete once every error in the
   // program has been declared.
