@@ -8,18 +8,25 @@
 
 namespace {
 
-std::string ll_type(const Type *t) {
+// A split module names its structs by where they are first used, so that a
+// package's module reads the same whatever else the program declared.
+using StructNames = std::map<const Type *, std::string>;
+
+std::string type_text(const Type *t, const StructNames *names) {
   switch (t->kind) {
   case TY_VOID: return "void";
   case TY_BOOL: return "i1";
   case TY_INT: return "i" + std::to_string(t->bits);
   case TY_FLOAT: return t->bits == 32 ? "float" : "double";
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return "ptr";
-  case TY_OPT: case TY_ATOMIC: case TY_ENUM: return ll_type(t->elem);
+  case TY_OPT: case TY_ATOMIC: case TY_ENUM: return type_text(t->elem, names);
   case TY_SLICE: case TY_STRING: return "%slice";
   case TY_ARRAY:
-    return "[" + std::to_string(t->count) + " x " + ll_type(t->elem) + "]";
-  case TY_STRUCT: return "%" + t->name;
+    return "[" + std::to_string(t->count) + " x " + type_text(t->elem, names) +
+           "]";
+  case TY_STRUCT:
+    if (names) return "%" + names->at(t);
+    return "%" + t->name;
   }
   return "void";
 }
@@ -69,7 +76,8 @@ struct Emitter {
   bool split = false;
   std::vector<int> string_ids, vtable_ids; // the program's id -> this module's
   std::vector<int> strings_used, vtables_used;
-  std::set<const Type *> reached;
+  std::vector<const Type *> reached;
+  StructNames struct_names;
   std::set<std::string> callees;
   const IrFunc *fn = nullptr;
   std::vector<std::string> operand; // value id -> LLVM operand text
@@ -91,6 +99,10 @@ struct Emitter {
       if (!f.is_extern && f.unit == unit) mine.push_back(&f);
   }
 
+  std::string ll_type(const Type *t) const {
+    return type_text(t, split ? &struct_names : nullptr);
+  }
+
   int string_id(int64_t id) const { return split ? string_ids[id] : (int)id; }
   int vtable_id(int64_t id) const { return split ? vtable_ids[id] : (int)id; }
 
@@ -98,7 +110,9 @@ struct Emitter {
     while (t->kind == TY_OPT || t->kind == TY_ATOMIC || t->kind == TY_ENUM ||
            t->kind == TY_ARRAY)
       t = t->elem;
-    if (t->kind != TY_STRUCT || !reached.insert(t).second) return;
+    if (t->kind != TY_STRUCT || struct_names.count(t)) return;
+    struct_names[t] = "t" + std::to_string(reached.size());
+    reached.push_back(t);
     for (const Field &f : t->fields) reach(f.type);
   }
 
@@ -137,8 +151,13 @@ struct Emitter {
           }
         }
     }
-    for (const IrFunc &f : mod.funcs)
-      if (callees.count(f.name)) reach_signature(f);
+    // By name, not in the program's order, which another package can change.
+    std::map<std::string, const IrFunc *> by_name;
+    for (const IrFunc &f : mod.funcs) by_name.emplace(f.name, &f);
+    for (const std::string &name : callees) {
+      auto found = by_name.find(name);
+      if (found != by_name.end()) reach_signature(*found->second);
+    }
   }
 
   const std::string &val(int id) const { return operand[id]; }
@@ -628,7 +647,11 @@ struct Emitter {
             "  %failed = icmp ne i16 %code, 0\n"
             "  br i1 %failed, label %bad, label %good\n"
             "bad:\n"
-            "  %status = zext i16 %code to i32\n"
+            // An exit status is eight bits, and a code of 256 cut to them is
+            // 0, which says it worked. Past 255 every code says 255.
+            "  %wide = zext i16 %code to i32\n"
+            "  %over = icmp ugt i32 %wide, 255\n"
+            "  %status = select i1 %over, i32 255, i32 %wide\n"
             "  ret i32 %status\n"
             "good:\n",
             out);
@@ -765,9 +788,10 @@ struct Emitter {
     // refers to `slice`, so neither is worth making conditional.
     fputs("%slice = type { ptr, i64 }\n", out);
 
-    for (Type *s : mod.structs) {
-      if (split && !reached.count(s)) continue;
-      fprintf(out, "%%%s = type { ", s->name.c_str());
+    std::vector<const Type *> structs(mod.structs.begin(), mod.structs.end());
+    if (split) structs = reached;
+    for (const Type *s : structs) {
+      fprintf(out, "%s = type { ", ll_type(s).c_str());
       for (size_t i = 0; i < s->fields.size(); i++)
         fprintf(out, "%s%s", i ? ", " : "", ll_type(s->fields[i].type).c_str());
       fputs(" }\n", out);

@@ -7,8 +7,11 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <dirent.h>
 #include <spawn.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -53,9 +56,44 @@ std::string unit_text(const IrModule &mod, const std::string &unit) {
   return text;
 }
 
-bool exists(const std::string &path) {
+// An object is dated by its last use, not its making: a hit moves its time
+// on, and what nothing has used for a month is taken away.
+const time_t kUnused = 30 * 24 * 60 * 60;
+const time_t kSweepEvery = 24 * 60 * 60;
+
+bool use(const std::string &path) {
+  return utimes(path.c_str(), nullptr) == 0;
+}
+
+time_t modified(const std::string &path) {
   struct stat info;
-  return stat(path.c_str(), &info) == 0;
+  return stat(path.c_str(), &info) == 0 ? info.st_mtime : 0;
+}
+
+// Once a day at most, so the look over the directory costs a build nothing.
+// Two builds may both decide to sweep, and then the second finds less to do.
+void sweep(const std::string &dir) {
+  std::string stamp = dir + "/.swept";
+  time_t now = time(nullptr);
+  time_t last = modified(stamp);
+  if (last && now - last < kSweepEvery) return;
+  FILE *f = fopen(stamp.c_str(), "w");
+  if (f) fclose(f);
+  use(stamp);
+
+  DIR *d = opendir(dir.c_str());
+  if (!d) return;
+  while (dirent *e = readdir(d)) {
+    std::string name = e->d_name;
+    if (name[0] == '.') continue;
+    std::string path = dir + "/" + name;
+    // An object half written by a build that died is a day old at most when
+    // its build is still running.
+    bool whole = name.size() > 2 && name.compare(name.size() - 2, 2, ".o") == 0;
+    time_t age = now - modified(path);
+    if (age > (whole ? kUnused : kSweepEvery)) unlink(path.c_str());
+  }
+  closedir(d);
 }
 
 struct Job {
@@ -111,7 +149,7 @@ bool compile_split(const IrModule &mod, const std::string &opt_level,
     std::string text = unit_text(mod, unit);
     std::string object = dir + "/" + sha256_hex(how + text) + ".o";
     objects.push_back(object);
-    if (exists(object)) continue;
+    if (use(object)) continue;
 
     Job job;
     job.object = object;
@@ -166,5 +204,42 @@ bool compile_split(const IrModule &mod, const std::string &opt_level,
     }
   }
   for (size_t i = next; i < pending.size(); i++) unlink(pending[i].ll.c_str());
+  if (ok) sweep(dir);
   return ok;
+}
+
+int clean_command(const std::vector<std::string> &args) {
+  if (!args.empty()) {
+    fprintf(stderr, "usage: shield clean\n");
+    return 1;
+  }
+  std::string dir = cache_root() + "/build";
+  DIR *d = opendir(dir.c_str());
+  if (!d) {
+    printf("nothing to remove\n");
+    return 0;
+  }
+  int count = 0;
+  long long bytes = 0;
+  bool ok = true;
+  while (dirent *e = readdir(d)) {
+    std::string name = e->d_name;
+    if (name == "." || name == "..") continue;
+    std::string path = dir + "/" + name;
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) continue;
+    if (unlink(path.c_str()) != 0) {
+      fprintf(stderr, "shield: cannot remove '%s'\n", path.c_str());
+      ok = false;
+      continue;
+    }
+    if (name[0] == '.') continue;
+    count++;
+    bytes += info.st_size;
+  }
+  closedir(d);
+  rmdir(dir.c_str());
+  printf("removed %d object%s, %.1f MiB\n", count, count == 1 ? "" : "s",
+         bytes / (1024.0 * 1024.0));
+  return ok ? 0 : 1;
 }

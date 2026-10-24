@@ -243,6 +243,7 @@ std::vector<Completion> completions(const std::string &before, int file,
     // sentence each of them says.
     if (chain.size() == 1 && chain[0] == "error") {
       for (const TypeTable::ErrorDecl &e : types.errors()) {
+        if (!e.declared) continue;
         if (e.owner != pkg->prefix && !exported(e.name)) continue;
         add(out, e.name, K_ENUM_MEMBER, e.message);
       }

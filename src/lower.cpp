@@ -2361,6 +2361,7 @@ struct Lowerer {
     // chain into a switch on its own.
     const std::vector<TypeTable::ErrorDecl> &all = types.errors();
     for (size_t i = 0; i < all.size(); i++) {
+      if (!all[i].declared) continue;
       int same = binop(IR_EQ, code,
                        constant((int64_t)i + 1, types.error_ty), types.bool_ty);
       int hit = new_block();

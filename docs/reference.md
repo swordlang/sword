@@ -751,7 +751,9 @@ error nobody handled.
 
 Codes are global to the program, so the same name raised in two packages is one
 error and a caller handles it once — but the two declarations have to agree on the
-message, and the compiler says so if they do not. A lowercase name is private to
+message, and the compiler says so if they do not. The standard library's errors
+have the same codes in every program, whether it imports their package or not;
+a program's own come after them. A lowercase name is private to
 the package that declared it, like everything else. A `!T` cannot be discarded, and
 its fields cannot be reached until it is handled.
 
@@ -764,7 +766,8 @@ A handler block that has to produce a value must leave the scope. In statement
 position nothing is expected of it.
 
 `func main() !int` and `func main() !void` both work; an error that reaches
-`main` becomes the exit status.
+`main` becomes the exit status. An exit status is eight bits, so a code past 255
+leaves as 255 rather than wrapping round to 0, which would say it worked.
 
 ## Optionals
 
@@ -2165,7 +2168,8 @@ server after editing only its own package takes well under half the time; a
 program that imports next to nothing has nothing to gain. The price
 is that inlining stops at the edge of a package, and a hot loop around a small
 call into another one can run several times slower. It is meant for the
-edit-and-run cycle, not for the binary you ship.
+edit-and-run cycle, not for the binary you ship. An object nothing has used for
+thirty days is removed by a later build, and `shield clean` removes them all.
 
 A library named by `extern "name"` is linked without being mentioned here (see
 [C libraries](#c-libraries)). `--link` reaches the linker for the rest — an

@@ -886,6 +886,69 @@ else
     fail=$((fail + 1))
 fi
 
+# The cache keeps a month of objects: one nobody has used in that long goes at
+# the next build that sweeps, and one in use stays. `shield clean` takes the rest.
+touch -t 200001010000 "$tmp/splitcache/build/0000old.o" "$tmp/splitcache/build/.swept"
+kept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+SWORD_CACHE="$tmp/splitcache" "$shield" --split "$tmp/split.sword" -o "$tmp/split" >/dev/null 2>&1
+swept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+cleaned=$(SWORD_CACHE="$tmp/splitcache" "$shield" clean 2>&1)
+case $cleaned in "removed $swept objects, "*) said=yes ;; *) said=no ;; esac
+if [ "$swept" = $((kept - 1)) ] && [ ! -e "$tmp/splitcache/build" ] &&
+   [ "$said" = yes ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL cache: $kept objects, $swept after the sweep, clean said '$cleaned'"
+    fail=$((fail + 1))
+fi
+
+# A standard library error has the same code whichever packages a program
+# imports, and whatever errors of its own it declares first.
+mkdir -p "$tmp/codes"
+printf 'import "std/net"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/few.sword"
+printf 'import "std/http"\nimport "std/json"\nimport "std/net"\n\nerror Mine = "mine"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/many.sword"
+for program in few many; do
+    "$shield" "$tmp/codes/$program.sword" -o "$tmp/codes/$program" >/dev/null 2>&1
+    "$tmp/codes/$program"
+    eval "code_$program=$?"
+done
+std_errors=$(wc -l < "$root/src/std_errors.inc" | tr -d ' ')
+codes=" $code_few $code_many"
+if [ "$code_few" = "$code_many" ] && [ "$code_few" -gt 0 ] &&
+   [ "$code_few" -le "$std_errors" ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL error.Timeout should have one code in every program:$codes"
+    fail=$((fail + 1))
+fi
+
+# An exit status is eight bits. A code of 256 cut to them would be 0, a
+# success, so every code past 255 leaves with 255.
+for code in 254 256; do
+    own=$((code - std_errors))
+    {
+        printf 'error'
+        i=1
+        while [ $i -le $own ]; do
+            [ $i -gt 1 ] && printf ','
+            printf ' E%d' $i
+            i=$((i + 1))
+        done
+        printf '\n\nfunc main() !void {\n    return error.E%d\n}\n' $own
+    } > "$tmp/codes/status.sword"
+    "$shield" "$tmp/codes/status.sword" -o "$tmp/codes/status" >/dev/null 2>&1
+    "$tmp/codes/status"
+    eval "status_$code=$?"
+done
+if [ "$status_254" = 254 ] && [ "$status_256" = 255 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL exit status of codes 254 and 256: $status_254 and $status_256, want 254 and 255"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do
