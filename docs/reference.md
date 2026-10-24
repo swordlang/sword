@@ -766,7 +766,8 @@ A handler block that has to produce a value must leave the scope. In statement
 position nothing is expected of it.
 
 `func main() !int` and `func main() !void` both work; an error that reaches
-`main` becomes the exit status.
+`main` becomes the exit status. An exit status is eight bits, so a code past 255
+leaves as 255 rather than wrapping round to 0, which would say it worked.
 
 ## Optionals
 

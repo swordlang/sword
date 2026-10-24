@@ -647,7 +647,11 @@ struct Emitter {
             "  %failed = icmp ne i16 %code, 0\n"
             "  br i1 %failed, label %bad, label %good\n"
             "bad:\n"
-            "  %status = zext i16 %code to i32\n"
+            // An exit status is eight bits, and a code of 256 cut to them is
+            // 0, which says it worked. Past 255 every code says 255.
+            "  %wide = zext i16 %code to i32\n"
+            "  %over = icmp ugt i32 %wide, 255\n"
+            "  %status = select i1 %over, i32 255, i32 %wide\n"
             "  ret i32 %status\n"
             "good:\n",
             out);

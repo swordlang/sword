@@ -924,6 +924,31 @@ else
     fail=$((fail + 1))
 fi
 
+# An exit status is eight bits. A code of 256 cut to them would be 0, a
+# success, so every code past 255 leaves with 255.
+for code in 254 256; do
+    own=$((code - std_errors))
+    {
+        printf 'error'
+        i=1
+        while [ $i -le $own ]; do
+            [ $i -gt 1 ] && printf ','
+            printf ' E%d' $i
+            i=$((i + 1))
+        done
+        printf '\n\nfunc main() !void {\n    return error.E%d\n}\n' $own
+    } > "$tmp/codes/status.sword"
+    "$shield" "$tmp/codes/status.sword" -o "$tmp/codes/status" >/dev/null 2>&1
+    "$tmp/codes/status"
+    eval "status_$code=$?"
+done
+if [ "$status_254" = 254 ] && [ "$status_256" = 255 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL exit status of codes 254 and 256: $status_254 and $status_256, want 254 and 255"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do
