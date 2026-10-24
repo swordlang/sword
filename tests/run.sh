@@ -886,6 +886,28 @@ else
     fail=$((fail + 1))
 fi
 
+# A standard library error has the same code whichever packages a program
+# imports, and whatever errors of its own it declares first.
+mkdir -p "$tmp/codes"
+printf 'import "std/net"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/few.sword"
+printf 'import "std/http"\nimport "std/json"\nimport "std/net"\n\nerror Mine = "mine"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/many.sword"
+for program in few many; do
+    "$shield" "$tmp/codes/$program.sword" -o "$tmp/codes/$program" >/dev/null 2>&1
+    "$tmp/codes/$program"
+    eval "code_$program=$?"
+done
+std_errors=$(wc -l < "$root/src/std_errors.inc" | tr -d ' ')
+codes=" $code_few $code_many"
+if [ "$code_few" = "$code_many" ] && [ "$code_few" -gt 0 ] &&
+   [ "$code_few" -le "$std_errors" ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL error.Timeout should have one code in every program:$codes"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do

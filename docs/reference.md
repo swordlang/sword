@@ -751,7 +751,9 @@ error nobody handled.
 
 Codes are global to the program, so the same name raised in two packages is one
 error and a caller handles it once — but the two declarations have to agree on the
-message, and the compiler says so if they do not. A lowercase name is private to
+message, and the compiler says so if they do not. The standard library's errors
+have the same codes in every program, whether it imports their package or not;
+a program's own come after them. A lowercase name is private to
 the package that declared it, like everything else. A `!T` cannot be discarded, and
 its fields cannot be reached until it is handled.
 

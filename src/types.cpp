@@ -4,9 +4,20 @@
 
 namespace {
 const int64_t kWord = 8;
-}
+
+// Every error the standard library declares, in byte order, written by the
+// Makefile from std/. They take the first codes whether the program imports
+// them or not, so `error.Timeout` is the same number in every program — which
+// is also what lets a package's compiled code be reused by another one.
+const char *const kStdErrors[] = {
+#include "std_errors.inc"
+};
+} // namespace
 
 TypeTable::TypeTable() {
+  for (const char *name : kStdErrors)
+    error_list.push_back(ErrorDecl{name, "", "", false});
+
   Type t;
 
   t = Type{}; t.kind = TY_VOID;
@@ -117,6 +128,10 @@ int TypeTable::declare_error(const std::string &name,
   *clash = nullptr;
   for (size_t i = 0; i < error_list.size(); i++) {
     if (error_list[i].name != name) continue;
+    if (!error_list[i].declared) {
+      error_list[i] = ErrorDecl{name, message, owner, true};
+      return (int)i + 1;
+    }
     // Two packages may declare the same error, which is how `error.Timeout`
     // means one thing across a program — but only if they agree on what it says.
     if (!message.empty() && error_list[i].message.empty())
@@ -131,7 +146,7 @@ int TypeTable::declare_error(const std::string &name,
 
 int TypeTable::error_code(const std::string &name) const {
   for (size_t i = 0; i < error_list.size(); i++)
-    if (error_list[i].name == name) return (int)i + 1;
+    if (error_list[i].name == name) return error_list[i].declared ? (int)i + 1 : 0;
   return 0;
 }
 
