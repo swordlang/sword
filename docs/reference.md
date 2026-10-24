@@ -2139,6 +2139,7 @@ shield test <file.sword | directory> [options]
   -c              stop at the object file, linking nothing
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
+  --split         one object per package, kept for the next build
   -p <n>          test only: how many tests may run at once
   -run <name>     test only: run just this one; repeat for more
   -bench          test only: run the Benchmark... functions instead
@@ -2154,6 +2155,17 @@ shield test <file.sword | directory> [options]
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
+
+A build hands the whole program to LLVM as one module, so a small function from
+the standard library is inlined into the loop that calls it. `--split` compiles
+each package to an object of its own instead, kept in `~/.sword/build` (under
+`SWORD_CACHE` when that is set) by the hash of its code and of how it was
+compiled, and only what changed goes through LLVM again. Rebuilding a small
+server after editing only its own package takes well under half the time; a
+program that imports next to nothing has nothing to gain. The price
+is that inlining stops at the edge of a package, and a hot loop around a small
+call into another one can run several times slower. It is meant for the
+edit-and-run cycle, not for the binary you ship.
 
 A library named by `extern "name"` is linked without being mentioned here (see
 [C libraries](#c-libraries)). `--link` reaches the linker for the rest — an
