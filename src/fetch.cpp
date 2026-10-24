@@ -173,13 +173,6 @@ void freeze(const std::string &dir) {
   }
 }
 
-std::string cache_root() {
-  const char *set = getenv("SWORD_CACHE");
-  if (set && *set) return set;
-  const char *home = getenv("HOME");
-  return std::string(home && *home ? home : ".") + "/.sword";
-}
-
 // One module per repository, at its root, so the path is the repository; a
 // /v2 at the end names a major version kept in the same one.
 std::string repository(const std::string &path) {
@@ -486,6 +479,13 @@ bool settle_from_vendor(const Module &main, bool locked, Sums &sums,
 }
 
 } // namespace
+
+std::string cache_root() {
+  const char *set = getenv("SWORD_CACHE");
+  if (set && *set) return set;
+  const char *home = getenv("HOME");
+  return std::string(home && *home ? home : ".") + "/.sword";
+}
 
 const Dep *Deps::owner(const std::string &import_path) const {
   const Dep *best = nullptr;

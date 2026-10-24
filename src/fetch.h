@@ -36,6 +36,10 @@ struct Settle {
   bool tidy = false;
 };
 
+// ~/.sword, or SWORD_CACHE: fetched modules under mod/, built objects under
+// build/.
+std::string cache_root();
+
 // Picks a version of everything `main` requires, directly or through another
 // module, fetches what the cache is missing, and checks each against sword.sum.
 bool settle_deps(const Module &main, const Settle &how, Deps &out);

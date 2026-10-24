@@ -863,6 +863,29 @@ else
     fail=$((fail + 1))
 fi
 
+# --split: one object per package in the cache. A second build of the same
+# program adds nothing to it, and editing the program's own package adds one
+# object, its own, and leaves the standard library's alone.
+cp "$root/tests/channels.sword" "$tmp/split.sword"
+split_build() {
+    SWORD_CACHE="$tmp/splitcache" "$shield" --split "$tmp/split.sword" \
+        -o "$tmp/split" >/dev/null 2>&1 &&
+    "$tmp/split" >/dev/null 2>&1
+    [ $? = 42 ] || return 1
+    ls "$tmp/splitcache/build" | wc -l | tr -d ' '
+}
+first=$(split_build)
+again=$(split_build)
+printf '\nfunc edited() int {\n    return 7\n}\n' >> "$tmp/split.sword"
+edited=$(split_build)
+if [ -n "$first" ] && [ "$first" -gt 1 ] && [ "$again" = "$first" ] &&
+   [ "$edited" = $((first + 1)) ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --split: objects '$first', again '$again', after an edit '$edited'"
+    fail=$((fail + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do

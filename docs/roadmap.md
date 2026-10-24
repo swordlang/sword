@@ -68,10 +68,9 @@ Quench also changes some things that compiled under Fold. These are already in
 - tests check with `t.Equal` and carry on, `try t.Must` to stop, and neither the
   JSON writer nor an HTTP response asks for `try` at every write.
 
-Still to come in Quench: `extern blocking func`, for a C call that blocks
-without holding a scheduler thread; `shield new` and `shield doc`; and builds
-that check independent packages in parallel and keep the standard library from
-being redone every time.
+Also in `develop`: `extern blocking func`, for a C call that blocks without
+holding a scheduler thread; `import name "path"`, for two packages that would
+otherwise have one name; and `shield new` and `shield doc`.
 
 ## 0.4 Temper — speed
 
