@@ -2167,7 +2167,8 @@ server after editing only its own package takes well under half the time; a
 program that imports next to nothing has nothing to gain. The price
 is that inlining stops at the edge of a package, and a hot loop around a small
 call into another one can run several times slower. It is meant for the
-edit-and-run cycle, not for the binary you ship.
+edit-and-run cycle, not for the binary you ship. An object nothing has used for
+thirty days is removed by a later build, and `shield clean` removes them all.
 
 A library named by `extern "name"` is linked without being mentioned here (see
 [C libraries](#c-libraries)). `--link` reaches the linker for the rest — an

@@ -16,3 +16,7 @@ bool compile_split(const IrModule &mod, const std::string &opt_level,
 // What the linker needs told to drop the functions nothing calls, which a
 // whole-program module left to LLVM.
 std::vector<std::string> split_link_flags(const std::string &target);
+
+// `shield clean`: everything --split kept. Objects nothing has used for thirty
+// days go by themselves.
+int clean_command(const std::vector<std::string> &args);

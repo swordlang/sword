@@ -46,6 +46,7 @@ void usage() {
         "       shield vendor\n"
         "       shield new [--lib] <module path> [package name]\n"
         "       shield doc <package>[.<name>[.<method>]]\n"
+        "       shield clean\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
@@ -503,6 +504,7 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "vendor")) return vendor_command(args);
     if (!strcmp(argv[1], "new")) return new_command(args);
     if (!strcmp(argv[1], "doc")) return doc_command(args, package_roots());
+    if (!strcmp(argv[1], "clean")) return clean_command(args);
   }
 
   const char *input = nullptr;

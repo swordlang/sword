@@ -886,6 +886,22 @@ else
     fail=$((fail + 1))
 fi
 
+# The cache keeps a month of objects: one nobody has used in that long goes at
+# the next build that sweeps, and one in use stays. `shield clean` takes the rest.
+touch -t 200001010000 "$tmp/splitcache/build/0000old.o" "$tmp/splitcache/build/.swept"
+kept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+SWORD_CACHE="$tmp/splitcache" "$shield" --split "$tmp/split.sword" -o "$tmp/split" >/dev/null 2>&1
+swept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+cleaned=$(SWORD_CACHE="$tmp/splitcache" "$shield" clean 2>&1)
+case $cleaned in "removed $swept objects, "*) said=yes ;; *) said=no ;; esac
+if [ "$swept" = $((kept - 1)) ] && [ ! -e "$tmp/splitcache/build" ] &&
+   [ "$said" = yes ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL cache: $kept objects, $swept after the sweep, clean said '$cleaned'"
+    fail=$((fail + 1))
+fi
+
 # A standard library error has the same code whichever packages a program
 # imports, and whatever errors of its own it declares first.
 mkdir -p "$tmp/codes"
