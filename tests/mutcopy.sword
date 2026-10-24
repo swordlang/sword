@@ -1,0 +1,67 @@
+// expect: 42
+// What a copy of read-only memory may still do: be reassigned, have its own
+// fields written, and be handed to a method that only writes those fields.
+
+struct Node {
+    key  i32
+    next ?*Node
+}
+
+// A cursor walks a list it was lent read-only without writing any of it.
+func find(head ?*Node, key i32) ?*Node {
+    mut cur := head
+    for {
+        if n := cur {
+            if n.key == key {
+                return n
+            }
+            cur = n.next
+        } else {
+            return nil
+        }
+    }
+}
+
+struct parser {
+    input []u8
+    at    u64
+}
+
+func (mut p *parser) skip() {
+    p.at += 1
+}
+
+// The parser keeps its input read-only and moves its own position.
+func sum(input []u8) u64 {
+    mut p := parser{input: input, at: 0}
+    mut total u64 = 0
+    for p.at < p.input.len {
+        total += u64(p.input[p.at])
+        p.skip()
+    }
+    return total
+}
+
+struct Box {
+    p ?*i64
+}
+
+// Unwrapped from writable memory, the copy can write.
+func set(mut b *Box) {
+    if mut p := b.p {
+        *p = 20
+    }
+}
+
+func main() int {
+    mut c := Node{key: 3, next: nil}
+    mut b := Node{key: 2, next: &c}
+    a := Node{key: 1, next: &b}
+    hit := find(&a, 3) orelse return 1
+
+    bytes := [3]u8{4, 5, 6}
+    mut n i64 = 0
+    mut box := Box{p: &n}
+    set(&box)
+    return int(hit.key) + int(sum(bytes[..])) + int(n) + 4
+}

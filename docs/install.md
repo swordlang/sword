@@ -36,7 +36,7 @@ what the compiler reads to link your programs. Switching the decision and runnin
 ## Building
 
 ```sh
-git clone https://github.com/PedroTessaro/sword
+git clone https://github.com/swordlang/sword
 cd sword
 make
 ```

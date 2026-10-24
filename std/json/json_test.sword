@@ -7,26 +7,26 @@ const src = "{\"name\":\"ada\",\"age\":36,\"tags\":[\"math\",\"engine\"],\"ok\":
 func TestParseObject(mut t *testing.T) !void {
     mut doc := try Parse([]u8(src), t.Mem)
     root := doc.Root()
-    try t.Equal(doc.Kind(root), Kind.Object)
-    try t.Equal(doc.Len(root), 5)
+    t.Equal(doc.Kind(root), Kind.Object)
+    t.Equal(doc.Len(root), 5)
 
     name := doc.Get(root, "name") orelse return t.Fatalf("no 'name'")
-    try t.Equal(doc.Kind(name), Kind.Str)
-    try t.Equal(doc.Text(name), "ada")
+    t.Equal(doc.Kind(name), Kind.Str)
+    t.Equal(doc.Text(name), "ada")
 
     age := doc.Get(root, "age") orelse return t.Fatalf("no 'age'")
-    try t.Equal(doc.Kind(age), Kind.Number)
-    try t.Equal(doc.Number(age), 36.0)
+    t.Equal(doc.Kind(age), Kind.Number)
+    t.Equal(doc.Number(age), 36.0)
 
     ok := doc.Get(root, "ok") orelse return t.Fatalf("no 'ok'")
-    try t.Equal(doc.Kind(ok), Kind.Bool)
-    try t.Equal(doc.Truth(ok), true)
+    t.Equal(doc.Kind(ok), Kind.Bool)
+    t.Equal(doc.Truth(ok), true)
 
     none := doc.Get(root, "none") orelse return t.Fatalf("no 'none'")
-    try t.Equal(doc.Kind(none), Kind.Null)
+    t.Equal(doc.Kind(none), Kind.Null)
 
     if missing := doc.Get(root, "nobody") {
-        try t.Failf("found a key that is not there")
+        t.Failf("found a key that is not there")
     }
 }
 
@@ -34,25 +34,25 @@ func TestParseArray(mut t *testing.T) !void {
     mut doc := try Parse([]u8(src), t.Mem)
     root := doc.Root()
     tags := doc.Get(root, "tags") orelse return t.Fatalf("no 'tags'")
-    try t.Equal(doc.Kind(tags), Kind.Array)
-    try t.Equal(doc.Len(tags), 2)
+    t.Equal(doc.Kind(tags), Kind.Array)
+    t.Equal(doc.Len(tags), 2)
 
     first := doc.At(tags, 0) orelse return t.Fatalf("no first element")
-    try t.Equal(doc.Text(first), "math")
+    t.Equal(doc.Text(first), "math")
     second := doc.At(tags, 1) orelse return t.Fatalf("no second element")
-    try t.Equal(doc.Text(second), "engine")
+    t.Equal(doc.Text(second), "engine")
     if past := doc.At(tags, 2) {
-        try t.Failf("found an element past the end")
+        t.Failf("found an element past the end")
     }
 }
 
 func TestHelpers(mut t *testing.T) !void {
     mut doc := try Parse([]u8(src), t.Mem)
     root := doc.Root()
-    try t.Equal(doc.GetText(root, "name"), "ada")
-    try t.Equal(doc.GetText(root, "age"), "")
-    try t.Equal(doc.GetNumber(root, "age", 0.0), 36.0)
-    try t.Equal(doc.GetNumber(root, "name", -1.0), -1.0)
+    t.Equal(doc.GetText(root, "name"), "ada")
+    t.Equal(doc.GetText(root, "age"), "")
+    t.Equal(doc.GetNumber(root, "age", 0.0), 36.0)
+    t.Equal(doc.GetNumber(root, "name", -1.0), -1.0)
 }
 
 // An exponent is the document's to choose. One too long to count used to stop
@@ -62,16 +62,16 @@ func TestHugeExponents(mut t *testing.T) !void {
     text := "[1e99999999999999999999, 1e-99999999999999999999, 1e999999999999, 1e400, 1e-400, 2.5e2]"
     mut doc := try Parse([]u8(text), t.Mem)
     root := doc.Root()
-    try t.Equal(doc.Len(root), 6)
+    t.Equal(doc.Len(root), 6)
     want := [6]f64{1.0, 0.0, 1.0, 1.0, 0.0, 250.0}
     for i in 0..6 {
         at := doc.At(root, u64(i)) orelse return t.Fatalf("element {} is missing", i)
         got := doc.Number(at)
         if want[i] == 1.0 {
             // Infinity is the only double larger than the largest finite one.
-            try t.Equal(got > 1.7976931348623157e308, true)
+            t.Equal(got > 1.7976931348623157e308, true)
         } else {
-            try t.Equal(got, want[i])
+            t.Equal(got, want[i])
         }
     }
 }
@@ -89,24 +89,44 @@ func rejects(mut t *testing.T) !void {
     Parse([]u8(t.Arg.Text), t.Mem) catch {
         return
     }
-    try t.Failf("parsed it anyway")
+    t.Failf("parsed it anyway")
 }
 
 func TestWriterRoundTrip(mut t *testing.T) !void {
     mut out := try bytes.New(t.Mem, 128)
     mut w := NewWriter(&out)
-    try w.BeginObject()
-    try w.Key("name")
-    try w.Str("grace")
-    try w.Key("age")
-    try w.Number(45.0, 0)
-    try w.EndObject()
+    w.BeginObject()
+    w.Key("name")
+    w.Str("grace")
+    w.Key("age")
+    w.Number(45.0, 0)
+    w.EndObject()
+    try w.Err()
 
     mut doc := try Parse([]u8(out.Str()), t.Mem)
     root := doc.Root()
-    try t.Equal(doc.Kind(root), Kind.Object)
-    try t.Equal(doc.GetText(root, "name"), "grace")
-    try t.Equal(doc.GetNumber(root, "age", 0.0), 45.0)
+    t.Equal(doc.Kind(root), Kind.Object)
+    t.Equal(doc.GetText(root, "name"), "grace")
+    t.Equal(doc.GetNumber(root, "age", 0.0), 45.0)
+}
+
+// The first thing that goes wrong is kept and everything after it does
+// nothing, so a document with a mistake halfway is not half written.
+func TestWriterKeepsFirstError(mut t *testing.T) !void {
+    mut out := try bytes.New(t.Mem, 64)
+    mut w := NewWriter(&out)
+    w.BeginArray()
+    w.Int(1)
+    w.EndArray()
+    w.EndArray()
+    w.Int(2)
+    w.BeginObject()
+    t.Equal(out.Str(), "[1]")
+    w.Err() catch |e| {
+        t.Check(e == error.Unbalanced)
+        return
+    }
+    t.Failf("no error kept")
 }
 
 // The nearest double to what the document says, not a sum of digits that
@@ -114,7 +134,7 @@ func TestWriterRoundTrip(mut t *testing.T) !void {
 func TestNumbersAreNearest(mut t *testing.T) !void {
     mut doc := try Parse([]u8("[0.3, 1e23, 0.30000000000000004]"), t.Mem)
     root := doc.Root()
-    try t.Equal(doc.Number(doc.At(root, 0) orelse return t.Fatalf("no 0")), 0.3)
-    try t.Equal(doc.Number(doc.At(root, 1) orelse return t.Fatalf("no 1")), 1.0e23)
-    try t.Equal(doc.Number(doc.At(root, 2) orelse return t.Fatalf("no 2")), 0.30000000000000004)
+    t.Equal(doc.Number(doc.At(root, 0) orelse return t.Fatalf("no 0")), 0.3)
+    t.Equal(doc.Number(doc.At(root, 1) orelse return t.Fatalf("no 1")), 1.0e23)
+    t.Equal(doc.Number(doc.At(root, 2) orelse return t.Fatalf("no 2")), 0.30000000000000004)
 }

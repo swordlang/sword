@@ -1,0 +1,25 @@
+// expect-error: this writes 'a', through 'xs', while it is already written concurrently
+// A struct that holds a slice reaches what the slice does.
+
+struct Holder {
+    xs []i64
+}
+
+func fill(mut h Holder) {
+    h.xs[0] = 1
+}
+
+func bump(mut xs []i64) {
+    xs[0] += 1
+}
+
+func main() int {
+    mut a := [4]i64{}
+    mut xs := a[..]
+    mut h := Holder{xs: xs}
+    scope {
+        spawn fill(h)
+        spawn bump(xs)
+    }
+    return int(a[0])
+}

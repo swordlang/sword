@@ -103,6 +103,16 @@ rt/sword_tls.o: rt/sword_tls.cpp $(TLS_STAMP)
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
+# The standard library's errors, one name a line, for the codes they keep in
+# every program (src/types.cpp). A declaration sits at the start of its line.
+STDSRC := $(shell find std -name '*.sword' ! -name '*_test.sword')
+src/std_errors.inc: $(STDSRC)
+	LC_ALL=C sed -n 's/^error[[:space:]][[:space:]]*//p' $(STDSRC) | \
+	    sed -e 's|//.*||' -e 's/=.*//' | tr ',' '\n' | tr -d ' \t' | \
+	    grep . | LC_ALL=C sort -u | sed 's/.*/"&",/' > $@
+
+src/types.o: src/std_errors.inc
+
 %.o: %.S
 	$(CXX) -c $< -o $@
 
@@ -149,6 +159,7 @@ test: $(BIN) $(LSP) $(RT) $(RTFLAGS)
 	@./tests/std.sh
 	@./tests/indent.sh
 	@./tests/grammar.sh
+	@./tests/modules.sh
 
 # Installed layout: binaries in bin/, the runtime archive in lib/sword and the
 # standard library in share/sword, which is where the compiler looks for them.
@@ -178,7 +189,8 @@ uninstall:
 
 clean:
 	rm -f $(OBJ) $(OBJ:.o=.d) $(RTOBJ) $(RTOBJ:.o=.d) $(BIN) $(LSP) $(RT) \
-	      $(RTFLAGS) rt/.tls-on rt/.tls-off libsword_rt-*.a libsword_rt-*.flags
+	      $(RTFLAGS) rt/.tls-on rt/.tls-off libsword_rt-*.a libsword_rt-*.flags \
+	      src/std_errors.inc
 	find rt -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 
 .PHONY: all test install uninstall clean FORCE

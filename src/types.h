@@ -119,6 +119,9 @@ struct TypeTable {
     std::string name;
     std::string message; // empty when declared without one
     std::string owner;   // the package prefix that declared it
+    // False for a standard library error this program does not declare: its
+    // code is kept for it, and nothing may use the name.
+    bool declared = true;
   };
   // Returns the code. `clash` is set when the name is already declared with a
   // different message, which the caller reports.

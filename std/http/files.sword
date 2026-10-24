@@ -150,9 +150,9 @@ func writeHex(mut into []u8, value u64) u64 {
 // them out after the handler had returned.
 func stampHead(mut res *Response, v validator) !void {
     if v.modified.len > 0 {
-        try res.SetHeader("Last-Modified", v.modified)
+        res.SetHeader("Last-Modified", v.modified)
     }
-    try res.SetHeader("ETag", v.tag)
+    res.SetHeader("ETag", v.tag)
 }
 
 // RFC 9110 section 13.2.2: If-None-Match decides when it is there, and only
@@ -203,10 +203,10 @@ func sendFile(mut res *Response, path string, size u64, v validator) !void {
     defer f.Close()
 
     if res.Headers.Get("Content-Type").len == 0 {
-        try res.SetHeader("Content-Type", MimeType(path))
+        res.SetHeader("Content-Type", MimeType(path))
     }
     try stampHead(res, v)
-    try res.Send(200, size)
+    res.Send(200, size)
 
     mut buf := [FileChunk]u8{}
     mut left := size
@@ -221,7 +221,7 @@ func sendFile(mut res *Response, path string, size u64, v validator) !void {
             // client is already waiting on a length that will not arrive.
             return error.ShortFile
         }
-        try res.Write(buf[0..n])
+        res.Write(buf[0..n])
         left -= n
     }
 }
@@ -287,7 +287,7 @@ func safeRelative(path string) bool {
 
 func (f *Files) Serve(req *Request, mut res *Response) !void {
     if req.Method != "GET" && req.Method != "HEAD" {
-        try res.Text(405, "method not allowed\n")
+        res.Text(405, "method not allowed\n")
         return
     }
 
@@ -302,12 +302,12 @@ func (f *Files) Serve(req *Request, mut res *Response) !void {
 
     directory := rel.len == 0 || rel[rel.len-1] == 47
     if directory && f.Index.len == 0 {
-        try res.Text(404, "not found\n")
+        res.Text(404, "not found\n")
         return
     }
 
     if !safeRelative(rel) {
-        try res.Text(400, "bad path\n")
+        res.Text(400, "bad path\n")
         return
     }
 
@@ -318,13 +318,13 @@ func (f *Files) Serve(req *Request, mut res *Response) !void {
     mut room := [MaxPath]u8{}
     n := joinPath(room[..], f.Root, rel, index)
     if n == 0 {
-        try res.Text(414, "path too long\n")
+        res.Text(414, "path too long\n")
         return
     }
     path := string(room[0..n])
 
     info := fs.Stat(path) catch {
-        try res.Text(404, "not found\n")
+        res.Text(404, "not found\n")
         return
     }
     size := info.Size
@@ -336,16 +336,16 @@ func (f *Files) Serve(req *Request, mut res *Response) !void {
     // and a cache uses to refresh what it holds; no body follows.
     if notModified(req, v) {
         try stampHead(res, v)
-        try res.Send(304, size)
+        res.Send(304, size)
         return
     }
 
     // A HEAD answer is the head of the GET answer: same length, same type, no
     // body. The client asked what is there, not for it.
     if req.Method == "HEAD" {
-        try res.SetHeader("Content-Type", MimeType(path))
+        res.SetHeader("Content-Type", MimeType(path))
         try stampHead(res, v)
-        try res.Send(200, size)
+        res.Send(200, size)
         return
     }
 
@@ -353,7 +353,7 @@ func (f *Files) Serve(req *Request, mut res *Response) !void {
         // Only reachable before the head went out; after that there is nothing
         // left to say on this connection.
         if !res.sent {
-            try res.Text(404, "not found\n")
+            res.Text(404, "not found\n")
         }
     }
 }

@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: A security problem
-    url: https://github.com/PedroTessaro/sword/security/advisories/new
+    url: https://github.com/swordlang/sword/security/advisories/new
     about: Report it privately, not in an issue. SECURITY.md says what counts.

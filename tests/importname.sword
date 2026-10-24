@@ -1,0 +1,12 @@
+// expect: 3
+// A package can be called something else where it is imported, and then only
+// by that name.
+
+import text "std/strings"
+
+func main() int {
+    if text.Contains("sword", "or") {
+        return int(text.Index("sword", "or")) + 1
+    }
+    return 0
+}

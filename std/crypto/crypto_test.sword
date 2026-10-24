@@ -30,23 +30,23 @@ func TestSha256Vectors(mut t *testing.T) !void {
     mut buf := [128]u8{}
 
     empty := Sha256Of([]u8(""))
-    try t.Equal(hex(empty[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(empty[0..Sha256Size], buf[0..128]),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 
     abc := Sha256Of([]u8("abc"))
-    try t.Equal(hex(abc[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(abc[0..Sha256Size], buf[0..128]),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
     // 56 bytes: one byte of padding fits, the length does not, so this is the
     // message that needs a second block for nothing but its own size.
     mid := Sha256Of([]u8("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
-    try t.Equal(hex(mid[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(mid[0..Sha256Size], buf[0..128]),
         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
 
     // 112 bytes: exactly two blocks of message, so the padding opens a third.
     long := "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
     two := Sha256Of([]u8(long))
-    try t.Equal(hex(two[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(two[0..Sha256Size], buf[0..128]),
         "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1")
 }
 
@@ -62,7 +62,7 @@ func TestSha256Streaming(mut t *testing.T) !void {
         h.Write(chunk[0..1000])
     }
     d := h.Sum()
-    try t.Equal(hex(d[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(d[0..Sha256Size], buf[0..128]),
         "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
 }
 
@@ -83,7 +83,7 @@ func TestSha256SplitsAgree(mut t *testing.T) !void {
         h.Write(message[0..at])
         h.Write(message[at..message.len])
         part := h.Sum()
-        try t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
+        t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
     }
 }
 
@@ -97,18 +97,18 @@ func TestHmacSha256Vectors(mut t *testing.T) !void {
 
     mut key1 := [20]u8{}
     one := HmacSha256Of(fill(key1[0..20], 0x0b), []u8("Hi There"))
-    try t.Equal(hex(one[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(one[0..Sha256Size], buf[0..128]),
         "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
 
     two := HmacSha256Of([]u8("Jefe"), []u8("what do ya want for nothing?"))
-    try t.Equal(hex(two[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(two[0..Sha256Size], buf[0..128]),
         "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
 
     mut key3 := [20]u8{}
     mut data3 := [50]u8{}
     fill(key3[0..20], 0xaa)
     three := HmacSha256Of(key3[0..20], fill(data3[0..50], 0xdd))
-    try t.Equal(hex(three[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(three[0..Sha256Size], buf[0..128]),
         "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
 
     // 131 bytes of key, so the key is hashed before it is padded.
@@ -116,12 +116,12 @@ func TestHmacSha256Vectors(mut t *testing.T) !void {
     fill(key6[0..131], 0xaa)
     six := HmacSha256Of(key6[0..131],
         []u8("Test Using Larger Than Block-Size Key - Hash Key First"))
-    try t.Equal(hex(six[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(six[0..Sha256Size], buf[0..128]),
         "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
 
     seven := HmacSha256Of(key6[0..131],
         []u8("This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm."))
-    try t.Equal(hex(seven[0..Sha256Size], buf[0..128]),
+    t.Equal(hex(seven[0..Sha256Size], buf[0..128]),
         "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2")
 }
 
@@ -141,7 +141,7 @@ func TestHmacStreamingAgrees(mut t *testing.T) !void {
     h.Write(message[7..40])
     h.Write(message[40..message.len])
     part := h.Sum()
-    try t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
+    t.Equal(hex(part[0..Sha256Size], got[0..128]), whole)
 }
 
 // A test cannot time the comparison. What it can check is that a difference
@@ -152,11 +152,11 @@ func TestEqual(mut t *testing.T) !void {
     early := []u8("X123456789abcdef")
     late := []u8("0123456789abcdeX")
 
-    try t.Equal(Equal(a, b), true)
-    try t.Equal(Equal(a, early), false)
-    try t.Equal(Equal(a, late), false)
-    try t.Equal(Equal(a, []u8("0123456789abcde")), false)
-    try t.Equal(Equal([]u8(""), []u8("")), true)
+    t.Equal(Equal(a, b), true)
+    t.Equal(Equal(a, early), false)
+    t.Equal(Equal(a, late), false)
+    t.Equal(Equal(a, []u8("0123456789abcde")), false)
+    t.Equal(Equal([]u8(""), []u8("")), true)
 }
 
 // --- PBKDF2 ----------------------------------------------------------------
@@ -169,22 +169,22 @@ func TestPbkdf2Sha256Vectors(mut t *testing.T) !void {
     mut out := [64]u8{}
 
     try Pbkdf2Sha256([]u8("password"), []u8("salt"), 1, out[0..32])
-    try t.Equal(hex(out[0..32], buf[0..128]),
+    t.Equal(hex(out[0..32], buf[0..128]),
         "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
 
     try Pbkdf2Sha256([]u8("password"), []u8("salt"), 2, out[0..32])
-    try t.Equal(hex(out[0..32], buf[0..128]),
+    t.Equal(hex(out[0..32], buf[0..128]),
         "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
 
     try Pbkdf2Sha256([]u8("password"), []u8("salt"), 4096, out[0..32])
-    try t.Equal(hex(out[0..32], buf[0..128]),
+    t.Equal(hex(out[0..32], buf[0..128]),
         "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")
 
     // 40 bytes out of a 32-byte hash, so the answer spans two blocks and the
     // counter has to advance.
     try Pbkdf2Sha256([]u8("passwordPASSWORDpassword"),
         []u8("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, out[0..40])
-    try t.Equal(hex(out[0..40], buf[0..128]),
+    t.Equal(hex(out[0..40], buf[0..128]),
         "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9")
 }
 
@@ -195,11 +195,11 @@ func TestPbkdf2Sha256Rfc7914(mut t *testing.T) !void {
     mut out := [64]u8{}
 
     try Pbkdf2Sha256([]u8("passwd"), []u8("salt"), 1, out[0..64])
-    try t.Equal(hex(out[0..64], buf[0..128]),
+    t.Equal(hex(out[0..64], buf[0..128]),
         "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783")
 
     try Pbkdf2Sha256([]u8("Password"), []u8("NaCl"), 80000, out[0..64])
-    try t.Equal(hex(out[0..64], buf[0..128]),
+    t.Equal(hex(out[0..64], buf[0..128]),
         "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d")
 }
 
@@ -209,7 +209,7 @@ func TestPbkdf2RefusesZeroRounds(mut t *testing.T) !void {
     Pbkdf2Sha256([]u8("password"), []u8("salt"), 0, out[0..32]) catch {
         refused = true
     }
-    try t.Equal(refused, true)
+    t.Equal(refused, true)
 }
 
 // --- Random ----------------------------------------------------------------
@@ -222,7 +222,7 @@ func TestRandom(mut t *testing.T) !void {
     mut b := [32]u8{}
     try Random(a[0..32])
     try Random(b[0..32])
-    try t.Equal(Equal(a[0..32], b[0..32]), false)
+    t.Equal(Equal(a[0..32], b[0..32]), false)
 
     mut big := [100000]u8{}
     try Random(big[0..100000])
@@ -231,7 +231,7 @@ func TestRandom(mut t *testing.T) !void {
     for i in 100000 - 4096..100000 {
         seen = seen | big[i]
     }
-    try t.Equal(seen != 0, true)
+    t.Equal(seen != 0, true)
 
     try Random(a[0..0])
 }

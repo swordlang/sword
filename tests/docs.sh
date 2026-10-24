@@ -36,7 +36,7 @@ done
 for program in "$out"/*.sword; do
     [ -f "$program" ] || continue
     where=$(basename "$program" .sword | sed 's/_\([0-9]*\)$/.md:\1/')
-    if grep -E '^[[:space:]]*import[[:space:]]+"' "$program" | grep -vqE '"std/'; then
+    if grep -E '^[[:space:]]*import[[:space:]]+([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)?"' "$program" | grep -vqE '"std/'; then
         skip=$((skip + 1))
         continue
     fi

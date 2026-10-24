@@ -23,7 +23,7 @@ func TestLostUpdate(mut t *testing.T) !void {
         spawn bump(&counter)
         spawn bump(&counter)
     }
-    try t.Equal(counter.Load(), u64(2))
+    t.Equal(counter.Load(), u64(2))
 }
 
 func first(a *shared[u64], b *shared[u64]) {
@@ -65,7 +65,7 @@ func TestAtomicAdd(mut t *testing.T) !void {
             spawn add(&counter)
         }
     }
-    try t.Equal(counter.Load(), u64(4))
+    t.Equal(counter.Load(), u64(4))
 }
 
 // An hour of sleep costs nothing: the clock moves only when every task waits

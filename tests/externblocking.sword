@@ -1,0 +1,66 @@
+// expect: 42
+// An `extern blocking` call runs on the io pool and puts only its task down.
+// Four tasks stuck in read(2) on an empty pipe would hold every thread a
+// one-thread pool runs tasks on, and the writer, which waits for them to get
+// there, would never get one; as blocking calls they hold none. errno comes
+// back with the answer, to whichever thread the task is on now.
+
+import "std/os"
+import "std/time"
+
+const Readers = 4
+
+extern func pipe(fds [*]i32) i32
+extern func write(fd i32, buf [*]u8, n u64) i64
+extern blocking func read(fd i32, buf [*]u8, n u64) i64
+extern blocking "c" func close(fd i32) i32
+
+func reader(fd i32, mut got *atomic[u64]) {
+    mut one := [1]u8{}
+    if read(fd, one[..].ptr, 1) == 1 {
+        got.Add(u64(one[0]))
+    }
+}
+
+func writer(fd i32) {
+    time.Sleep(time.Millis(50))
+    mut bytes := [Readers]u8{}
+    for i in 0..Readers {
+        bytes[i] = 10
+    }
+    if write(fd, bytes[..].ptr, Readers) != Readers {
+        return
+    }
+}
+
+func refused(mut why *atomic[u64]) {
+    if close(-1) == -1 {
+        why.Store(u64(os.Errno()))
+    }
+}
+
+func main() int {
+    mut fds := [2]i32{}
+    if pipe(fds[..].ptr) != 0 {
+        return 1
+    }
+    mut got := atomic[u64](0)
+    mut why := atomic[u64](0)
+    scope {
+        for i in 0..Readers {
+            spawn reader(fds[0], &got)
+        }
+        spawn writer(fds[1])
+        spawn refused(&why)
+    }
+    close(fds[0])
+    close(fds[1])
+    // Outside any task the call is made right here, and errno is still its own.
+    if close(-1) != -1 || os.Errno() != i32(why.Load()) {
+        return 2
+    }
+    if why.Load() == 0 {
+        return 3
+    }
+    return int(got.Load()) + 2
+}

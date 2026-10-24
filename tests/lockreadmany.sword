@@ -1,0 +1,72 @@
+// expect: 42
+// expect-output: lock read under load: all checks passed
+// Readers and writers on one value, contended all the time, with a few that
+// only take it when it is free. A wake-up lost anywhere in the parking lot
+// would show up here as a hang; a writer let in beside a reader, as a torn read.
+
+import "std/io"
+
+struct Pair {
+    a, b u64
+}
+
+func writer(t *shared[Pair], n u64) {
+    for i in 0..n {
+        lock p := t {
+            p.a += 1
+            p.b += 1
+        }
+    }
+}
+
+func reader(t *shared[Pair], n u64, torn *atomic[u64]) {
+    for i in 0..n {
+        lock read p := t {
+            if p.a != p.b {
+                torn.Add(1)
+            }
+        }
+    }
+}
+
+func opportunist(t *shared[Pair], n u64, got *atomic[u64], torn *atomic[u64]) {
+    for i in 0..n {
+        if lock p := t {
+            p.a += 1
+            p.b += 1
+            got.Add(1)
+        }
+        if lock read p := t {
+            if p.a != p.b {
+                torn.Add(1)
+            }
+        }
+    }
+}
+
+func main() !int {
+    mut pair := shared[Pair](Pair{a: 0, b: 0})
+    mut torn := atomic[u64](0)
+    mut got := atomic[u64](0)
+    scope {
+        for i in 0..4 {
+            spawn writer(&pair, 2000)
+        }
+        for i in 0..8 {
+            spawn reader(&pair, 4000, &torn)
+        }
+        for i in 0..2 {
+            spawn opportunist(&pair, 2000, &got, &torn)
+        }
+    }
+    if torn.Load() != 0 {
+        return 1
+    }
+    lock read p := pair {
+        if p.a != 8000 + got.Load() || p.b != p.a {
+            return 2
+        }
+    }
+    try io.Println("lock read under load: all checks passed")
+    return 42
+}

@@ -21,12 +21,12 @@ func (h *Sometimes) Serve(req *http.Request, mut res *http.Response) !void {
     }
     if req.Path == "/stats" {
         r := runtime.Read()
-        try res.Printf("threads {} stacks {} running {}\n",
+        res.Printf("threads {} stacks {} running {}\n",
                        r.Threads, r.Stacks, r.Running())
         res.Status = 200
         return
     }
-    try res.Text(200, "ok")
+    res.Text(200, "ok")
 }
 
 func serve(s *http.Server, h *Sometimes) !void {

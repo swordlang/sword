@@ -175,6 +175,14 @@ struct Parser {
           bool is_mut = match(TK_MUT);
           Node *param = type_expr();
           if (!param) return nullptr;
+          // `func(x i64)`: a name and then its type, which is how a function
+          // written in place starts in Go or JavaScript.
+          if (kind() == TK_IDENT) {
+            fail("a function type lists types, not names; and if this is a "
+                 "function written in place, Sword has no closures: name a "
+                 "function declared at the top of a file");
+            return nullptr;
+          }
           param->is_mut = is_mut;
           n->kids.push_back(param);
         } while (match(TK_COMMA));
@@ -479,7 +487,7 @@ struct Parser {
       }
       return n;
     }
-    case TK_MINUS: case TK_BANG: case TK_AMP: case TK_STAR: {
+    case TK_MINUS: case TK_BANG: case TK_TILDE: case TK_AMP: case TK_STAR: {
       Node *n = make(ND_UNARY, pos);
       n->op = advance().kind;
       n->lhs = unary();
@@ -686,8 +694,45 @@ struct Parser {
     return n;
   }
 
+  // `lock name := shared { }`, `lock read name := shared { }`, past the word
+  // `lock`. `read` is only special here, before a name and `:=`, so a binding
+  // called `read` still works: `lock read := shared`.
+  Node *lock_stmt(Node *n) {
+    if (kind() == TK_IDENT && peek().text == "read" && kind(1) == TK_IDENT &&
+        kind(2) == TK_DEFINE) {
+      advance();
+      n->is_read = true;
+    }
+    if (kind() != TK_IDENT || kind(1) != TK_DEFINE) {
+      fail("expected 'lock name := shared'");
+      return nullptr;
+    }
+    n->name_pos = peek().pos;
+    n->name = advance().text;
+    advance(); // ':='
+    n->lhs = header_expr();
+    if (!n->lhs) return nullptr;
+    n->body = block();
+    return n->body ? n : nullptr;
+  }
+
   Node *if_stmt() {
+    Pos at = peek().pos;
+    // `if lock c := shared { } else { }` takes the guard only if nobody has it.
+    if (kind(1) == TK_LOCK) {
+      advance(); // 'if'
+      Node *n = lock_stmt(make(ND_LOCK, advance().pos));
+      if (!n) return nullptr;
+      n->pos = at;
+      n->is_try = true;
+      if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+      return n;
+    }
     Node *n = make(ND_IF, advance().pos);
+    if (kind() == TK_MUT && kind(1) == TK_IDENT && kind(2) == TK_DEFINE) {
+      advance();
+      n->is_mut = true;
+    }
     if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
       n->name_pos = peek().pos;
       n->name = advance().text;
@@ -706,6 +751,10 @@ struct Parser {
 
     // `for x := optional { }` runs while there is something there, which is the
     // shape a queue is drained with.
+    if (kind() == TK_MUT && kind(1) == TK_IDENT && kind(2) == TK_DEFINE) {
+      advance();
+      n->is_mut = true;
+    }
     if (kind() == TK_IDENT && kind(1) == TK_DEFINE) {
       n->name_pos = peek().pos;
       n->name = advance().text;
@@ -865,23 +914,19 @@ struct Parser {
       n->lhs = expr();
       return n->lhs ? n : nullptr;
     }
-    case TK_LOCK: {
-      Node *n = make(ND_LOCK, advance().pos);
-      if (kind() != TK_IDENT || kind(1) != TK_DEFINE) {
-        fail("expected 'lock name := shared'");
-        return nullptr;
-      }
-      n->name_pos = peek().pos;
-      n->name = advance().text;
-      advance(); // ':='
-      n->lhs = header_expr();
-      if (!n->lhs) return nullptr;
-      n->body = block();
-      return n->body ? n : nullptr;
-    }
+    case TK_LOCK:
+      return lock_stmt(make(ND_LOCK, advance().pos));
     case TK_DEFER: case TK_ERRDEFER: {
       Node *n = make(ND_DEFER, pos);
       n->is_errdefer = advance().kind == TK_ERRDEFER;
+      // What runs on the way out has nowhere to put a name: nothing after it
+      // in the block could see it.
+      if (kind() == TK_MUT || starts_var_decl()) {
+        fail("'%s' runs a statement on the way out, and a declaration there "
+             "would bind a name nothing can use",
+             n->is_errdefer ? "errdefer" : "defer");
+        return nullptr;
+      }
       n->body = statement();
       return n->body ? n : nullptr;
     }
@@ -921,8 +966,14 @@ struct Parser {
   bool named_group(std::vector<Node *> &out, NodeKind kind_of,
                    const char *what) {
     std::vector<Node *> waiting;
+    bool field = kind_of == ND_FIELD_DECL;
     while (true) {
       Node *p = make(kind_of, peek().pos);
+      if (field && kind() == TK_MUT) {
+        fail("a field takes no 'mut': whether it can be written is decided by "
+             "the binding the struct is reached through");
+        return false;
+      }
       p->is_mut = match(TK_MUT);
       if (kind() != TK_IDENT) {
         fail("expected %s", what);
@@ -935,6 +986,11 @@ struct Parser {
       if (match(TK_COMMA)) continue;
 
       // `args ...T` gathers whatever is left of the argument list.
+      if (field && kind() == TK_ELLIPSIS) {
+        fail("a field cannot gather; '...' is for the last parameter of a "
+             "function");
+        return false;
+      }
       bool gathers = match(TK_ELLIPSIS);
       Node *type = type_expr();
       if (!type) return false;
@@ -1196,7 +1252,8 @@ struct Parser {
 
   Node *declaration() {
     // `package name` is documentation: the directory already decides the
-    // package. `import "path"` is what actually pulls something in.
+    // package. `import "path"` is what actually pulls something in, and
+    // `import name "path"` calls it something else in this package.
     if (kind() == TK_PACKAGE) {
       advance();
       if (kind() != TK_IDENT) {
@@ -1210,6 +1267,10 @@ struct Parser {
     }
     if (kind() == TK_IMPORT) {
       Node *n = make(ND_IMPORT, advance().pos);
+      if (kind() == TK_IDENT) {
+        n->name_pos = peek().pos;
+        n->name = advance().text;
+      }
       if (kind() != TK_STRING) {
         fail("expected an import path in quotes");
         return nullptr;
@@ -1241,14 +1302,27 @@ struct Parser {
       return alias_decl();
 
     bool is_extern = match(TK_EXTERN);
-    // `extern weak "z" func f(...)`. Neither word is reserved: `weak` is only
-    // special between `extern` and what it declares.
-    bool is_weak = false;
+    // `extern weak "z" func f(...)` or `extern blocking "z" func f(...)`, one
+    // or the other: a weak function is called through its value, and a
+    // blocking one only by name. Neither word is reserved; each is special
+    // only straight after `extern`.
+    bool is_weak = false, is_blocking = false;
     std::string library;
-    if (is_extern && kind() == TK_IDENT && peek().text == "weak" &&
-        (kind(1) == TK_STRING || kind(1) == TK_FUNC)) {
-      advance();
-      is_weak = true;
+    auto marked = [&](const char *word) {
+      return is_extern && kind() == TK_IDENT && peek().text == word &&
+             (kind(1) == TK_STRING || kind(1) == TK_FUNC || kind(1) == TK_DET ||
+              (kind(1) == TK_IDENT &&
+               (peek(1).text == "weak" || peek(1).text == "blocking")));
+    };
+    if (marked("weak") || marked("blocking")) {
+      is_weak = advance().text == "weak";
+      is_blocking = !is_weak;
+      if (kind() == TK_IDENT &&
+          (peek().text == "weak" || peek().text == "blocking")) {
+        fail("an extern function is weak or blocking, not both: a weak one is"
+             " called through its value, and a blocking one only by name");
+        return nullptr;
+      }
     }
     if (is_extern && kind() == TK_STRING) library = advance().text;
     // `det func f(...)`: a claim the compiler checks — what this answers is a
@@ -1259,13 +1333,14 @@ struct Parser {
       if (fn) {
         fn->is_det = is_det;
         fn->is_weak = is_weak;
+        fn->is_blocking = is_blocking;
         fn->library = library;
       }
       return fn;
     }
-    if (is_weak || !library.empty()) {
-      fail("a library and 'weak' belong to an extern function; an extern"
-           " struct is only a layout");
+    if (is_weak || is_blocking || !library.empty()) {
+      fail("a library, 'weak' and 'blocking' belong to an extern function; an"
+           " extern struct is only a layout");
       return nullptr;
     }
     if (is_det) {

@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/PedroTessaro/sword",
+    "url": "https://github.com/swordlang/sword",
     "directory": "editors/vscode"
   },
-  "homepage": "https://github.com/PedroTessaro/sword",
-  "bugs": "https://github.com/PedroTessaro/sword/issues",
+  "homepage": "https://github.com/swordlang/sword",
+  "bugs": "https://github.com/swordlang/sword/issues",
   "keywords": ["sword", "shield", "swordls", "systems programming", "concurrency"],
   "engines": { "vscode": "^1.91.0" },
   "categories": ["Programming Languages", "Snippets"],

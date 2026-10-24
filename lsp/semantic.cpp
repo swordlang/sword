@@ -104,8 +104,10 @@ struct Classifier {
       mark(n->name_pos, T_VARIABLE, M_DECLARATION | M_READONLY);
       break;
     case ND_LOCK:
-      // The locked value is a mutable binding for the length of the block.
-      mark(n->name_pos, T_VARIABLE, M_DECLARATION);
+      // The locked value is a binding for the length of the block, mutable
+      // unless the lock is a reader's.
+      mark(n->name_pos, T_VARIABLE,
+           M_DECLARATION | (n->is_read ? M_READONLY : 0));
       break;
     case ND_TYPE_NAME:
       // `mem.Arena`: the qualifier sits at pos, the name at name_pos.

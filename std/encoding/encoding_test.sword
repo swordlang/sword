@@ -6,41 +6,41 @@ import "std/testing"
 // padding there is.
 func TestBase64Vectors(mut t *testing.T) !void {
     mut room := [16]u8{}
-    try t.Equal(try Base64([]u8(""), room[..]), "")
-    try t.Equal(try Base64([]u8("f"), room[..]), "Zg==")
-    try t.Equal(try Base64([]u8("fo"), room[..]), "Zm8=")
-    try t.Equal(try Base64([]u8("foo"), room[..]), "Zm9v")
-    try t.Equal(try Base64([]u8("foob"), room[..]), "Zm9vYg==")
-    try t.Equal(try Base64([]u8("fooba"), room[..]), "Zm9vYmE=")
-    try t.Equal(try Base64([]u8("foobar"), room[..]), "Zm9vYmFy")
+    t.Equal(try Base64([]u8(""), room[..]), "")
+    t.Equal(try Base64([]u8("f"), room[..]), "Zg==")
+    t.Equal(try Base64([]u8("fo"), room[..]), "Zm8=")
+    t.Equal(try Base64([]u8("foo"), room[..]), "Zm9v")
+    t.Equal(try Base64([]u8("foob"), room[..]), "Zm9vYg==")
+    t.Equal(try Base64([]u8("fooba"), room[..]), "Zm9vYmE=")
+    t.Equal(try Base64([]u8("foobar"), room[..]), "Zm9vYmFy")
 
-    try t.Equal(try Base64Url([]u8("f"), room[..]), "Zg")
-    try t.Equal(try Base64Url([]u8("fo"), room[..]), "Zm8")
-    try t.Equal(try Base64Url([]u8("foobar"), room[..]), "Zm9vYmFy")
+    t.Equal(try Base64Url([]u8("f"), room[..]), "Zg")
+    t.Equal(try Base64Url([]u8("fo"), room[..]), "Zm8")
+    t.Equal(try Base64Url([]u8("foobar"), room[..]), "Zm9vYmFy")
 }
 
 func TestHexVectors(mut t *testing.T) !void {
     mut room := [16]u8{}
-    try t.Equal(try Hex([]u8("foobar"), room[..]), "666f6f626172")
-    try t.Equal(try Hex([]u8(""), room[..]), "")
+    t.Equal(try Hex([]u8("foobar"), room[..]), "666f6f626172")
+    t.Equal(try Hex([]u8(""), room[..]), "")
 
     mut raw := [8]u8{}
     n := try DecodeHex("666F6f626172", raw[..])
-    try t.Equal(string(raw[0..n]), "foobar")
+    t.Equal(string(raw[0..n]), "foobar")
 }
 
 // The two bytes whose encodings differ between the alphabets.
 func TestAlphabetsDiffer(mut t *testing.T) !void {
     mut room := [8]u8{}
     edge := [3]u8{0xfb, 0xff, 0xbf}
-    try t.Equal(try Base64(edge[..], room[..]), "+/+/")
-    try t.Equal(try Base64Url(edge[..], room[..]), "-_-_")
+    t.Equal(try Base64(edge[..], room[..]), "+/+/")
+    t.Equal(try Base64Url(edge[..], room[..]), "-_-_")
 
     mut raw := [8]u8{}
     n := try DecodeBase64Url("-_-_", raw[..])
-    try t.Equal(n, u64(3))
-    try t.Equal(raw[0], u8(0xfb))
-    try t.Equal(raw[2], u8(0xbf))
+    t.Equal(n, u64(3))
+    t.Equal(raw[0], u8(0xfb))
+    t.Equal(raw[2], u8(0xbf))
 }
 
 func refused(text string, url bool) bool {
@@ -56,22 +56,22 @@ func refused(text string, url bool) bool {
 // Strict on purpose: each of these is one a lenient decoder would read as
 // something.
 func TestBase64Refuses(mut t *testing.T) !void {
-    try t.Equal(refused("Zg=", false), true)       // padding short
-    try t.Equal(refused("Zg", false), true)        // padding missing
-    try t.Equal(refused("Zm9v\n", false), true)    // a line break
-    try t.Equal(refused("Zm 9", false), true)      // a space
-    try t.Equal(refused("Z===", false), true)      // one character cannot hold a byte
-    try t.Equal(refused("Zh==", false), true)      // unused bits set: Zg== is the one
-    try t.Equal(refused("Zm9=", false), true)      // the same with one byte of padding
-    try t.Equal(refused("Zg=A", false), true)      // padding in the middle
-    try t.Equal(refused("-_-_", false), true)      // the other alphabet
-    try t.Equal(refused("+/+/", true), true)
-    try t.Equal(refused("Z", true), true)
+    t.Equal(refused("Zg=", false), true)       // padding short
+    t.Equal(refused("Zg", false), true)        // padding missing
+    t.Equal(refused("Zm9v\n", false), true)    // a line break
+    t.Equal(refused("Zm 9", false), true)      // a space
+    t.Equal(refused("Z===", false), true)      // one character cannot hold a byte
+    t.Equal(refused("Zh==", false), true)      // unused bits set: Zg== is the one
+    t.Equal(refused("Zm9=", false), true)      // the same with one byte of padding
+    t.Equal(refused("Zg=A", false), true)      // padding in the middle
+    t.Equal(refused("-_-_", false), true)      // the other alphabet
+    t.Equal(refused("+/+/", true), true)
+    t.Equal(refused("Z", true), true)
 
-    try t.Equal(refused("Zg==", false), false)
-    try t.Equal(refused("Zg==", true), false)      // padding allowed in the URL form
-    try t.Equal(refused("Zg", true), false)
-    try t.Equal(refused("", false), false)
+    t.Equal(refused("Zg==", false), false)
+    t.Equal(refused("Zg==", true), false)      // padding allowed in the URL form
+    t.Equal(refused("Zg", true), false)
+    t.Equal(refused("", false), false)
 }
 
 func TestHexRefuses(mut t *testing.T) !void {
@@ -80,12 +80,12 @@ func TestHexRefuses(mut t *testing.T) !void {
     DecodeHex("abc", raw[..]) catch {
         odd = true
     }
-    try t.Equal(odd, true)
+    t.Equal(odd, true)
     mut bad := false
     DecodeHex("zz", raw[..]) catch {
         bad = true
     }
-    try t.Equal(bad, true)
+    t.Equal(bad, true)
 }
 
 // A buffer one short is refused rather than written past, for every function.
@@ -110,7 +110,7 @@ func TestNoSpace(mut t *testing.T) !void {
     DecodeHex("666f6f626172", raw[..]) catch {
         count += 1
     }
-    try t.Equal(count, u64(5))
+    t.Equal(count, u64(5))
 }
 
 // Every length from nothing to a few blocks, every byte value among them, both
@@ -124,27 +124,27 @@ func TestRoundTrip(mut t *testing.T) !void {
     mut back := [100]u8{}
     for n in 0..src.len {
         std := try Base64(src[0..n], text[..])
-        try t.Equal(std.len, Base64Size(n))
+        t.Equal(std.len, Base64Size(n))
         got := try DecodeBase64(std, back[..])
-        try t.Equal(got, n)
+        t.Equal(got, n)
         for i in 0..n {
-            try t.Equal(back[i], src[i])
+            t.Equal(back[i], src[i])
         }
 
         url := try Base64Url(src[0..n], text[..])
-        try t.Equal(url.len, Base64UrlSize(n))
+        t.Equal(url.len, Base64UrlSize(n))
         again := try DecodeBase64Url(url, back[..])
-        try t.Equal(again, n)
+        t.Equal(again, n)
         for i in 0..n {
-            try t.Equal(back[i], src[i])
+            t.Equal(back[i], src[i])
         }
 
         h := try Hex(src[0..n], text[..])
-        try t.Equal(h.len, HexSize(n))
+        t.Equal(h.len, HexSize(n))
         fromHex := try DecodeHex(h, back[..])
-        try t.Equal(fromHex, n)
+        t.Equal(fromHex, n)
         for i in 0..n {
-            try t.Equal(back[i], src[i])
+            t.Equal(back[i], src[i])
         }
     }
 }

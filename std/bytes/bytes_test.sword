@@ -11,19 +11,19 @@ func TestInsertAndDelete(mut t *testing.T) !void {
     try b.WriteString("hello world")
 
     try b.Insert(5, []u8(","))
-    try t.Equal(b.Str(), "hello, world")
+    t.Equal(b.Str(), "hello, world")
 
     // At the front and at the end, which are the two ends of the move.
     try b.Insert(0, []u8("> "))
     try b.Insert(b.Len(), []u8("!"))
-    try t.Equal(b.Str(), "> hello, world!")
+    t.Equal(b.Str(), "> hello, world!")
 
     try b.Delete(0, 2)
-    try t.Equal(b.Str(), "hello, world!")
+    t.Equal(b.Str(), "hello, world!")
     try b.Delete(5, 1)
-    try t.Equal(b.Str(), "hello world!")
+    t.Equal(b.Str(), "hello world!")
     try b.Delete(b.Len() - 1, 1)
-    try t.Equal(b.Str(), "hello world")
+    t.Equal(b.Str(), "hello world")
 }
 
 // The insert has to grow the buffer and move the tail in the same call, which
@@ -33,9 +33,9 @@ func TestInsertGrows(mut t *testing.T) !void {
     for i in 0..200 {
         try b.Insert(0, []u8("ab"))
     }
-    try t.Equal(b.Len(), 400)
-    try t.Equal(b.Bytes()[0], 97)
-    try t.Equal(b.Bytes()[399], 98)
+    t.Equal(b.Len(), 400)
+    t.Equal(b.Bytes()[0], 97)
+    t.Equal(b.Bytes()[399], 98)
     try t.Require(strings.HasPrefix(b.Str(), "abab"))
 }
 
@@ -46,21 +46,21 @@ func TestOutOfRange(mut t *testing.T) !void {
     try b.WriteString("abc")
 
     b.Insert(4, []u8("x")) catch |e| {
-        try t.Equal(e, error.OutOfRange)
+        t.Equal(e, error.OutOfRange)
     }
     b.Delete(2, 2) catch |e| {
-        try t.Equal(e, error.OutOfRange)
+        t.Equal(e, error.OutOfRange)
     }
     b.Delete(4, 0) catch |e| {
-        try t.Equal(e, error.OutOfRange)
+        t.Equal(e, error.OutOfRange)
     }
-    try t.Equal(b.Str(), "abc")
+    t.Equal(b.Str(), "abc")
 
     // The far ends of both are inside it: inserting at the length appends, and
     // deleting nothing at the length is nothing.
     try b.Insert(3, []u8("d"))
     try b.Delete(4, 0)
-    try t.Equal(b.Str(), "abcd")
+    t.Equal(b.Str(), "abcd")
 }
 
 func TestTruncate(mut t *testing.T) !void {
@@ -68,14 +68,14 @@ func TestTruncate(mut t *testing.T) !void {
     try b.WriteString("abcdef")
 
     b.Truncate(3)
-    try t.Equal(b.Str(), "abc")
+    t.Equal(b.Str(), "abc")
     // More than there is leaves it alone: this shortens and nothing else.
     b.Truncate(9)
-    try t.Equal(b.Str(), "abc")
+    t.Equal(b.Str(), "abc")
     b.Truncate(0)
-    try t.Equal(b.Len(), 0)
+    t.Equal(b.Len(), 0)
 
     // And it is still a buffer afterwards.
     try b.WriteString("again")
-    try t.Equal(b.Str(), "again")
+    t.Equal(b.Str(), "again")
 }

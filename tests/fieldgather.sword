@@ -1,0 +1,10 @@
+// expect-error: a field cannot gather
+// '...' gathers the rest of a call's arguments; a field has no call.
+
+struct List {
+    items ...i64
+}
+
+func main() int {
+    return 0
+}

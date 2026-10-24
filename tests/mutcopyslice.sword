@@ -1,0 +1,12 @@
+// expect-error: cannot assign to this: 'ys' was copied from immutable binding 'xs'
+// A copy of a slice reaches the same elements, so a `mut` copy of one lent
+// read-only cannot be a way to write them (#76).
+
+func f(xs []i64) {
+    mut ys := xs
+    ys[0] = 1
+}
+
+func main() int {
+    return 0
+}

@@ -1,0 +1,10 @@
+// expect-error: this value is worked out and then thrown away
+// `~` is the complement and nothing else; xor is `^`. Separators are optional,
+// so this reads as `c := a` and then `~b`, whose value goes nowhere.
+
+func main() int {
+    a u8 = 6
+    b u8 = 3
+    c := a ~ b
+    return int(c)
+}

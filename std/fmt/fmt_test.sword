@@ -16,13 +16,13 @@ func fixed(mut t *testing.T, v f64, decimals u64) !string {
 }
 
 func TestFloatOrdinary(mut t *testing.T) !void {
-    try t.Equal(try shown(t, 0.0), "0.0")
-    try t.Equal(try shown(t, 3.25), "3.25")
-    try t.Equal(try shown(t, -3.25), "-3.25")
-    try t.Equal(try shown(t, 123456789.5), "123456789.5")
-    try t.Equal(try shown(t, 2.0), "2.0")
-    try t.Equal(try fixed(t, 3.14159, 2), "3.14")
-    try t.Equal(try fixed(t, 2.0, 0), "2")
+    t.Equal(try shown(t, 0.0), "0.0")
+    t.Equal(try shown(t, 3.25), "3.25")
+    t.Equal(try shown(t, -3.25), "-3.25")
+    t.Equal(try shown(t, 123456789.5), "123456789.5")
+    t.Equal(try shown(t, 2.0), "2.0")
+    t.Equal(try fixed(t, 3.14159, 2), "3.14")
+    t.Equal(try fixed(t, 2.0, 0), "2")
 }
 
 // `{}` is the shortest text that reads back as the same double: every digit it
@@ -30,25 +30,25 @@ func TestFloatOrdinary(mut t *testing.T) !void {
 func TestFloatShortest(mut t *testing.T) !void {
     a := 0.1
     b := 0.2
-    try t.Equal(try shown(t, a), "0.1")
-    try t.Equal(try shown(t, a + b), "0.30000000000000004")
-    try t.Equal(try shown(t, 1.0 / 3.0), "0.3333333333333333")
-    try t.Equal(try shown(t, 2.0 / 3.0), "0.6666666666666666")
-    try t.Equal(try shown(t, 5.0e-324), "5e-324")
-    try t.Equal(try shown(t, 1.7976931348623157e308), "1.7976931348623157e+308")
-    try t.Equal(try shown(t, 9007199254740993.0), "9007199254740992.0")
+    t.Equal(try shown(t, a), "0.1")
+    t.Equal(try shown(t, a + b), "0.30000000000000004")
+    t.Equal(try shown(t, 1.0 / 3.0), "0.3333333333333333")
+    t.Equal(try shown(t, 2.0 / 3.0), "0.6666666666666666")
+    t.Equal(try shown(t, 5.0e-324), "5e-324")
+    t.Equal(try shown(t, 1.7976931348623157e308), "1.7976931348623157e+308")
+    t.Equal(try shown(t, 9007199254740993.0), "9007199254740992.0")
 }
 
 // Plain from 1e-4 up to 1e16, and a mantissa with a power of ten outside.
 func TestFloatExponentForm(mut t *testing.T) !void {
-    try t.Equal(try shown(t, 1.0e12), "1000000000000.0")
-    try t.Equal(try shown(t, 1.0e15), "1000000000000000.0")
-    try t.Equal(try shown(t, 1.0e16), "1e+16")
-    try t.Equal(try shown(t, -2.5e20), "-2.5e+20")
-    try t.Equal(try shown(t, 1.0e23), "1e+23")
-    try t.Equal(try shown(t, 0.0001), "0.0001")
-    try t.Equal(try shown(t, 0.00001), "1e-5")
-    try t.Equal(try shown(t, 1.5e-7), "1.5e-7")
+    t.Equal(try shown(t, 1.0e12), "1000000000000.0")
+    t.Equal(try shown(t, 1.0e15), "1000000000000000.0")
+    t.Equal(try shown(t, 1.0e16), "1e+16")
+    t.Equal(try shown(t, -2.5e20), "-2.5e+20")
+    t.Equal(try shown(t, 1.0e23), "1e+23")
+    t.Equal(try shown(t, 0.0001), "0.0001")
+    t.Equal(try shown(t, 0.00001), "1e-5")
+    t.Equal(try shown(t, 1.5e-7), "1.5e-7")
 }
 
 func big(mut t *testing.T, v f64, decimals u64) !string {
@@ -61,40 +61,40 @@ func big(mut t *testing.T, v f64, decimals u64) !string {
 // m·2^e, its expansion ends, and C's printf gives the same. Two doubles one
 // unit apart print differently.
 func TestFixedIsExact(mut t *testing.T) !void {
-    try t.Equal(try fixed(t, 0.1, 20), "0.10000000000000000555")
-    try t.Equal(try fixed(t, 0.74675300453429376, 17), "0.74675300453429372")
-    try t.Equal(try fixed(t, 0.74675300453429387, 17), "0.74675300453429383")
-    try t.Equal(try fixed(t, 1.0e19, 2), "10000000000000000000.00")
-    try t.Equal(try fixed(t, 3.14159, 2), "3.14")
+    t.Equal(try fixed(t, 0.1, 20), "0.10000000000000000555")
+    t.Equal(try fixed(t, 0.74675300453429376, 17), "0.74675300453429372")
+    t.Equal(try fixed(t, 0.74675300453429387, 17), "0.74675300453429383")
+    t.Equal(try fixed(t, 1.0e19, 2), "10000000000000000000.00")
+    t.Equal(try fixed(t, 3.14159, 2), "3.14")
 
     huge := try big(t, 1.0e300, 0)
-    try t.Equal(huge.len, u64(301))
-    try t.Equal(huge[0..40], "1000000000000000052504760255204420248704")
+    t.Equal(huge.len, u64(301))
+    t.Equal(huge[0..40], "1000000000000000052504760255204420248704")
 
     tiny := try big(t, 4.9406564584124654e-324, 1074)
-    try t.Equal(tiny[0..6], "0.0000")
-    try t.Equal(tiny[tiny.len - 29..tiny.len], "38682506419718265533447265625")
+    t.Equal(tiny[0..6], "0.0000")
+    t.Equal(tiny[tiny.len - 29..tiny.len], "38682506419718265533447265625")
 }
 
 // Rounded once, to nearest, a tie going to the even digit: the only rounding
 // with no drift in one direction, and what printf does.
 func TestFixedRoundsHalfToEven(mut t *testing.T) !void {
-    try t.Equal(try fixed(t, 0.125, 2), "0.12")
-    try t.Equal(try fixed(t, 0.375, 2), "0.38")
-    try t.Equal(try fixed(t, 2.5, 0), "2")
-    try t.Equal(try fixed(t, 3.5, 0), "4")
-    try t.Equal(try fixed(t, 8.5, 0), "8")
-    try t.Equal(try fixed(t, 999.96, 1), "1000.0")
-    try t.Equal(try fixed(t, -0.5, 0), "-0")
+    t.Equal(try fixed(t, 0.125, 2), "0.12")
+    t.Equal(try fixed(t, 0.375, 2), "0.38")
+    t.Equal(try fixed(t, 2.5, 0), "2")
+    t.Equal(try fixed(t, 3.5, 0), "4")
+    t.Equal(try fixed(t, 8.5, 0), "8")
+    t.Equal(try fixed(t, 999.96, 1), "1000.0")
+    t.Equal(try fixed(t, -0.5, 0), "-0")
 }
 
 // Negative zero is a double of its own, and prints as one.
 func TestNegativeZero(mut t *testing.T) !void {
     zero := 0.0
     negative := -zero
-    try t.Equal(try fixed(t, negative, 2), "-0.00")
-    try t.Equal(try shown(t, negative), "-0.0")
-    try t.Equal(try shown(t, zero), "0.0")
+    t.Equal(try fixed(t, negative, 2), "-0.00")
+    t.Equal(try shown(t, negative), "-0.0")
+    t.Equal(try shown(t, zero), "0.0")
 }
 
 // A NaN is not equal to anything, itself included, which is how one is
@@ -106,14 +106,14 @@ func TestFloatNotNumbers(mut t *testing.T) !void {
     zero := big - big
     nan := zero / zero
 
-    try t.Equal(nan != nan, true)
-    try t.Equal(nan == nan, false)
-    try t.Equal(nan < 1.0, false)
-    try t.Equal(nan > 1.0, false)
+    t.Equal(nan != nan, true)
+    t.Equal(nan == nan, false)
+    t.Equal(nan < 1.0, false)
+    t.Equal(nan > 1.0, false)
 
-    try t.Equal(try shown(t, nan), "nan")
-    try t.Equal(try shown(t, inf), "inf")
-    try t.Equal(try shown(t, -inf), "-inf")
-    try t.Equal(try fixed(t, nan, 3), "nan")
-    try t.Equal(try fixed(t, inf, 3), "inf")
+    t.Equal(try shown(t, nan), "nan")
+    t.Equal(try shown(t, inf), "inf")
+    t.Equal(try shown(t, -inf), "-inf")
+    t.Equal(try fixed(t, nan, 3), "nan")
+    t.Equal(try fixed(t, inf, 3), "inf")
 }

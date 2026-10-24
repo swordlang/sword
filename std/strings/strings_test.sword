@@ -7,43 +7,43 @@ import "std/testing"
 // than `strings.TrimSpace`.
 
 func TestEqual(mut t *testing.T) !void {
-    try t.Equal(Equal("ada", "ada"), true)
-    try t.Equal(Equal("ada", "grace"), false)
-    try t.Equal(Equal("", ""), true)
-    try t.Equal(Equal("a", "ab"), false)
+    t.Equal(Equal("ada", "ada"), true)
+    t.Equal(Equal("ada", "grace"), false)
+    t.Equal(Equal("", ""), true)
+    t.Equal(Equal("a", "ab"), false)
 }
 
 func TestTrimSpace(mut t *testing.T) !void {
-    try t.Equal(TrimSpace("  ada  "), "ada")
-    try t.Equal(TrimSpace("\t\nada\r\n"), "ada")
-    try t.Equal(TrimSpace("ada"), "ada")
-    try t.Equal(TrimSpace("   "), "")
-    try t.Equal(TrimSpace(""), "")
+    t.Equal(TrimSpace("  ada  "), "ada")
+    t.Equal(TrimSpace("\t\nada\r\n"), "ada")
+    t.Equal(TrimSpace("ada"), "ada")
+    t.Equal(TrimSpace("   "), "")
+    t.Equal(TrimSpace(""), "")
 }
 
 func TestPrefixAndIndex(mut t *testing.T) !void {
-    try t.Equal(HasPrefix("grace hopper", "grace"), true)
-    try t.Equal(HasPrefix("grace", "grace hopper"), false)
-    try t.Equal(IndexByte("abc", 98), 1)
+    t.Equal(HasPrefix("grace hopper", "grace"), true)
+    t.Equal(HasPrefix("grace", "grace hopper"), false)
+    t.Equal(IndexByte("abc", 98), 1)
     // Not found is the length, which is what keeps the parsing loops readable.
-    try t.Equal(IndexByte("abc", 122), 3)
-    try t.Equal(Index("hello world", "world"), 6)
-    try t.Equal(Index("hello", "xyz"), 5)
-    try t.Equal(Index("hello", ""), 0)
-    try t.Equal(Contains("hello", "ell"), true)
+    t.Equal(IndexByte("abc", 122), 3)
+    t.Equal(Index("hello world", "world"), 6)
+    t.Equal(Index("hello", "xyz"), 5)
+    t.Equal(Index("hello", ""), 0)
+    t.Equal(Contains("hello", "ell"), true)
 }
 
 func TestEqualFold(mut t *testing.T) !void {
-    try t.Equal(EqualFold("Content-Type", "content-type"), true)
-    try t.Equal(EqualFold("ada", "grace"), false)
-    try t.Equal(ToLower(65), 97)
-    try t.Equal(ToLower(97), 97)
+    t.Equal(EqualFold("Content-Type", "content-type"), true)
+    t.Equal(EqualFold("ada", "grace"), false)
+    t.Equal(ToLower(65), 97)
+    t.Equal(ToLower(97), 97)
 }
 
 func TestParseU64(mut t *testing.T) !void {
-    try t.Equal(try ParseU64("0"), 0)
-    try t.Equal(try ParseU64("4095"), 4095)
-    try t.Equal(try ParseU64("18446744073709551615"), u64(18446744073709551615))
+    t.Equal(try ParseU64("0"), 0)
+    t.Equal(try ParseU64("4095"), 4095)
+    t.Equal(try ParseU64("18446744073709551615"), u64(18446744073709551615))
 
     // One input per subtest, so a failure says which one. The input travels in
     // `t.Arg`, because a subtest body cannot capture anything. The last two do not
@@ -58,7 +58,7 @@ func rejects(mut t *testing.T) !void {
     ParseU64(t.Arg.Text) catch {
         return
     }
-    try t.Failf("accepted it")
+    t.Failf("accepted it")
 }
 
 // A table with more than one column per row does not fit in `t.Arg`, so the
@@ -78,7 +78,7 @@ func TestTrimSpaceTable(mut t *testing.T) !void {
     for c in cases {
         got := TrimSpace(c.input)
         if got != c.want {
-            try t.Failf("{}: got {} want {}", c.input, got, c.want)
+            t.Failf("{}: got {} want {}", c.input, got, c.want)
         }
     }
 }
@@ -87,19 +87,19 @@ func TestConcat(mut t *testing.T) !void {
     mut room := [256]u8{}
     mut arena := mem.NewArena(room[..])
     name := "ada"
-    try t.Equal(try Concat(&arena, "hello, ", name, "!"), "hello, ada!")
-    try t.Equal(try Concat(&arena, name), "ada")
-    try t.Equal(try Concat(&arena), "")
-    try t.Equal(try Concat(&arena, "", ""), "")
+    t.Equal(try Concat(&arena, "hello, ", name, "!"), "hello, ada!")
+    t.Equal(try Concat(&arena, name), "ada")
+    t.Equal(try Concat(&arena), "")
+    t.Equal(try Concat(&arena, "", ""), "")
 }
 
 func TestJoin(mut t *testing.T) !void {
     mut room := [256]u8{}
     mut arena := mem.NewArena(room[..])
     fields := [3]string{"a", "bc", ""}
-    try t.Equal(try Join(&arena, fields[..], ","), "a,bc,")
-    try t.Equal(try Join(&arena, fields[0..1], ", "), "a")
-    try t.Equal(try Join(&arena, fields[0..0], ","), "")
+    t.Equal(try Join(&arena, fields[..], ","), "a,bc,")
+    t.Equal(try Join(&arena, fields[0..1], ", "), "a")
+    t.Equal(try Join(&arena, fields[0..0], ","), "")
 }
 
 // Measured once and allocated once: an arena with room for exactly the answer
@@ -107,36 +107,36 @@ func TestJoin(mut t *testing.T) !void {
 func TestConcatExactSize(mut t *testing.T) !void {
     mut room := [5]u8{}
     mut arena := mem.NewArena(room[..])
-    try t.Equal(try Concat(&arena, "ab", "cde"), "abcde")
+    t.Equal(try Concat(&arena, "ab", "cde"), "abcde")
     Concat(&arena, "x") catch {
         return
     }
-    try t.Failf("allocated past the arena")
+    t.Failf("allocated past the arena")
 }
 
 // --- C strings -------------------------------------------------------------
 
 func TestFromC(mut t *testing.T) !void {
     text := [6]u8{104, 101, 108, 108, 111, 0}  // "hello" and its end
-    try t.Equal(FromC(text[..].ptr), "hello")
+    t.Equal(FromC(text[..].ptr), "hello")
     nothing := [1]u8{0}
-    try t.Equal(FromC(nothing[..].ptr), "")
+    t.Equal(FromC(nothing[..].ptr), "")
 }
 
 // A char[N] that the text fills has no zero; the limit is what stops the read.
 func TestFromCMax(mut t *testing.T) !void {
     full := [4]u8{65, 66, 67, 68}
-    try t.Equal(FromCMax(full[..].ptr, 4), "ABCD")
+    t.Equal(FromCMax(full[..].ptr, 4), "ABCD")
     short := [4]u8{65, 0, 67, 68}
-    try t.Equal(FromCMax(short[..].ptr, 4), "A")
-    try t.Equal(FromCMax(full[..].ptr, 0), "")
+    t.Equal(FromCMax(short[..].ptr, 4), "A")
+    t.Equal(FromCMax(full[..].ptr, 0), "")
 }
 
 func TestToC(mut t *testing.T) !void {
     mut room := [6]u8{}
     p := try ToC("hello", room[..])
-    try t.Equal(room[5], u8(0))
-    try t.Equal(FromC(p), "hello")
+    t.Equal(room[5], u8(0))
+    t.Equal(FromC(p), "hello")
 
     // Exactly the length plus its zero fits; one less does not.
     mut tight := [5]u8{}
@@ -144,11 +144,11 @@ func TestToC(mut t *testing.T) !void {
     ToC("hello", tight[..]) catch {
         refused = true
     }
-    try t.Equal(refused, true)
+    t.Equal(refused, true)
 
     mut inner := false
     ToC("a.txt\0../secret", room[..]) catch {
         inner = true
     }
-    try t.Equal(inner, true)
+    t.Equal(inner, true)
 }

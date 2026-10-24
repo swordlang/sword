@@ -68,10 +68,10 @@ struct Site {
 
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
     if req.PeerName.len == 0 {
-        try res.Text(401, "who are you\n")
+        res.Text(401, "who are you\n")
         return
     }
-    try res.Printf("hello {}\n", req.PeerName)
+    res.Printf("hello {}\n", req.PeerName)
 }
 
 func serveHTTP(s *http.Server, h *Site) !void {

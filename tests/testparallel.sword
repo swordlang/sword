@@ -10,7 +10,7 @@ import "std/time"
 
 func slow(mut t *testing.T) !void {
     time.Sleep(time.Millis(100))
-    try t.Equal(1, 1)
+    t.Equal(1, 1)
 }
 
 func main() !int {

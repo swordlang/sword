@@ -1,0 +1,12 @@
+// expect-error: a field takes no 'mut'
+// Whether a field can be written is decided by the binding the struct is
+// reached through, not by the field.
+
+struct Point {
+    mut x i64
+    y i64
+}
+
+func main() int {
+    return 0
+}

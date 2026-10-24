@@ -1,0 +1,12 @@
+// expect-error: a function type lists types, not names; and if this is a function written in place, Sword has no closures
+// A function value names a declared function; a callback with state is a
+// struct behind an interface.
+
+func apply(f func(i64) i64, x i64) i64 {
+    return f(x)
+}
+
+func main() int {
+    n := apply(func(x i64) i64 { x + 1 }, 41)
+    return int(n)
+}

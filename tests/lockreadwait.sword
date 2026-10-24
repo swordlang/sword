@@ -1,0 +1,16 @@
+// expect-error: 'Wait' needs 'lock', not 'lock read'
+// The list of waiters belongs to whoever holds the guard alone.
+
+struct Table {
+    n u64
+}
+
+func main() int {
+    mut t := shared[Table](Table{n: 0})
+    lock read c := t {
+        for c.n == 0 {
+            t.Wait()
+        }
+    }
+    return 0
+}

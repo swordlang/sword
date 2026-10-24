@@ -10,9 +10,9 @@ package strings
 import "std/testing"
 
 func TestTrimSpace(mut t *testing.T) !void {
-    try t.Equal(TrimSpace("  ada  "), "ada")
-    try t.Equal(TrimSpace("\t\nada\r\n"), "ada")
-    try t.Equal(TrimSpace(""), "")
+    t.Equal(TrimSpace("  ada  "), "ada")
+    t.Equal(TrimSpace("\t\nada\r\n"), "ada")
+    t.Equal(TrimSpace(""), "")
 }
 ```
 
@@ -39,28 +39,35 @@ Two shapes, and the difference is whether the test goes on:
 
 | | keeps going | ends the test |
 |---|---|---|
-| a value | `try t.Same(got, want)` | `try t.Equal(got, want)` |
-| a condition | `try t.Check(ok)` | `try t.Require(ok)` |
-| a message | `try t.Failf(...)` | `try t.Fatalf(...)` |
+| a value | `t.Equal(got, want)` | `try t.Must(got, want)` |
+| a condition | `t.Check(ok)` | `try t.Require(ok)` |
+| a message | `t.Failf(...)` | `try t.Fatalf(...)` |
 
-"Ends the test" is not a special power. `Equal`, `Require` and `Fatalf` return an
+Keeping going is the usual case, so one run reports everything that is wrong
+rather than the first thing. End the test when the rest of it cannot go on
+without the value — a length that is about to be indexed, a pointer about to be
+followed.
+
+"Ends the test" is not a special power. `Must`, `Require` and `Fatalf` return an
 error, and the `try` in front of them carries it out of the test function — the
 same way `try` leaves any other function early. There is no unwinding here and
-nothing to remember: if you wrote `try`, a failure stops.
-
-Everything takes `try`, including the ones that keep going, because all of them
-write output.
+nothing to remember: if you wrote `try`, a failure stops, and if you did not, it
+does not.
 
 ```sword
 func TestParse(mut t *testing.T) !void {
     doc := try Parse([]u8(src), t.Mem)   // a failure here ends the test too
     root := doc.Root()
 
-    try t.Equal(doc.Kind(root), Kind.Object)
-    try t.Same(doc.Len(root), 5)         // wrong count, but carry on
-    try t.Same(doc.GetText(root, "name"), "ada")
+    try t.Must(doc.Kind(root), Kind.Object)   // nothing below means anything otherwise
+    t.Equal(doc.Len(root), 5)                 // wrong count, but carry on
+    t.Equal(doc.GetText(root, "name"), "ada")
 }
 ```
+
+What a test says is collected in its own memory. If that runs out, the run says
+so once, after the test's output, rather than failing the checks that were
+trying to report.
 
 A test that returns an error it did not mean to — the `try Parse` above — is
 reported as a failure with the error's name:
@@ -112,7 +119,7 @@ func TestListGrows(mut t *testing.T) !void {
     for i in 0..100 {
         try xs.Push(i64(i) * 2)
     }
-    try t.Equal(xs.Len(), 100)
+    t.Equal(xs.Len(), 100)
 }
 ```
 
@@ -144,7 +151,7 @@ func rejects(mut t *testing.T) !void {
     ParseU64(t.Arg.Text) catch {
         return
     }
-    try t.Failf("accepted it")
+    t.Failf("accepted it")
 }
 ```
 
@@ -166,7 +173,7 @@ func TestTrimSpaceTable(mut t *testing.T) !void {
     for c in cases {
         got := TrimSpace(c.input)
         if got != c.want {
-            try t.Failf("{}: got {} want {}", c.input, got, c.want)
+            t.Failf("{}: got {} want {}", c.input, got, c.want)
         }
     }
 }
@@ -228,7 +235,7 @@ func TestLostUpdate(mut t *testing.T) !void {
         spawn bump(&counter)
         spawn bump(&counter)
     }
-    try t.Equal(counter.Load(), u64(2))
+    t.Equal(counter.Load(), u64(2))
 }
 ```
 

@@ -21,5 +21,6 @@ libsword_rt-*.flags
 rt/.tls-off
 rt/.tls-on
 shield
+src/std_errors.inc
 swordls
 tests/*.out

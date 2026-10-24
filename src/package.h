@@ -17,6 +17,9 @@ struct Package {
   std::string dir;
   Node *unit = nullptr;
   std::vector<std::string> imports;
+  // What this package calls each of them: the imported package's own name, or
+  // the one its import gave it.
+  std::unordered_map<std::string, std::string> import_names;
 
   // Set when a file in this package mentions `chan`, which is what pulls in the
   // package that implements one.
@@ -99,10 +102,18 @@ void clear_overlay(const std::string &path);
 // `main` because it is a library.
 enum LoadMode { LOAD_BUILD, LOAD_TESTS, LOAD_BENCH, LOAD_EDITOR };
 
+// The directory an import path names, found the way a build from `from` would
+// find it — the standard library, the module `from` is in and what it requires,
+// then `search` — except that nothing is fetched. Empty when it is nowhere.
+std::string find_package(const std::string &import_path, const std::string &from,
+                         const std::vector<std::string> &search);
+
 // `input` is a directory (the whole package) or a single .sword file. Parses it
 // and everything it imports, in dependency order. `only` narrows a test build to
-// the tests it names.
+// the tests it names. In a module, what its sword.mod requires is fetched first;
+// `locked` refuses to add to sword.sum while doing it.
 bool load_program(const std::string &input,
                   const std::vector<std::string> &search, Program &out,
                   LoadMode mode = LOAD_BUILD,
-                  const std::vector<std::string> &only = {});
+                  const std::vector<std::string> &only = {},
+                  bool locked = false);

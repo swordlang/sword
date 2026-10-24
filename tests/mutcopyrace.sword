@@ -1,0 +1,20 @@
+// expect-error: cannot assign to this: 'ys' was copied from immutable binding 'xs'
+// Both tasks only read, by their signatures, so the race checker lets them
+// share xs; the copy was the way one of them wrote it anyway (#76).
+
+func peek(xs []i64) {
+    mut ys := xs
+    for i in 0..100000 {
+        ys[0] += 1
+    }
+}
+
+func main() int {
+    mut a := [4]i64{}
+    xs := a[..]
+    scope {
+        spawn peek(xs)
+        spawn peek(xs)
+    }
+    return int(a[0])
+}

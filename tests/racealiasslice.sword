@@ -1,0 +1,17 @@
+// expect-error: this writes 'a', through 'ys', while it is already written concurrently
+// A copy of a slice is a second name for the same elements (#72).
+
+func bump(mut xs []i64) {
+    xs[0] += 1
+}
+
+func main() int {
+    mut a := [4]i64{}
+    mut xs := a[..]
+    mut ys := xs
+    scope {
+        spawn bump(xs)
+        spawn bump(ys)
+    }
+    return int(a[0])
+}

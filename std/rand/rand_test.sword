@@ -6,30 +6,30 @@ import "std/testing"
 // are Philox and not something that merely looks random.
 func TestKnownAnswers(mut t *testing.T) !void {
     zero := philox([4]u32{0, 0, 0, 0}, [2]u32{0, 0})
-    try t.Equal(zero[0], u32(0x6627e8d5))
-    try t.Equal(zero[1], u32(0xe169c58d))
-    try t.Equal(zero[2], u32(0xbc57ac4c))
-    try t.Equal(zero[3], u32(0x9b00dbd8))
+    t.Equal(zero[0], u32(0x6627e8d5))
+    t.Equal(zero[1], u32(0xe169c58d))
+    t.Equal(zero[2], u32(0xbc57ac4c))
+    t.Equal(zero[3], u32(0x9b00dbd8))
 
     ones := philox([4]u32{0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff},
                    [2]u32{0xffffffff, 0xffffffff})
-    try t.Equal(ones[0], u32(0x408f276d))
-    try t.Equal(ones[1], u32(0x41c83b0e))
-    try t.Equal(ones[2], u32(0xa20bc7c6))
-    try t.Equal(ones[3], u32(0x6d5451fd))
+    t.Equal(ones[0], u32(0x408f276d))
+    t.Equal(ones[1], u32(0x41c83b0e))
+    t.Equal(ones[2], u32(0xa20bc7c6))
+    t.Equal(ones[3], u32(0x6d5451fd))
 
     pi := philox([4]u32{0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344},
                  [2]u32{0xa4093822, 0x299f31d0})
-    try t.Equal(pi[0], u32(0xd16cfe09))
-    try t.Equal(pi[1], u32(0x94fdcceb))
-    try t.Equal(pi[2], u32(0x5001e420))
-    try t.Equal(pi[3], u32(0x24126ea1))
+    t.Equal(pi[0], u32(0xd16cfe09))
+    t.Equal(pi[1], u32(0x94fdcceb))
+    t.Equal(pi[2], u32(0x5001e420))
+    t.Equal(pi[3], u32(0x24126ea1))
 }
 
 func TestAtIsTheStreamsFirst(mut t *testing.T) !void {
     for i in 0..20 {
         mut s := Stream(42, u64(i))
-        try t.Equal(s.U64(), At(42, u64(i)))
+        t.Equal(s.U64(), At(42, u64(i)))
     }
 }
 
@@ -42,7 +42,7 @@ func TestOrderDoesNotMatter(mut t *testing.T) !void {
     mut i := 8
     for i > 0 {
         i -= 1
-        try t.Equal(At(7, u64(i)), forward[i])
+        t.Equal(At(7, u64(i)), forward[i])
     }
     try t.Require(At(7, 0) != At(8, 0))
     try t.Require(At(7, 0) != At(7, 1))
@@ -59,7 +59,7 @@ func TestStreamCrossesBlocks(mut t *testing.T) !void {
     try t.Require(a != c)
     try t.Require(b != d)
     w := block(keyOf(1), 3, 1)
-    try t.Equal(c, u64(w[0]) | u64(w[1]) << 32)
+    t.Equal(c, u64(w[0]) | u64(w[1]) << 32)
 }
 
 func TestBelow(mut t *testing.T) !void {
@@ -74,8 +74,8 @@ func TestBelow(mut t *testing.T) !void {
     for face in seen {
         try t.Require(face > 800 && face < 1200)
     }
-    try t.Equal(s.Below(0), u64(0))
-    try t.Equal(s.Below(1), u64(0))
+    t.Equal(s.Below(0), u64(0))
+    t.Equal(s.Below(1), u64(0))
 }
 
 func TestF64(mut t *testing.T) !void {

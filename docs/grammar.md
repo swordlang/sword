@@ -72,11 +72,14 @@ nil       orelse    package   parallel  reduce    return    scope
 select    spawn     struct    switch    true      try
 ```
 
-`error`, `type` and `weak` are not keywords. Each is special in one position
-only — `error` and `type` at the start of a top-level declaration followed by a
-name, `weak` between `extern` and what it declares — and is an ordinary
-identifier everywhere else. That is what keeps `error.Timeout` an expression,
-and a field or a variable called `type` a name like any other.
+`error`, `type`, `weak`, `blocking` and `read` are not keywords. Each is
+special in one position only — `error` and `type` at the start of a top-level
+declaration followed by a name, `weak` and `blocking` straight after `extern`,
+`read` after
+`lock` when a name and `:=` follow it — and is an ordinary identifier
+everywhere else. That is what keeps `error.Timeout` an expression, a field or a
+variable called `type` a name like any other, and `lock read := t` a lock
+whose binding is called `read`.
 
 An identifier that begins with an upper-case letter is exported from its
 package; that is a rule of the checker, not of the grammar.
@@ -116,7 +119,7 @@ a literal may hold any UTF-8 text as it is.
 
 ```
 +    -    *    /    %    +%   -%   *%
-&    |    ^    <<   >>   &&   ||   !
+&    |    ^    ~    <<   >>   &&   ||   !
 ==   !=   <    <=   >    >=
 =    :=   +=   -=   *=   /=   %=   +%=  -%=  *%=
 &=   |=   ^=   <<=  >>=
@@ -126,7 +129,8 @@ a literal may hold any UTF-8 text as it is.
 
 The longest token wins, so `a<-b` is a send and not a comparison: a comparison
 with a negative number is written `a < -b`. `+%`, `-%` and `*%` are the wrapping
-forms of `+`, `-` and `*`.
+forms of `+`, `-` and `*`. `~` is only ever the complement, flipping every bit
+of an integer; xor is `^`.
 
 ## Source files
 
@@ -136,12 +140,13 @@ TopLevel    = PackageDecl | ImportDecl | ConstDecl | ErrorDecl
             | FuncDecl | StructDecl | InterfaceDecl | EnumDecl | AliasDecl .
 
 PackageDecl = "package" identifier .
-ImportDecl  = "import" string_lit .
+ImportDecl  = "import" [ identifier ] string_lit .
 ConstDecl   = "const" identifier "=" Expr .
 ```
 
 `package` names the package for whoever reads the file; the directory is what
-decides it.
+decides it. An identifier before an import's path is the name the package goes
+by in this one, in place of its own.
 
 ## Declarations
 
@@ -150,7 +155,7 @@ ErrorDecl   = "error" ErrorName { "," ErrorName } .
 ErrorName   = identifier [ "=" string_lit ] .
 
 FuncDecl    = [ "det" ] "func" [ Receiver ] identifier [ TypeParams ] Params [ Type ] Block
-            | "extern" [ "weak" ] [ string_lit ] [ "det" ] "func" [ Receiver ] identifier
+            | "extern" [ "weak" | "blocking" ] [ string_lit ] [ "det" ] "func" [ Receiver ] identifier
               CParams [ Type ] .
 Receiver    = "(" [ "mut" ] identifier Type ")" .
 TypeParams  = "[" TypeParam { "," TypeParam } "]" .
@@ -162,7 +167,7 @@ ParamName   = [ "mut" ] identifier .
 
 StructDecl  = [ "extern" ] "struct" identifier [ TypeParams ]
               "{" { ";" } { FieldGroup { ";" } } "}" .
-FieldGroup  = ParamGroup .
+FieldGroup  = identifier { "," identifier } Type .
 
 InterfaceDecl = "interface" identifier "{" { ";" } { MethodSpec { ";" } } "}" .
 MethodSpec  = identifier Params [ Type ] .
@@ -177,8 +182,9 @@ AliasDecl   = "type" identifier "=" Type .
 `args ...T` gathers the rest of the arguments into a slice. An `extern`
 function is one written in C: it has no body, cannot be generic, may end its
 parameters in C's own bare `...`, and may name the library it comes from in
-quotes. `weak` makes it a value that may be missing at run time. `det` is a
-claim the checker verifies, not a hint.
+quotes. `weak` makes it a value that may be missing at run time. `blocking`
+sends each call to the io pool, putting the task down rather than the thread,
+and leaves the function callable only by name. `det` is a claim the checker verifies, not a hint.
 
 `type Name = T` is another name for `T`, the same type in every respect: values
 pass between the two without a conversion. An alias takes no type parameters,
@@ -217,7 +223,10 @@ generic struct.
 ```ebnf
 Block       = "{" { ";" } { Statement { ";" } } "}" .
 
-Statement   = Block
+Statement   = Deferrable
+            | ( "defer" | "errdefer" ) Deferrable
+            | VarDecl .
+Deferrable  = Block
             | IfStmt | SwitchStmt | SelectStmt | ForStmt
             | "parallel" ForStmt
             | "return" [ Expr ]
@@ -226,17 +235,16 @@ Statement   = Block
             | "scope" Block
             | "spawn" Expr
             | LockStmt
-            | ( "defer" | "errdefer" ) Statement
-            | VarDecl
             | Expr [ AssignOp Expr ] .
 
 VarDecl     = [ "mut" ] identifier ( ":=" Expr | Type "=" Expr ) .
 AssignOp    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
             | "&=" | "|=" | "^=" | "<<=" | ">>=" .
 
-IfStmt      = "if" [ identifier ":=" ] Expr Block [ "else" ( IfStmt | Block ) ] .
+IfStmt      = "if" ( [ [ "mut" ] identifier ":=" ] Expr Block | LockStmt )
+              [ "else" ( IfStmt | Block ) ] .
 
-ForStmt     = "for" identifier ":=" Expr Block
+ForStmt     = "for" [ "mut" ] identifier ":=" Expr Block
             | "for" [ ForHead ] [ Reduction ] Block .
 ForHead     = [ identifier "," ] identifier "in" Expr [ ".." Expr ]
             | Expr .
@@ -252,7 +260,7 @@ CommClause  = identifier ":=" "<-" Expr
             | "<-" Expr
             | Expr "<-" Expr .
 
-LockStmt    = "lock" identifier ":=" Expr Block .
+LockStmt    = "lock" [ "read" ] identifier ":=" Expr Block .
 ```
 
 A `return` takes an expression unless the statement ends where the word does.
@@ -285,7 +293,7 @@ AddExpr     = MulExpr { ( "+" | "-" | "|" | "^" | "+%" | "-%" ) MulExpr } .
 MulExpr     = Unary { ( "*" | "/" | "%" | "<<" | ">>" | "&" | "*%" ) Unary } .
 
 Unary       = "try" Unary [ "<-" OrExpr ]
-            | ( "-" | "!" | "&" | "*" | "<-" ) Unary
+            | ( "-" | "!" | "~" | "&" | "*" | "<-" ) Unary
             | Postfix .
 
 Postfix     = Primary { Call | Selector | Index | Slice } .
@@ -305,7 +313,7 @@ Primary     = int_lit | float_lit | string_lit | "true" | "false" | "nil"
 StructLit   = ( identifier [ TypeArgs ] | identifier "." identifier )
               "{" { ";" } { FieldInit [ "," ] { ";" } } "}" .
 FieldInit   = identifier ":" Expr .
-ArrayLit    = ArrayType "{" { ";" } { Expr [ "," ] { ";" } } "}" .
+ArrayLit    = ( ArrayType | FuncType ) "{" { ";" } { Expr [ "," ] { ";" } } "}" .
 Conversion  = ( ArrayType | [ "extern" ] FuncType ) "(" Expr ")" .
 ArrayType   = "[" [ "*" | ArrayLength ] "]" Type .
 ```
@@ -345,7 +353,11 @@ there the message can say what to write instead:
   has nowhere to live, so write `[_]i32{1, 2}` and slice it;
 - a function type followed by braces, which is where a closure would be
   written and is read as an array literal — Sword has no closures;
-- `spawn` of anything but a call.
+- `spawn` of anything but a call;
+- an expression standing alone that does nothing with its value — `x + 1`,
+  `~b`, `x == 2`: only a call, a send or a receive (bare, or under `try`,
+  `catch` or `orelse`) may be a statement by itself. Separators being optional,
+  this is also what keeps `c := a ~ b` from reading as `c := a` and then `~b`.
 
 Between statements, fields, elements and members the separator is optional to
 the parser: a newline is the usual one, and a comma is allowed where a list

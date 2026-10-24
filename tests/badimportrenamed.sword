@@ -1,0 +1,12 @@
+// expect-error: undefined identifier 'strings'
+// Once an import names a package, the package's own name is not another way
+// to reach it.
+
+import text "std/strings"
+
+func main() int {
+    if strings.Contains("a", "a") {
+        return 1
+    }
+    return 0
+}

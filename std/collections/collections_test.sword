@@ -8,56 +8,56 @@ import "std/testing"
 
 func TestListGrows(mut t *testing.T) !void {
     mut xs := try NewList[i64](t.Mem, 2)
-    try t.Equal(xs.Len(), 0)
-    try t.Equal(xs.Cap(), MinCapacity)
+    t.Equal(xs.Len(), 0)
+    t.Equal(xs.Cap(), MinCapacity)
 
     for i in 0..100 {
         try xs.Push(i64(i) * 2)
     }
-    try t.Equal(xs.Len(), 100)
-    try t.Equal(xs.At(0), 0)
-    try t.Equal(xs.At(99), 198)
+    t.Equal(xs.Len(), 100)
+    t.Equal(xs.At(0), 0)
+    t.Equal(xs.At(99), 198)
 
     // The window onto the live elements follows the length, not the capacity.
-    try t.Equal(xs.Slice().len, 100)
+    t.Equal(xs.Slice().len, 100)
 
     last := xs.Pop() orelse return t.Fatalf("popped nothing")
-    try t.Equal(last, 198)
-    try t.Equal(xs.Len(), 99)
+    t.Equal(last, 198)
+    t.Equal(xs.Len(), 99)
 
     xs.Reset()
-    try t.Equal(xs.Len(), 0)
+    t.Equal(xs.Len(), 0)
     if empty := xs.Pop() {
-        try t.Failf("popped from an empty list")
+        t.Failf("popped from an empty list")
     }
 }
 
 func TestMapSetAndGet(mut t *testing.T) !void {
     mut m := try NewMap[u64](t.Mem, 8)
-    try t.Equal(m.Len(), 0)
+    t.Equal(m.Len(), 0)
     if missing := m.Get("nobody") {
-        try t.Failf("found a key that was never set")
+        t.Failf("found a key that was never set")
     }
 
     try m.Set("ada", 1)
     try m.Set("grace", 2)
     try m.Set("alan", 3)
-    try t.Equal(m.Len(), 3)
-    try t.Equal(m.Get("ada") orelse 0, 1)
-    try t.Equal(m.Get("alan") orelse 0, 3)
-    try t.Equal(m.Has("grace"), true)
-    try t.Equal(m.Has("edsger"), false)
+    t.Equal(m.Len(), 3)
+    t.Equal(m.Get("ada") orelse 0, 1)
+    t.Equal(m.Get("alan") orelse 0, 3)
+    t.Equal(m.Has("grace"), true)
+    t.Equal(m.Has("edsger"), false)
 
     // Setting an existing key replaces rather than adds.
     try m.Set("ada", 9)
-    try t.Equal(m.Len(), 3)
-    try t.Equal(m.Get("ada") orelse 0, 9)
+    t.Equal(m.Len(), 3)
+    t.Equal(m.Get("ada") orelse 0, 9)
 
-    try t.Equal(m.Delete("grace"), true)
-    try t.Equal(m.Delete("grace"), false)
-    try t.Equal(m.Len(), 2)
+    t.Equal(m.Delete("grace"), true)
+    t.Equal(m.Delete("grace"), false)
+    t.Equal(m.Len(), 2)
     if gone := m.Get("grace") {
-        try t.Failf("found a deleted key")
+        t.Failf("found a deleted key")
     }
 }
 
@@ -70,11 +70,11 @@ func TestMapRehashes(mut t *testing.T) !void {
         keys[i] = try label(t, u64(i))
         try m.Set(keys[i], u64(i))
     }
-    try t.Equal(m.Len(), 64)
+    t.Equal(m.Len(), 64)
     try t.Require(m.Slots() > 64)
 
     for i, key in keys {
-        try t.Equal(m.Get(key) orelse 999, u64(i))
+        t.Equal(m.Get(key) orelse 999, u64(i))
     }
 }
 
@@ -130,12 +130,12 @@ func TestSortAndSearch(mut t *testing.T) !void {
     for i in 0..xs.len {
         at := BinarySearch[u64](xs[..], xs[i], lessU64) orelse
             return t.Fatalf("lost an element the sort kept")
-        try t.Equal(xs[at], xs[i])
+        t.Equal(xs[at], xs[i])
     }
     // A value between two of them is not there. The generator is 31 bits wide,
     // so nothing can equal this.
     if found := BinarySearch[u64](xs[..], 1 << 62, lessU64) {
-        try t.Failf("found a value that is not in the slice")
+        t.Failf("found a value that is not in the slice")
     }
 }
 
@@ -145,20 +145,20 @@ func TestSortEdges(mut t *testing.T) !void {
     mut none := [1]u64{7}
     Sort[u64](none[0..0], lessU64)
     Sort[u64](none[..], lessU64)
-    try t.Equal(none[0], 7)
+    t.Equal(none[0], 7)
 
     mut two := [2]u64{2, 1}
     Sort[u64](two[..], lessU64)
-    try t.Equal(two[0], 1)
-    try t.Equal(two[1], 2)
+    t.Equal(two[0], 1)
+    t.Equal(two[1], 2)
 
     mut same := [40]u64{}
     for i in 0..same.len {
         same[i] = 5
     }
     Sort[u64](same[..], lessU64)
-    try t.Equal(same[0], 5)
-    try t.Equal(same[39], 5)
+    t.Equal(same[0], 5)
+    t.Equal(same[39], 5)
 
     mut down := [64]u64{}
     for i in 0..down.len {
@@ -169,8 +169,8 @@ func TestSortEdges(mut t *testing.T) !void {
         try t.Require(down[i - 1] <= down[i])
     }
     Sort[u64](down[..], lessU64) // already sorted, which is the other extreme
-    try t.Equal(down[0], 1)
-    try t.Equal(down[63], 64)
+    t.Equal(down[0], 1)
+    t.Equal(down[63], 64)
 }
 
 // The fallback the budget exists for. Reached by hand here: what makes
@@ -183,21 +183,21 @@ func TestHeapSortPath(mut t *testing.T) !void {
     }
     sortRange[u64](xs[..], lessU64, 0)
     for i in 0..xs.len {
-        try t.Equal(xs[i], u64(i))
+        t.Equal(xs[i], u64(i))
     }
 }
 
 func TestSortStrings(mut t *testing.T) !void {
     mut names := [5]string{"grace", "ada", "alan", "edsger", "ada"}
     Sort[string](names[..], lessText)
-    try t.Equal(names[0], "ada")
-    try t.Equal(names[1], "ada")
-    try t.Equal(names[2], "alan")
-    try t.Equal(names[4], "grace")
+    t.Equal(names[0], "ada")
+    t.Equal(names[1], "ada")
+    t.Equal(names[2], "alan")
+    t.Equal(names[4], "grace")
 
     at := BinarySearch[string](names[..], "edsger", lessText) orelse
         return t.Fatalf("a name that is there was not found")
-    try t.Equal(names[at], "edsger")
+    t.Equal(names[at], "edsger")
 }
 
 // A key that is not a string: the table from a key code to what it does is the
@@ -206,29 +206,29 @@ func TestMapOfNumbers(mut t *testing.T) !void {
     mut binds := try NewMapOf[u8, u64](t.Mem, 8)
     try binds.Set(3, 30)
     try binds.Set(4, 40)
-    try t.Equal(binds.Len(), 2)
-    try t.Equal(binds.Get(3) orelse 0, 30)
-    try t.Equal(binds.Has(9), false)
+    t.Equal(binds.Len(), 2)
+    t.Equal(binds.Get(3) orelse 0, 30)
+    t.Equal(binds.Has(9), false)
 
     // Enough to rehash several times, with every key still findable after.
     mut wide := try NewMapOf[i64, i64](t.Mem, 4)
     for i in 0..300 {
         try wide.Set(i64(i) * 7, i64(i))
     }
-    try t.Equal(wide.Len(), 300)
+    t.Equal(wide.Len(), 300)
     for i in 0..300 {
-        try t.Equal(wide.Get(i64(i) * 7) orelse -1, i64(i))
+        t.Equal(wide.Get(i64(i) * 7) orelse -1, i64(i))
     }
-    try t.Equal(wide.Delete(7), true)
-    try t.Equal(wide.Delete(7), false)
+    t.Equal(wide.Delete(7), true)
+    t.Equal(wide.Delete(7), false)
 }
 
 func TestMapOfEnum(mut t *testing.T) !void {
     mut what := try NewMapOf[Key, string](t.Mem, 4)
     try what.Set(Key.Up, "up")
     try what.Set(Key.Down, "down")
-    try t.Equal(what.Get(Key.Up) orelse "", "up")
-    try t.Equal(what.Get(Key.Left) orelse "nothing", "nothing")
+    t.Equal(what.Get(Key.Up) orelse "", "up")
+    t.Equal(what.Get(Key.Left) orelse "nothing", "nothing")
 }
 
 enum Key i32 {

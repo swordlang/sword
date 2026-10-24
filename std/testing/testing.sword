@@ -58,6 +58,10 @@ struct T {
     // Everything this test said, kept until it finishes. Tests run together, so
     // writing straight to the terminal would interleave them line by line.
     out bytes.Buffer
+    // Something it said did not fit in its memory. Saying is not allowed to
+    // fail — a check that cannot report is still a check — so the runner owns
+    // up to it once, at the end.
+    cut bool
 }
 
 func nothing() any {
@@ -66,7 +70,7 @@ func nothing() any {
 
 func newT(name string, mut a mem.Allocator) !T {
     return T{Mem: a, Arg: nothing(), name: name, subs: [MaxDepth]string{},
-             depth: 0, failed: false, out: try bytes.New(a, 512)}
+             depth: 0, failed: false, out: try bytes.New(a, 512), cut: false}
 }
 
 func (t *T) Name() string {
@@ -77,48 +81,60 @@ func (t *T) Failed() bool {
     return t.failed
 }
 
+func (mut t *T) say(s string) {
+    t.out.WriteString(s) catch {
+        t.cut = true
+    }
+}
+
+func (mut t *T) sayf(format string, args []any) {
+    fmt.Format(&t.out, format, args) catch {
+        t.cut = true
+    }
+}
+
 // `--- FAIL  TestName/sub`, written once per message. Repeating it is what keeps
 // a run readable when several things go wrong in one test.
-func (mut t *T) header() !void {
+func (mut t *T) header() {
     t.failed = true
-    try t.out.WriteString("--- FAIL  ")
-    try t.out.WriteString(t.name)
+    t.say("--- FAIL  ")
+    t.say(t.name)
     for i in 0..t.depth {
-        try t.out.WriteByte(47) // '/'
-        try t.out.WriteString(t.subs[i])
+        t.say("/")
+        t.say(t.subs[i])
     }
-    try t.out.WriteString("\n")
+    t.say("\n")
 }
 
 // Marks the test failed and says nothing. Use it where the reason is already on
 // screen.
-func (mut t *T) Fail() !void {
-    try t.header()
+func (mut t *T) Fail() {
+    t.header()
 }
 
-func (mut t *T) Failf(format string, args ...any) !void {
-    try t.header()
-    try t.out.WriteString("      ")
-    try fmt.Format(&t.out, format, args)
-    try t.out.WriteString("\n")
+func (mut t *T) Failf(format string, args ...any) {
+    t.header()
+    t.say("      ")
+    t.sayf(format, args)
+    t.say("\n")
 }
 
 // Same, and ends the test: the error travels out through the `try` at the call
 // site, which is the only way to leave a function early here.
 func (mut t *T) Fatalf(format string, args ...any) !void {
-    try t.Failf(format, args...)
+    t.Failf(format, args...)
     return error.failed
 }
 
-func (mut t *T) Logf(format string, args ...any) !void {
-    try t.out.WriteString("      ")
-    try fmt.Format(&t.out, format, args)
-    try t.out.WriteString("\n")
+func (mut t *T) Logf(format string, args ...any) {
+    t.say("      ")
+    t.sayf(format, args)
+    t.say("\n")
 }
 
-func (mut t *T) Check(ok bool) !void {
+func (mut t *T) Check(ok bool) {
     if !ok {
-        try t.Failf("check failed")
+        t.Failf("check failed")
     }
 }
 
@@ -153,34 +169,46 @@ func alike(a any, b any) bool {
 
 // Strings are quoted so that trailing space and tabs are visible, which is
 // exactly what one of these failures is usually about.
-func (mut t *T) show(label string, v any) !void {
-    try t.out.WriteString(label)
+func (mut t *T) show(label string, v any) {
+    t.say(label)
     if v.Kind == fmt.KindString {
-        try fmt.Quote(&t.out, v.Text)
+        fmt.Quote(&t.out, v.Text) catch {
+            t.cut = true
+        }
     } else {
-        try fmt.Value(&t.out, v)
+        fmt.Value(&t.out, v) catch {
+            t.cut = true
+        }
     }
 }
 
-func (mut t *T) mismatch(got any, want any) !void {
-    try t.header()
-    try t.out.WriteString("      ")
-    try t.show("got ", got)
-    try t.show(", want ", want)
-    try t.out.WriteString("\n")
+func (mut t *T) mismatch(got any, want any) {
+    t.header()
+    t.say("      ")
+    t.show("got ", got)
+    t.show(", want ", want)
+    t.say("\n")
 }
 
-// Records a mismatch and carries on, for when the rest of the test still has
-// something to say.
-func (mut t *T) Same(got any, want any) !void {
+// Records a mismatch and carries on, so one run reports everything that is
+// wrong rather than the first thing.
+func (mut t *T) Equal(got any, want any) {
     if !alike(got, want) {
-        try t.mismatch(got, want)
+        t.mismatch(got, want)
     }
 }
 
-func (mut t *T) Equal(got any, want any) !void {
+// Equal by another name, which tests written before both carried on still use.
+func (mut t *T) Same(got any, want any) {
+    t.Equal(got, want)
+}
+
+// Records a mismatch and ends the test, for a value the rest of it cannot go
+// on without: a length that is about to be indexed, a pointer about to be
+// followed.
+func (mut t *T) Must(got any, want any) !void {
     if !alike(got, want) {
-        try t.mismatch(got, want)
+        t.mismatch(got, want)
         return error.failed
     }
 }
@@ -188,11 +216,11 @@ func (mut t *T) Equal(got any, want any) !void {
 // Ends the test without failing it. The reason is printed, because a silently
 // skipped test is one nobody ever comes back to.
 func (mut t *T) Skip(why string) !void {
-    try t.out.WriteString("--- SKIP  ")
-    try t.out.WriteString(t.name)
-    try t.out.WriteString(": ")
-    try t.out.WriteString(why)
-    try t.out.WriteString("\n")
+    t.say("--- SKIP  ")
+    t.say(t.name)
+    t.say(": ")
+    t.say(why)
+    t.say("\n")
     return error.skipped
 }
 
@@ -218,7 +246,7 @@ func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void {
 
     body(t) catch |e| {
         if e != error.failed && e != error.skipped {
-            try t.Failf("returned error.{}", nameof(e))
+            t.Failf("returned error.{}", nameof(e))
         }
     }
 
@@ -250,7 +278,7 @@ func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
         if e == error.skipped {
             was_skipped = true
         } else if e != error.failed {
-            try t.Failf("returned error.{}", nameof(e))
+            t.Failf("returned error.{}", nameof(e))
         }
     }
 
@@ -262,9 +290,12 @@ func runOne(cases []Case, at u64, tally *Tally, gate *shared[u64]) !void {
 
     // The whole of what this test said, in one piece. Without the lock two
     // tests finishing together would shuffle their lines into each other.
-    if t.out.Len() > 0 {
+    if t.out.Len() > 0 || t.cut {
         lock held := gate {
             try io.Write(io.Stdout, string(t.out.Bytes()))
+            if t.cut {
+                try io.Write(io.Stdout, "      (more was said than fit in the test's memory)\n")
+            }
         }
     }
 }

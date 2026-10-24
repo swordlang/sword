@@ -1,9 +1,13 @@
 #include "ast.h"
 #include "backend_llvm.h"
+#include "build.h"
 #include "check.h"
 #include "package.h"
 #include "paths.h"
 #include "diag.h"
+#include "doc.h"
+#include "fetch.h"
+#include "new.h"
 #include "ir.h"
 #include "lexer.h"
 #include "link.h"
@@ -38,6 +42,11 @@ enum Stage {
 void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
+        "       shield get <module>[@version | @commit | @none]\n"
+        "       shield vendor\n"
+        "       shield new [--lib] <module path> [package name]\n"
+        "       shield doc <package>[.<name>[.<method>]]\n"
+        "       shield clean\n"
         "\n"
         "  -o <path>      output binary (default: a.out)\n"
         "  -p <n>         test only: how many tests may run at once\n"
@@ -51,6 +60,7 @@ void usage() {
         "  -I <dir>       add a directory to the package search path\n"
         "  --link <arg>   an object, a library or a linker option to link\n"
         "                 against; one argument each, repeat for more\n"
+        "  --locked       refuse to add anything to sword.sum\n"
         "  --static       link the libraries extern declarations name from\n"
         "                 their archives (lib<name>.a)\n"
         "  --target=<t>   build for another machine, a 64-bit LLVM triple such\n"
@@ -59,6 +69,8 @@ void usage() {
         "  --mode=<m>     debug | safe | fast | small (default safe)\n"
         "                 debug and safe check bounds and integer overflow\n"
         "  -O<level>      override the optimization level\n"
+        "  --split        compile each package to an object of its own and\n"
+        "                 keep it in ~/.sword/build for the next build\n"
         "  --emit-tokens  stop after lexing\n"
         "  --emit-ast     stop after parsing and checking\n"
         "  --emit-ir      stop after lowering, print Sword IR\n"
@@ -249,6 +261,56 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   return true;
 }
 
+// The objects of a split build, linked the way assemble links one.
+bool link_objects(const std::vector<std::string> &objects,
+                  const std::string &out_path, const std::string &target,
+                  const std::string &runtime,
+                  const std::vector<std::string> &link) {
+  std::string cmd = "clang";
+  if (!target.empty()) cmd += " --target=" + quoted(target);
+  for (const std::string &o : objects) cmd += " " + quoted(o);
+  if (!runtime.empty()) cmd += " " + quoted(runtime) + " -pthread";
+  for (const std::string &arg : link) cmd += " " + quoted(arg);
+  for (const std::string &arg : split_link_flags(target))
+    cmd += " " + quoted(arg);
+  cmd += " -o " + quoted(out_path);
+  if (system(cmd.c_str()) == 0) return true;
+  fprintf(stderr, "shield: clang failed while linking %s\n", out_path.c_str());
+  return false;
+}
+
+bool build_whole(const IrModule &mod, const std::string &output,
+                 const std::string &opt_level, const std::string &target,
+                 bool object_only, const std::string &runtime,
+                 const std::vector<std::string> &link_args) {
+  std::string ll_path = output + ".ll";
+  FILE *ll = fopen(ll_path.c_str(), "w");
+  if (!ll) {
+    fprintf(stderr, "shield: cannot write '%s'\n", ll_path.c_str());
+    return false;
+  }
+  emit_llvm(mod, ll);
+  fclose(ll);
+  bool ok = assemble(ll_path, output, opt_level, target, object_only, runtime,
+                     link_args);
+  unlink(ll_path.c_str());
+  return ok;
+}
+
+bool build_split(const IrModule &mod, const std::string &output,
+                 const std::string &opt_level, const std::string &target,
+                 const std::string &runtime,
+                 const std::vector<std::string> &link_args) {
+  Scratch units;
+  if (!units.make()) {
+    fprintf(stderr, "shield: cannot make a directory for the build\n");
+    return false;
+  }
+  std::vector<std::string> objects;
+  return compile_split(mod, opt_level, target, units.dir, objects) &&
+         link_objects(objects, output, target, runtime, link_args);
+}
+
 // --- shield test -sim --------------------------------------------------------
 
 // A call out of the language does whatever it does, on the machine's time, and
@@ -436,11 +498,24 @@ int simulate(const std::string &output, const char *input, uint64_t first,
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc > 1) {
+    std::vector<std::string> args(argv + 2, argv + argc);
+    if (!strcmp(argv[1], "get")) return get_command(args);
+    if (!strcmp(argv[1], "vendor")) return vendor_command(args);
+    if (!strcmp(argv[1], "new")) return new_command(args);
+    if (!strcmp(argv[1], "doc")) return doc_command(args, package_roots());
+    if (!strcmp(argv[1], "clean")) return clean_command(args);
+  }
+
   const char *input = nullptr;
   std::vector<std::string> search;
   // Objects and libraries of the caller's own, in the order they were given.
   std::vector<std::string> link_with;
   bool prefer_static = false;
+  bool locked = false;      // --locked: sword.sum stays as committed
+  // --split, or SWORD_SPLIT=1 so a whole test suite can be run that way.
+  const char *split_env = getenv("SWORD_SPLIT");
+  bool split = split_env && !strcmp(split_env, "1");
   std::string target;       // --target: empty for this machine
   bool object_only = false; // -c
   std::string output = "a.out";
@@ -469,6 +544,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(arg, "--link") && i + 1 < argc)
       link_with.push_back(argv[++i]);
     else if (!strcmp(arg, "--static")) prefer_static = true;
+    else if (!strcmp(arg, "--locked")) locked = true;
+    else if (!strcmp(arg, "--split")) split = true;
     else if (!strncmp(arg, "--target=", 9)) target = arg + 9;
     else if (!strcmp(arg, "--target") && i + 1 < argc) target = argv[++i];
     else if (!strcmp(arg, "-c")) object_only = true;
@@ -562,7 +639,7 @@ int main(int argc, char **argv) {
   Program prog;
   LoadMode how = LOAD_BUILD;
   if (testing) how = benching ? LOAD_BENCH : LOAD_TESTS;
-  if (!load_program(input, search, prog, how, only))
+  if (!load_program(input, search, prog, how, only, locked))
     return 1;
 
   TypeTable types;
@@ -634,24 +711,14 @@ int main(int argc, char **argv) {
     scratch.files.push_back(output);
   }
 
-  std::string ll_path = output + ".ll";
-  FILE *ll = fopen(ll_path.c_str(), "w");
-  if (!ll) {
-    fprintf(stderr, "shield: cannot write '%s'\n", ll_path.c_str());
-    return 1;
-  }
-  emit_llvm(mod, ll);
-  fclose(ll);
-
   std::vector<std::string> link_args;
-  if (!link_arguments(request, link_args)) {
-    unlink(ll_path.c_str());
-    return 1;
-  }
-  bool ok = assemble(ll_path, output, opt_level, target, object_only, runtime,
-                     link_args);
-  unlink(ll_path.c_str());
-  if (!ok) return 1;
+  if (!link_arguments(request, link_args)) return 1;
+  bool built = split && !object_only
+                   ? build_split(mod, output, opt_level, target, runtime,
+                                 link_args)
+                   : build_whole(mod, output, opt_level, target, object_only,
+                                 runtime, link_args);
+  if (!built) return 1;
   if (!testing) return 0;
 
   if (sim) {

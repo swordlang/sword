@@ -3,7 +3,7 @@
 ## Reporting a problem
 
 Report it privately, through
-[a security advisory](https://github.com/PedroTessaro/sword/security/advisories/new),
+[a security advisory](https://github.com/swordlang/sword/security/advisories/new),
 not in an issue or a pull request: an issue is public from the moment it is
 opened. Include what you would for a bug — the smallest program that shows it,
 the version, the system — and what an attacker gets from it.

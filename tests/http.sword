@@ -14,16 +14,16 @@ struct Router {
 
 func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
     if strings.Equal(req.Path, "/health") {
-        try res.Text(200, "ok")
+        res.Text(200, "ok")
         return
     }
     if strings.Equal(req.Path, "/echo") {
-        try res.SetHeader("X-Method", req.Method)
-        try res.Write(req.Body)
+        res.SetHeader("X-Method", req.Method)
+        res.Write(req.Body)
         res.Status = 200
         return
     }
-    try res.Text(404, "not found")
+    res.Text(404, "not found")
 }
 
 func drive(port i32, mut a mem.Allocator, mut out []u64) !void {

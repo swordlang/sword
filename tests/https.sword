@@ -25,18 +25,18 @@ struct Moved {
 
 func (h *Moved) Serve(req *http.Request, mut res *http.Response) !void {
     res.Status = 302
-    try res.SetHeader("Location", h.to)
+    res.SetHeader("Location", h.to)
 }
 
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
     if req.Path == "/stream" {
-        try res.Stream(200)
+        res.Stream(200)
         for i in 0..3 {
-            try res.Printf("part{} ", i)
+            res.Printf("part{} ", i)
         }
         return
     }
-    try res.Printf("hello {} from {}\n", req.Param("name"), req.RemoteAddr)
+    res.Printf("hello {} from {}\n", req.Param("name"), req.RemoteAddr)
 }
 
 func serve(s *http.Server, m *http.Mux) !void {

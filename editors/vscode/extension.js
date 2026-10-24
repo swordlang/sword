@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const INSTALL = 'https://github.com/PedroTessaro/sword/blob/main/docs/install.md';
+const INSTALL = 'https://github.com/swordlang/sword/blob/main/docs/install.md';
 
 let client;
 

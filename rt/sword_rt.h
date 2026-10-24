@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // The ABI between generated code and the scheduler. Every task is a thunk the
@@ -63,6 +64,14 @@ enum { SWORD_GUARD_SIZE = 32 };
 void sword_mutex_lock(void *guard);
 void sword_mutex_unlock(void *guard);
 
+// Any number of readers, or one writer. Wait and Notify need the writer's.
+void sword_mutex_lock_read(void *guard);
+void sword_mutex_unlock_read(void *guard);
+
+// The guard if it is free now; false, without waiting, when it is not.
+bool sword_mutex_try_lock(void *guard);
+bool sword_mutex_try_lock_read(void *guard);
+
 // A condition to wait on, which is what turns a mutex into something you can
 // build a queue out of. All three must be called with the guard held.
 // `wait` releases it, puts the task down, and takes it back on the way out.
@@ -88,6 +97,9 @@ void sword_sim_refuse(const char *what);
 // errno, read on the thread the caller is on now. Code that may have parked
 // reads it through this rather than directly — see sword_rt.cpp.
 int sword_errno(void);
+// And written, for an `extern blocking` call: the C function ran on an io
+// thread, and its errno is handed back to the thread the task is on now.
+void sword_set_errno(int value);
 // The same for the clock: waits without holding the thread, and answers -1 when
 // there is no task to put down.
 int sword_park_timer(int64_t deadline_ns);

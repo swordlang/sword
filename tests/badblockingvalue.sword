@@ -1,0 +1,10 @@
+// expect-error: 'sleep' is blocking, so it can only be called by name
+// As a value it would be a plain extern func, and a call through it would hold
+// a scheduler thread with nothing on the page to say so.
+
+extern blocking func sleep(s u32) u32
+
+func main() int {
+    f := sleep
+    return int(f(0))
+}

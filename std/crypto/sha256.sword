@@ -27,15 +27,6 @@ func NewSha256() Sha256 {
     }
 }
 
-// Every addition in SHA-256 is modulo 2^32, and `+` is checked in debug and
-// safe builds — rightly, because a wrap nobody asked for is a bug. Here the
-// wrap is the specification, so it is written out: widened to u64 the sum
-// cannot overflow, and the mask is the wrap. One function, so the day the
-// language grows a wrapping operator there is one line to change.
-func add32(a u32, b u32) u32 {
-    return u32((u64(a) + u64(b)) & 0xffffffff)
-}
-
 // `n` is 1..31 in every call below. A rotate by the full width would shift a
 // u32 by 32, which has no answer.
 func rotr(x u32, n u32) u32 {
@@ -78,7 +69,9 @@ func (mut h *Sha256) compress() {
     for i in 16..64 {
         s0 := rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
         s1 := rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
-        w[i] = add32(add32(add32(w[i - 16], s0), w[i - 7]), s1)
+        // Every addition in SHA-256 is modulo 2^32: the wrap is the
+        // specification, not an accident, so it is `+%` and never checked.
+        w[i] = w[i - 16] +% s0 +% w[i - 7] +% s1
     }
 
     mut a := h.state[0]
@@ -91,33 +84,32 @@ func (mut h *Sha256) compress() {
     mut s := h.state[7]
 
     for i in 0..64 {
-        // `~` is not an operator here, and xor with all ones is the same thing.
-        ch := (e & f) ^ ((e ^ 0xffffffff) & g)
+        ch := (e & f) ^ (~e & g)
         big1 := rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
-        t1 := add32(add32(add32(add32(s, big1), ch), k[i]), w[i])
+        t1 := s +% big1 +% ch +% k[i] +% w[i]
 
         maj := (a & b) ^ (a & c) ^ (b & c)
         big0 := rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
-        t2 := add32(big0, maj)
+        t2 := big0 +% maj
 
         s = g
         g = f
         f = e
-        e = add32(d, t1)
+        e = d +% t1
         d = c
         c = b
         b = a
-        a = add32(t1, t2)
+        a = t1 +% t2
     }
 
-    h.state[0] = add32(h.state[0], a)
-    h.state[1] = add32(h.state[1], b)
-    h.state[2] = add32(h.state[2], c)
-    h.state[3] = add32(h.state[3], d)
-    h.state[4] = add32(h.state[4], e)
-    h.state[5] = add32(h.state[5], f)
-    h.state[6] = add32(h.state[6], g)
-    h.state[7] = add32(h.state[7], s)
+    h.state[0] +%= a
+    h.state[1] +%= b
+    h.state[2] +%= c
+    h.state[3] +%= d
+    h.state[4] +%= e
+    h.state[5] +%= f
+    h.state[6] +%= g
+    h.state[7] +%= s
 }
 
 // Takes any amount at a time: what completes a block is compressed, the rest

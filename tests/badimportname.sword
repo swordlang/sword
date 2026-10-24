@@ -1,0 +1,9 @@
+// expect-error: 'std/strings' and 'std/mem' are both called 'mem'
+// A name given at an import is still one name for one package.
+
+import mem "std/strings"
+import "std/mem"
+
+func main() int {
+    return 0
+}

@@ -1,0 +1,51 @@
+// expect: 42
+// Names that only look alike do not race: two pointers at two variables, two
+// readers of one slice under two names, and pieces of one partition reached
+// through a copy of the slice.
+
+func bump(mut p *i64) {
+    *p += 1
+}
+
+func sum(xs []i64, mut out *i64) {
+    for i in 0..xs.len {
+        *out += xs[i]
+    }
+}
+
+func fill(mut part []i64, v i64) {
+    for i in 0..part.len {
+        part[i] = v
+    }
+}
+
+func main() int {
+    mut n i64 = 0
+    mut m i64 = 0
+    mut p := &n
+    mut q := &m
+    scope {
+        spawn bump(p)
+        spawn bump(q)
+    }
+
+    mut a := [8]i64{}
+    mut xs := a[..]
+    scope {
+        for off, part in xs.chunks(4) {
+            spawn fill(part, 5)
+        }
+    }
+
+    ys := xs
+    mut s1 i64 = 0
+    mut s2 i64 = 0
+    scope {
+        spawn sum(xs, &s1)
+        spawn sum(ys, &s2)
+    }
+    if s1 != s2 {
+        return 1
+    }
+    return int(n + m + s1)
+}

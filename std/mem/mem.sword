@@ -11,7 +11,7 @@ extern func free(p [*]u8)
 // cannot touch the heap.
 interface Allocator {
     Alloc(n u64, align u64) ?[*]u8
-    Release(p [*]u8, n u64)
+    Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64 {
@@ -43,7 +43,7 @@ func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8 {
     return w.inner.Alloc(n, align)
 }
 
-func (mut w *Watched) Release(p [*]u8, n u64) {
+func (mut w *Watched) Release(mut p [*]u8, n u64) {
     mut over := p
     for i in 0..n {
         over[i] = Poison
@@ -67,7 +67,7 @@ func (mut s *System) Alloc(n u64, align u64) ?[*]u8 {
     return p
 }
 
-func (mut s *System) Release(p [*]u8, n u64) {
+func (mut s *System) Release(mut p [*]u8, n u64) {
     free(p)
     s.live -= n
 }
@@ -114,7 +114,7 @@ func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8 {
     return a.buf + start
 }
 
-func (mut a *Arena) Release(p [*]u8, n u64) {}
+func (mut a *Arena) Release(mut p [*]u8, n u64) {}
 
 func (mut a *Arena) Reset() {
     if a.Watch {

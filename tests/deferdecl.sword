@@ -1,0 +1,7 @@
+// expect-error: 'defer' runs a statement on the way out, and a declaration there
+// Nothing after a deferred declaration could ever see its name.
+
+func main() int {
+    defer x := 1
+    return 0
+}

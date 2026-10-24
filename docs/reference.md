@@ -78,6 +78,7 @@ extern func c_name(a T) R          // C ABI, name unchanged
 extern func c_name(a T, ...) R     // C's own variadic: ioctl, fcntl, printf
 extern "z" func c_name(a T) R      // and it comes from libz
 extern weak func c_name(a T) R     // and it may be missing at run time
+extern blocking "z" func c_name(a T) R  // or a call may take a long time
 
 struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
@@ -89,12 +90,33 @@ error Name                         // declared, saying nothing
 error A, B, C
 type Name = T                      // another name for T, the same type
 
-package name                       // documentation; the directory decides
+package name                       // must agree with the import path
 import "path/to/package"
 ```
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
-mutable binding can be passed to one.
+mutable binding can be passed to one, and `&x` only when `x` is one.
+
+A copy of a slice or a pointer reaches the same memory as the original, so a
+`mut` binding made from one lent read-only can be reassigned, and its own fields
+written, but nothing it reaches through that copy:
+
+```sword
+func find(head ?*Node, key i32) ?*Node {
+    mut cur := head        // fine: cur moves along the list
+    cur = n.next           // fine
+    cur.key = 0            // refused: cur was copied from head
+}
+```
+
+A struct holding a read-only slice is the same: `p.at += 1` is the struct's own
+field, `p.input[0] = 1` goes through the copy. Whether a method or a function
+writes through what it is given is worked out from its body, so `p.Step()` is
+allowed when Step only moves `p.at`. A call through an interface or a function
+value is taken to write whatever it may. A value with a read-only part cannot be
+stored behind a pointer, and what a function hands back of its arguments keeps
+the right it was given. The check does not follow order within a function: a
+binding that is ever given read-only memory cannot be written through anywhere.
 
 `type Name = T` gives a type a second name, nothing more: a `Name` is a `T`, and
 values pass between the two without a conversion. It is for a name that says
@@ -149,6 +171,7 @@ here does.
 ```sword
 if cond { } else if cond { } else { }
 if x := optional { } else { }
+if mut x := optional { }          // a copy that can be written
 
 for { }                            // until break or return
 for cond { }
@@ -157,6 +180,7 @@ for x in xs { }                    // elements of a slice, array or string
 for i, x in xs { }                 // with the position
 for part in xs.chunks(n) { }
 for off, part in xs.chunks(n) { }
+for x := optional { }              // while it holds something; `for mut x` too
 
 switch subject { case a, b: ... default: ... }
 
@@ -165,6 +189,8 @@ parallel for i in a..b reduce(+: acc) { }
 
 scope { spawn f(args) ... }
 lock name := shared_value { }
+lock read name := shared_value { }  // readers together, a writer alone
+if lock name := shared_value { } else { }   // only if it is free
 
 break
 continue
@@ -189,7 +215,12 @@ By precedence, tightest first:
 A NaN compares false against everything, itself included, so `x != x` is true
 for one and is how it is recognised.
 
-Prefix: `-` `!` `&` (address of) `*` (dereference) `try`.
+Prefix: `-` `!` `~` (every bit of an integer flipped) `&` (address of) `*`
+(dereference) `try`. `x & ~m` clears the bits of `m`; xor is `^`, and `~` is
+never a binary operator.
+
+A statement standing alone has to do something — call, send or receive. One
+whose value would only be thrown away, `x + 1` or `x == 2`, is an error.
 
 Assignment: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` and the
 wrapping forms below.
@@ -298,6 +329,123 @@ here and a pointer there, so pass `.ptr` and `.len`. And a variadic function
 can only be called by name: a function value carries one word and no
 signature, which is not enough to know where the extra arguments go.
 
+## Packages and modules
+
+A package is a directory, and every `.sword` file in it shares one scope. It is
+imported by its path and called by the last element of that path:
+`import "std/mem"` is `mem`. A `package` clause, when a file has one, has to say
+the same name. A path whose last element is not a name a program can write —
+`github.com/ana/sword-sqlite` — takes its name from the clause instead, and a
+path ending in a major version — `.../sqlite/v2` — from the element before it.
+Two imports that would give the same name are an error, and one of them is
+given another name where it is imported:
+
+```sword
+import "example.com/deep"
+import deep2 "example.com/deep/v2"
+```
+
+That name holds for the whole package, every file of it, and the package's own
+name no longer reaches it there.
+
+A comment directly above a declaration is its documentation, and one above a
+`package` clause documents the package. `shield doc` prints them beside what
+they describe, as it was written:
+
+```
+shield doc std/http                # everything it exports, a line each
+shield doc std/http.Server         # one type, its fields and its methods
+shield doc std/http.Server.Close   # one method
+shield doc mem.Arena               # a package of std needs no std/
+shield doc .                       # the package here
+```
+
+Fields and methods the package keeps to itself are left out. Inside a module,
+`shield doc` finds the module's packages and its dependencies the way a build
+would, though it never fetches one.
+
+A module is a tree of packages with a `sword.mod` at its root. The compiler finds
+it by looking in the directory being built and every directory above:
+
+```
+module example.com/site
+sword 0.3
+
+require github.com/ana/sqlite v1.4.0
+replace example.com/lib => ../lib
+```
+
+`shield new example.com/site` starts one: a `site` directory with the
+`sword.mod`, a `main.sword` and a test for it, in a git repository of its own
+unless it is made inside one. `shield new --lib example.com/geo` starts a
+library instead, a package with one function and its test; when the last element
+of the path is not a name a program can write, the package's name follows it:
+`shield new --lib example.com/sword-geo geo`.
+
+`module` names the tree, and its packages are imported under that name:
+`example.com/site/util` is the `util` directory beside the `sword.mod`. A module
+path is lower-case letters, digits, `.`, `-` and `_`, in segments joined by `/`,
+and nothing under `std`. `sword` is the oldest compiler the module builds with,
+and a newer requirement is refused rather than half compiled. `replace` points a
+path, and everything under it, at a directory, relative to the module's root.
+Lines starting with `//` are comments.
+
+### Dependencies
+
+`require` names another module and the version wanted of it. A module lives at
+the root of a git repository, and its path is where that repository is:
+`github.com/ana/sqlite` is fetched from `https://github.com/ana/sqlite.git`,
+with the credentials git already has. A version is a tag, `v1.4.0`. Each major
+version from 2 on is a module of its own, imported under its own path —
+`github.com/ana/sqlite/v2`, with `module github.com/ana/sqlite/v2` in its
+`sword.mod` and tags `v2.x.y` — so a program can use both while it moves from one
+to the other.
+
+```
+shield get github.com/ana/sqlite           # the newest release
+shield get github.com/ana/sqlite@v1.4.0    # this one
+shield get github.com/ana/sqlite@main      # a branch or a commit
+shield get github.com/ana/sqlite@none      # take it out
+```
+
+`shield get` writes the `require` line and fetches the module. A commit with no
+tag gets a version of its own, `v0.0.0-20261023-a1b2c3d4e5f6`, the day it was
+made and its hash, which sorts before every release: it is for using a fix before
+its author has released it. Without a version, `get` takes the newest release,
+and never goes back from a newer version already required.
+
+A build fetches whatever `sword.mod` requires and is not on this machine yet, and
+nothing else: importing a module nobody required is an error, and so is
+importing one the program only has because a dependency required it. A
+dependency, in turn, imports only what its own `sword.mod` requires. Fetching a
+module never runs any of its code; a Sword package has no build script.
+
+When several modules require the same one, the build uses the newest version
+any of them asks for — not the newest that exists. A release nobody asked for
+never enters a build, so the same `sword.mod` builds the same code next year.
+Only the module being built may `replace`; a dependency's `replace` lines are
+ignored.
+
+`sword.sum`, beside `sword.mod`, holds a hash of every module version the build
+has read, and both belong in version control:
+
+```
+github.com/ana/sqlite v1.4.0 sha256:3f1c...
+```
+
+The hash covers the files the compiler reads, `.sword` files and `sword.mod`.
+A version whose code no longer matches its line — a tag moved to other code — is
+refused. A build adds the line for a version it has not seen before;
+`--locked` refuses to, for a build that has to use exactly what was committed.
+
+Fetched modules are kept in `~/.sword`, or wherever `SWORD_CACHE` says, one
+directory per version, read-only, with the code and its licence and nothing
+else. `shield vendor` copies every dependency into `vendor/` with a
+`vendor/modules.txt` listing them, and from then on a build reads `vendor/`
+instead, with no network and no cache. It is checked against `sword.sum` on
+every build, since it sits where anybody can edit it, and after `sword.mod`
+changes, `shield vendor` is run again.
+
 ## C libraries
 
 A string after `extern` names the library a function comes from, the way `-l`
@@ -356,6 +504,31 @@ if fill := getentropy {
 be there when the program starts. A library that may be missing altogether is
 loaded with [`std/dl`](#stddl).
 
+### Blocking functions
+
+A task waiting on a socket, a lock or a channel is put down and its thread
+moves on to other tasks. A C function cannot be put down: while it waits, the
+thread waits with it, and a few such calls at once hold every thread the
+scheduler has. `blocking` says a function may take its time — a database query,
+a read from a device, a call into a library that does its own network I/O:
+
+```sword
+extern blocking "sqlite3" func sqlite3_step(stmt c.Ptr) c.Int
+```
+
+Each call to it is made on the threads kept for files and name resolution, and
+the task is put down until it returns, exactly as a file read is. Outside any
+task the call is made where it is. `errno` comes back with the answer, so
+`os.Errno()` right after the call is the one the function left.
+
+A blocking function is called by name only. As a value it would be an ordinary
+`extern func`, and a call through it would hold a thread with nothing in the
+code to say so. That is why `blocking` takes the place of `weak`, which is only
+called through its value, and why a blocking function cannot take C's `...`.
+The hand-off costs a few microseconds, which is nothing next to a call that
+blocks and too much for one that does not: leave `blocking` off a function that
+only computes.
+
 ## Atomics
 
 `atomic[T]` over an integer or a bool. It is the one thing several tasks may
@@ -398,7 +571,32 @@ the value, which is what makes the race checker's exemption safe. Inside the
 block the name is a mutable `*T`; the brace releases the lock, and so does a
 `return`, a `break`, a `continue` or a `try` that fails.
 
-Three operations beside `lock`, all called with the lock held:
+`lock read` lets any number of readers in at once, and no writer while any of
+them is there. Inside it the name is an immutable `*T`, so nothing reached
+through it can be written:
+
+```sword
+lock read m := &table {
+    seen := m.Get(key) orelse 0
+}
+```
+
+A writer waiting keeps new readers out, so a steady stream of them cannot keep
+it waiting for good.
+
+`if lock` takes the lock only when that would not mean waiting, and runs the
+`else` branch, without it, when somebody has it. It works for both kinds:
+
+```sword
+if lock m := &table {
+    try m.Set(key, 1)
+} else {
+    // busy: come back later
+}
+```
+
+Three operations beside `lock`, all called with the lock held, and held to
+write — readers hold it together, and only one holder may wait or wake:
 
 ```sword
 func (s *shared[T]) Wait()        // let go, wait to be told, take it back
@@ -422,10 +620,12 @@ The rules around it:
 - `spawn` under a lock whose `scope` is outside it is an error: the task would
   still be running when the block released. Put the `scope` inside the `lock`,
   or the `lock` inside the task.
+- a reader holds no name the runtime can check, so a task that reads a value and
+  then, through a call, asks to write it waits for itself; the checker refuses
+  the case it can see.
 
-There is no read-only lock and no try-lock. A contended lock spins briefly and
-then sleeps, telling the scheduler while it waits, so a thread stuck behind a
-long critical section does not cost a core.
+A contended lock spins briefly and then puts the task down until it is its
+turn, so a thread stuck behind a long critical section goes on to other work.
 
 ## Switch
 
@@ -551,7 +751,9 @@ error nobody handled.
 
 Codes are global to the program, so the same name raised in two packages is one
 error and a caller handles it once — but the two declarations have to agree on the
-message, and the compiler says so if they do not. A lowercase name is private to
+message, and the compiler says so if they do not. The standard library's errors
+have the same codes in every program, whether it imports their package or not;
+a program's own come after them. A lowercase name is private to
 the package that declared it, like everything else. A `!T` cannot be discarded, and
 its fields cannot be reached until it is handled.
 
@@ -564,7 +766,8 @@ A handler block that has to produce a value must leave the scope. In statement
 position nothing is expected of it.
 
 `func main() !int` and `func main() !void` both work; an error that reaches
-`main` becomes the exit status.
+`main` becomes the exit status. An exit status is eight bits, so a code past 255
+leaves as 255 rather than wrapping round to 0, which would say it worked.
 
 ## Optionals
 
@@ -656,7 +859,7 @@ func (mut w *Writer) Flush() !void
 ```sword
 interface Allocator {
     Alloc(n u64, align u64) ?[*]u8
-    Release(p [*]u8, n u64)
+    Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64
@@ -670,7 +873,7 @@ func Free[T](mut a Allocator, xs []T)
 ```sword
 func NewArena(backing []u8) Arena
 func (mut a *Arena) Alloc(n u64, align u64) ?[*]u8
-func (mut a *Arena) Release(p [*]u8, n u64)     // does nothing
+func (mut a *Arena) Release(mut p [*]u8, n u64)     // does nothing
 func (mut a *Arena) Reset()
 func (a *Arena) Used() u64
 ```
@@ -683,7 +886,7 @@ reads something obviously wrong. `shield test` sets it on every test's arena.
 ```sword
 func NewWatched(a Allocator) Watched            // { inner, Written }
 func (mut w *Watched) Alloc(n u64, align u64) ?[*]u8
-func (mut w *Watched) Release(p [*]u8, n u64)   // writes over it first
+func (mut w *Watched) Release(mut p [*]u8, n u64)   // writes over it first
 ```
 
 Both cost a write per byte released, so neither is on by default. See [the tour on
@@ -694,7 +897,7 @@ memory that has gone away](tour.md#memory-that-has-gone-away).
 ```sword
 func NewSystem() System
 func (mut s *System) Alloc(n u64, align u64) ?[*]u8
-func (mut s *System) Release(p [*]u8, n u64)
+func (mut s *System) Release(mut p [*]u8, n u64)
 func (s *System) Live() u64
 ```
 
@@ -931,18 +1134,22 @@ func (d *Document) GetText(at u64, key string) string
 func (d *Document) GetNumber(at u64, key string, fallback f64) f64
 ```
 
-Writing is a streaming writer that puts the commas in for you:
+Writing is a streaming writer that puts the commas in for you. No write asks
+for `try`: the first thing that goes wrong — memory running out, a `TooDeep` or
+an `Unbalanced` — is kept, every write after it does nothing, and `Err` says
+what it was once the document is done:
 
 ```sword
 mut w := json.NewWriter(&buffer)
-try w.BeginObject()
-try w.Key("name")
-try w.Str("sword")
-try w.Key("tags")
-try w.BeginArray()
-try w.Str("fast")
-try w.EndArray()
-try w.EndObject()
+w.BeginObject()
+w.Key("name")
+w.Str("sword")
+w.Key("tags")
+w.BeginArray()
+w.Str("fast")
+w.EndArray()
+w.EndObject()
+try w.Err()            // the first thing that went wrong, if anything did
 ```
 
 ### `std/crypto`
@@ -1295,17 +1502,18 @@ taking one `*T`. See [Testing](testing.md).
 func (t *T) Name() string
 func (t *T) Failed() bool
 
-// These record and carry on.
-func (mut t *T) Same(got any, want any) !void
-func (mut t *T) Check(ok bool) !void
-func (mut t *T) Failf(format string, args ...any) !void
+// These record and carry on, and ask for no `try`.
+func (mut t *T) Equal(got any, want any)
+func (mut t *T) Same(got any, want any)        // Equal by another name
+func (mut t *T) Check(ok bool)
+func (mut t *T) Fail()
+func (mut t *T) Failf(format string, args ...any)
+func (mut t *T) Logf(format string, args ...any)
 
 // These end the test, by returning an error the `try` carries out.
-func (mut t *T) Equal(got any, want any) !void
+func (mut t *T) Must(got any, want any) !void
 func (mut t *T) Require(ok bool) !void
 func (mut t *T) Fatalf(format string, args ...any) !void
-
-func (mut t *T) Logf(format string, args ...any) !void
 func (mut t *T) Skip(why string) !void
 func (mut t *T) Run(name string, body func(mut *T) !void) !void
 func (mut t *T) RunWith(name string, body func(mut *T) !void, arg any) !void
@@ -1808,11 +2016,11 @@ answers 405 rather than 404. Up to 64 routes, no allocation:
 
 ```sword
 func NewMux() Mux
-func (mut m *Mux) Handle(method string, pattern string, h Handler) !void
-func (mut m *Mux) Get(pattern string, h Handler) !void
-func (mut m *Mux) Post(pattern string, h Handler) !void
-func (mut m *Mux) Put(pattern string, h Handler) !void
-func (mut m *Mux) Delete(pattern string, h Handler) !void
+func (mut m *Mux) Handle(method string, pattern string, mut h Handler) !void
+func (mut m *Mux) Get(pattern string, mut h Handler) !void
+func (mut m *Mux) Post(pattern string, mut h Handler) !void
+func (mut m *Mux) Put(pattern string, mut h Handler) !void
+func (mut m *Mux) Delete(pattern string, mut h Handler) !void
 ```
 
 Targets and query strings, decoding into space you provide:
@@ -1826,19 +2034,25 @@ func Escape(s string, mut into []u8) !string
 ```
 
 ```sword
-func (mut r *Response) Stream(status u64) !void   // switch to chunked
-func (mut r *Response) Send(status u64, length u64) !void  // a length you know
-func (mut r *Response) Printf(format string, args ...any) !void
-func (mut r *Response) Text(status u64, s string) !void
-func (mut r *Response) JSON(status u64, s string) !void
-func (mut r *Response) SetHeader(name string, value string) !void
-func (mut r *Response) Write(p []u8) !void
-func (mut r *Response) WriteString(s string) !void
+func (mut r *Response) Stream(status u64)          // switch to chunked
+func (mut r *Response) Send(status u64, length u64)  // a length you know
+func (mut r *Response) Printf(format string, args ...any)
+func (mut r *Response) Text(status u64, s string)
+func (mut r *Response) JSON(status u64, s string)
+func (mut r *Response) SetHeader(name string, value string)
+func (mut r *Response) Write(p []u8)
+func (mut r *Response) WriteString(s string)
+func (r *Response) Err() !void                     // the first write that failed
 ```
 
 Both `Stream` and `Send` put the head out at once, so headers set after either are
 too late, and every write from then on goes to the connection rather than into a
 buffer. After `Send`, write exactly `length` bytes.
+
+No write asks for `try`: the first that fails is kept, the rest do nothing, and
+the server checks once the handler returns — a 500 if the head has not gone, the
+connection closed if it has. `Err` is for a handler whose next step depends on
+it, such as one feeding a stream to a client that may have left.
 
 Files. A piece at a time against the length the file already has, so a large
 download costs one buffer:
@@ -1928,6 +2142,7 @@ shield test <file.sword | directory> [options]
   -c              stop at the object file, linking nothing
   --mode=<m>      debug | safe | fast | small, default safe
   -O<level>       override the optimisation level
+  --split         one object per package, kept for the next build
   -p <n>          test only: how many tests may run at once
   -run <name>     test only: run just this one; repeat for more
   -bench          test only: run the Benchmark... functions instead
@@ -1943,6 +2158,18 @@ shield test <file.sword | directory> [options]
 ```
 
 A `.sword` file compiles alone. A directory compiles as one package.
+
+A build hands the whole program to LLVM as one module, so a small function from
+the standard library is inlined into the loop that calls it. `--split` compiles
+each package to an object of its own instead, kept in `~/.sword/build` (under
+`SWORD_CACHE` when that is set) by the hash of its code and of how it was
+compiled, and only what changed goes through LLVM again. Rebuilding a small
+server after editing only its own package takes well under half the time; a
+program that imports next to nothing has nothing to gain. The price
+is that inlining stops at the edge of a package, and a hot loop around a small
+call into another one can run several times slower. It is meant for the
+edit-and-run cycle, not for the binary you ship. An object nothing has used for
+thirty days is removed by a later build, and `shield clean` removes them all.
 
 A library named by `extern "name"` is linked without being mentioned here (see
 [C libraries](#c-libraries)). `--link` reaches the linker for the rest — an

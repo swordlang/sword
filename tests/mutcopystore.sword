@@ -1,0 +1,15 @@
+// expect-error: this reaches memory through immutable binding 'xs', and storing it here
+// Memory behind a pointer is somewhere the checker cannot follow, so a value
+// lent read-only cannot be stored there for somebody else to write later.
+
+struct Holder {
+    xs []i64
+}
+
+func keep(mut h *Holder, xs []i64) {
+    h.xs = xs
+}
+
+func main() int {
+    return 0
+}

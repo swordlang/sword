@@ -33,7 +33,7 @@ func NewMux() Mux {
     return Mux{routes: [MaxRoutes]route{}, count: 0}
 }
 
-func (mut m *Mux) Handle(method string, pattern string, h Handler) !void {
+func (mut m *Mux) Handle(method string, pattern string, mut h Handler) !void {
     if m.count >= MaxRoutes {
         return error.TooManyRoutes
     }
@@ -41,19 +41,19 @@ func (mut m *Mux) Handle(method string, pattern string, h Handler) !void {
     m.count += 1
 }
 
-func (mut m *Mux) Get(pattern string, h Handler) !void {
+func (mut m *Mux) Get(pattern string, mut h Handler) !void {
     try m.Handle("GET", pattern, h)
 }
 
-func (mut m *Mux) Post(pattern string, h Handler) !void {
+func (mut m *Mux) Post(pattern string, mut h Handler) !void {
     try m.Handle("POST", pattern, h)
 }
 
-func (mut m *Mux) Put(pattern string, h Handler) !void {
+func (mut m *Mux) Put(pattern string, mut h Handler) !void {
     try m.Handle("PUT", pattern, h)
 }
 
-func (mut m *Mux) Delete(pattern string, h Handler) !void {
+func (mut m *Mux) Delete(pattern string, mut h Handler) !void {
     try m.Handle("DELETE", pattern, h)
 }
 
@@ -175,8 +175,8 @@ func (m *Mux) Serve(req *Request, mut res *Response) !void {
     }
 
     if wrongMethod {
-        try res.Text(405, "method not allowed\n")
+        res.Text(405, "method not allowed\n")
         return
     }
-    try res.Text(404, "not found\n")
+    res.Text(404, "not found\n")
 }

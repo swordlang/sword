@@ -70,12 +70,10 @@ std::string signature(const Symbol *sym) {
 
 // The package a name refers to, if it is one this file imported.
 Package *package_named(const std::string &name, Package &owner, Program &prog) {
-  for (const std::string &path : owner.imports) {
-    auto found = prog.by_path.find(path);
-    if (found != prog.by_path.end() && found->second->name == name)
-      return found->second;
-  }
-  return nullptr;
+  auto named = owner.import_names.find(name);
+  if (named == owner.import_names.end()) return nullptr;
+  auto found = prog.by_path.find(named->second);
+  return found != prog.by_path.end() ? found->second : nullptr;
 }
 
 // Which package the open file belongs to. Everything the editor offers without a
@@ -245,6 +243,7 @@ std::vector<Completion> completions(const std::string &before, int file,
     // sentence each of them says.
     if (chain.size() == 1 && chain[0] == "error") {
       for (const TypeTable::ErrorDecl &e : types.errors()) {
+        if (!e.declared) continue;
         if (e.owner != pkg->prefix && !exported(e.name)) continue;
         add(out, e.name, K_ENUM_MEMBER, e.message);
       }

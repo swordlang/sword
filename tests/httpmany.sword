@@ -16,7 +16,7 @@ struct Hello {
 }
 
 func (h *Hello) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Text(200, "hi")
+    res.Text(200, "hi")
 }
 
 func serve(s *http.Server, h *Hello) !void {

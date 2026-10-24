@@ -18,13 +18,13 @@ struct Site {
 
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
     if req.Path == "/long" {
-        try res.Stream(200)
+        res.Stream(200)
         for i in 0..4 {
-            try res.Printf("piece{} ", i)
+            res.Printf("piece{} ", i)
         }
         return
     }
-    try res.Printf("path {}\n", req.Path)
+    res.Printf("path {}\n", req.Path)
 }
 
 func serve(s *http.Server, h *Site) !void {

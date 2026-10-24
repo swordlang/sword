@@ -3,6 +3,7 @@
 #include "ir.h"
 #include "package.h"
 
+#include <algorithm>
 #include <cctype>
 #include <deque>
 #include <functional>
@@ -38,6 +39,7 @@ struct Checker {
   // are a race unless both only read, or they are pieces of one partition.
   struct Access {
     Symbol *root = nullptr;  // the binding the memory hangs off
+    Symbol *via = nullptr;   // the name it was reached by, when that is another
     Symbol *chunk = nullptr; // set when the value is a piece of a partition
     bool writes = false;
     // A spawn inside a loop happens once per iteration, so its accesses have
@@ -55,6 +57,7 @@ struct Checker {
   struct HeldLock {
     Symbol *root;
     Pos at;
+    bool read;
   };
   std::vector<HeldLock> held_locks;
   std::vector<size_t> scope_lock_base;
@@ -78,12 +81,9 @@ struct Checker {
   // --- packages ----------------------------------------------------------
 
   Package *imported(const std::string &name) {
-    if (name.empty()) return nullptr;
-    for (const std::string &path : pkg.imports) {
-      Package *other = prog.by_path[path];
-      if (other && other->name == name) return other;
-    }
-    return nullptr;
+    auto found = pkg.import_names.find(name);
+    if (found == pkg.import_names.end()) return nullptr;
+    return prog.by_path[found->second];
   }
 
   // A name is visible outside its package only when it starts uppercase.
@@ -462,6 +462,9 @@ struct Checker {
   }
 
   bool require_mutable(Node *n, const char *what) {
+    // `&x` hands over x itself.
+    if (n->kind == ND_UNARY && n->op == TK_AMP)
+      return require_mutable(n->lhs, what);
     Symbol *root = place_root(n);
     if (!root || root->is_mut) return true;
     if (n->kind == ND_IDENT)
@@ -513,6 +516,13 @@ struct Checker {
       } else if (e->op == TK_BANG && inner->kind == ND_BOOL_LIT) {
         e->kind = ND_BOOL_LIT;
         e->ival = inner->ival ? 0 : 1;
+      } else if (e->op == TK_TILDE && inner->kind == ND_INT_LIT) {
+        // Every bit of the type flipped, and only those: ~u8(0) is 255.
+        e->kind = ND_INT_LIT;
+        e->ival = ~inner->ival;
+        const Type *t = inner->type;
+        if (t && t->kind == TY_INT && !t->is_signed && t->bits < 64)
+          e->ival &= (uint64_t(1) << t->bits) - 1;
       } else {
         error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
         return nullptr;
@@ -734,23 +744,80 @@ struct Checker {
     }
   }
 
-  Access access_of(Node *value, bool writes) {
+  // The bindings whose memory a binding's value reaches: its own, or, for a
+  // copy of another's slice or pointer, that other's.
+  static void canonical(Symbol *s, std::vector<Symbol *> &out) {
+    const std::vector<Symbol *> &from = s->aliases;
+    for (Symbol *r : from.empty() ? std::vector<Symbol *>{s} : from)
+      if (std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+  }
+
+  void roots_of(Node *value, std::vector<Symbol *> &out) {
+    if (!value) return;
+    switch (value->kind) {
+    case ND_STRUCT_LIT:
+      for (Node *init : value->kids)
+        if (init->kind == ND_FIELD_INIT && init->rhs && init->rhs->type &&
+            shares_memory(init->rhs->type))
+          roots_of(init->rhs, out);
+      return;
+    case ND_ARRAY_LIT:
+      for (Node *kid : value->kids)
+        if (kid->type && shares_memory(kid->type)) roots_of(kid, out);
+      return;
+    case ND_TRY:
+      roots_of(value->lhs, out);
+      return;
+    case ND_ORELSE: case ND_CATCH:
+      roots_of(value->lhs, out);
+      roots_of(value->rhs, out);
+      return;
+    default:
+      if (Symbol *root = share_root(value))
+        if (!root->is_func) canonical(root, out);
+    }
+  }
+
+  // `ys := xs`, `p := &n`, `h := H{xs: xs}`: the new binding reaches memory
+  // another one names, and a task given one is touching the other. A binding
+  // reassigned keeps every memory it was ever given, its own included. A call
+  // answers with something of its own and is not followed.
+  void alias(Symbol *sym, Node *value, bool declared) {
+    if (!sym || !sym->type || !shares_memory(sym->type)) return;
+    std::vector<Symbol *> roots;
+    roots_of(value, roots);
+    roots.erase(std::remove(roots.begin(), roots.end(), sym), roots.end());
+    if (roots.empty()) return;
+    if (sym->aliases.empty() && !declared) sym->aliases.push_back(sym);
+    for (Symbol *r : roots)
+      if (std::find(sym->aliases.begin(), sym->aliases.end(), r) ==
+          sym->aliases.end())
+        sym->aliases.push_back(r);
+  }
+
+  std::vector<Access> access_of(Node *value, bool writes) {
     Access use;
     use.writes = writes;
     use.at = value->pos;
     Symbol *root = share_root(value);
-    if (!root) return use;
+    if (!root) return {use};
     const Type *reached = root->type;
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
     use.is_synced = ::is_atomic(reached) || ::is_shared(reached);
     if (root->chunk_of) {
       use.chunk = root;
-      use.root = root->chunk_of;
-    } else {
-      use.root = root;
+      root = root->chunk_of;
     }
-    return use;
+    std::vector<Symbol *> roots;
+    canonical(root, roots);
+    std::vector<Access> uses;
+    for (Symbol *r : roots) {
+      use.root = r;
+      use.via = r != root ? root : nullptr;
+      uses.push_back(use);
+    }
+    return uses;
   }
 
   static bool clashes(const Access &a, const Access &b) {
@@ -782,8 +849,11 @@ struct Checker {
         if (!clashes(use, other)) continue;
         const char *mine = use.writes ? "writes" : "reads";
         const char *theirs = other.writes ? "written" : "read";
-        error(use.at, "this %s '%s' while it is already %s concurrently",
-              mine, use.root->name.c_str(), theirs);
+        std::string through =
+            use.via ? std::string(", through '") + use.via->name + "',"
+                    : std::string();
+        error(use.at, "this %s '%s'%s while it is already %s concurrently",
+              mine, use.root->name.c_str(), through.c_str(), theirs);
         note(other.at, "the other use is here");
         if (use.root->type && use.root->type->kind == TY_SLICE)
           note(use.root->pos,
@@ -930,10 +1000,10 @@ struct Checker {
     });
     walk(body, [&](Node *n) {
       if (n->kind == ND_ASSIGN) {
-        record_use(access_of(n->lhs, true));
+        for (const Access &use : access_of(n->lhs, true)) record_use(use);
       } else if (n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
                  !written.count(n)) {
-        record_use(access_of(n, false));
+        for (const Access &use : access_of(n, false)) record_use(use);
       }
     });
   }
@@ -1613,6 +1683,17 @@ struct Checker {
       error(n->pos, "'%s' takes no arguments", name.c_str());
       return nullptr;
     }
+    // The list of waiters is only ever touched by whoever holds the guard
+    // alone; readers hold it together.
+    Symbol *root = share_root(field->lhs);
+    for (const HeldLock &open : held_locks) {
+      if (!root || open.root != root || !open.read) continue;
+      error(n->pos, "'%s' needs 'lock', not 'lock read': readers hold the value "
+                    "together, and only one holder may wait or wake",
+            name.c_str());
+      note(open.at, "the 'lock read' is here");
+      return nullptr;
+    }
     n->form = CALL_SHARED;
     n->ival = name == "Wait" ? 0 : (name == "Notify" ? 1 : 2);
     n->name = name;
@@ -1639,7 +1720,7 @@ struct Checker {
         n->form = 2; // dynamic: the function pointer comes from the vtable
         n->ival = i;
         Symbol probe{field->name, m.type, false,      false, false,
-                     nullptr,     nullptr, field->pos, -1,    nullptr};
+                     nullptr,     nullptr, field->pos, -1,    nullptr, {}};
         if (!check_args(n, &probe, 0)) return nullptr;
         return n->type = m.type->ret;
       }
@@ -2435,6 +2516,14 @@ struct Checker {
 
   Type *check_array_lit(Node *n) {
     Node *spec = n->type_expr;
+    if (spec->kind == ND_TYPE_FUNC) {
+      // `func() { ... }` in an expression is where a closure would be written.
+      error(n->pos,
+            "Sword has no closures: a function value names a function declared "
+            "at the top of a file, and state a callback needs goes in a struct "
+            "behind an interface");
+      return nullptr;
+    }
     if (spec->kind != ND_TYPE_ARRAY) {
       // `[]T{...}` would have to allocate, and Sword has no hidden allocation.
       error(n->pos,
@@ -2501,6 +2590,13 @@ struct Checker {
     case TK_MINUS:
       if (!is_numeric(operand)) {
         error(n->pos, "'-' needs a numeric value, got %s",
+              type_str(operand).c_str());
+        return nullptr;
+      }
+      return n->type = operand;
+    case TK_TILDE:
+      if (!is_integer(operand)) {
+        error(n->pos, "'~' needs an integer, got %s",
               type_str(operand).c_str());
         return nullptr;
       }
@@ -2636,6 +2732,13 @@ struct Checker {
             shown_name(sym->name).c_str());
       return nullptr;
     }
+    // As a value it would be an ordinary extern func, and a call through it
+    // would hold a scheduler thread with nothing on the page to say so.
+    if (sym->decl && sym->decl->is_blocking) {
+      error(n->pos, "'%s' is blocking, so it can only be called by name",
+            shown_name(sym->name).c_str());
+      return nullptr;
+    }
     if (sym->decl && sym->decl->is_weak) return n->type = types.opt(sym->type);
     return n->type = sym->type;
   }
@@ -2645,7 +2748,7 @@ struct Checker {
   Type *check_indirect_call(Node *n, Type *signature,
                             const std::string &shown) {
     Symbol probe{shown, signature, false, false, false, nullptr,
-                 nullptr, n->pos, -1, nullptr};
+                 nullptr, n->pos, -1, nullptr, {}};
     n->form = CALL_INDIRECT;
     n->name.clear();
     if (!check_args(n, &probe, 0)) return nullptr;
@@ -2718,6 +2821,7 @@ struct Checker {
       return;
     }
     if (!require_mutable(n->lhs, "assign to")) return;
+    if (n->op == TK_ASSIGN) alias(place_root(n->lhs), n->rhs, false);
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
                    n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
@@ -2874,12 +2978,17 @@ struct Checker {
       return;
     }
 
+    // A reader shares the value with other readers, so its binding is
+    // immutable and nothing reached through it can be written.
     push_scope();
-    n->sym = declare(n->name, types.ptr(owner->elem), true, n->name_pos);
-    held_locks.push_back({root, n->pos});
+    n->sym =
+        declare(n->name, types.ptr(owner->elem), !n->is_read, n->name_pos);
+    held_locks.push_back({root, n->pos, n->is_read});
     check_stmt(n->body);
     held_locks.pop_back();
     pop_scope();
+    // `if lock`: the other branch runs without the guard, and without the name.
+    check_stmt(n->els);
   }
 
   // A task is a call and nothing else: everything it can reach is written on
@@ -2934,9 +3043,10 @@ struct Checker {
       Type *param = callee->type->params[i];
       if (!shares_memory(param)) continue;
       Node *decl = callee->decl ? callee->decl->kids[i] : nullptr;
-      Access use = access_of(n->lhs->kids[i], decl && decl->is_mut);
-      use.repeated = in_loop;
-      record_use(use);
+      for (Access use : access_of(n->lhs->kids[i], decl && decl->is_mut)) {
+        use.repeated = in_loop;
+        record_use(use);
+      }
     }
   }
 
@@ -3059,6 +3169,8 @@ struct Checker {
     // The element is a copy, so it is its own value and immutable the same way
     // a range variable is. Write through the slice to change anything.
     n->sym = declare(n->name, elem, false, n->name_pos);
+    // An element that is itself a pointer reaches what the slice's owner does.
+    alias(n->sym, n->lhs, true);
     if (!n->name2.empty())
       n->index_sym = declare(n->name2, types.usize_ty, false, n->name_pos);
     return true;
@@ -3281,6 +3393,7 @@ struct Checker {
       }
       n->type = t;
       n->sym = declare(n->name, t, n->is_mut, n->pos);
+      alias(n->sym, n->rhs, true);
       break;
     }
 
@@ -3345,8 +3458,9 @@ struct Checker {
           return;
         }
         push_scope();
-        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)), false,
-                         n->pos);
+        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
+                         n->is_mut, n->pos);
+        alias(n->sym, n->cond, true);
         check_stmt(n->body);
         pop_scope();
         check_stmt(n->els);
@@ -3371,8 +3485,9 @@ struct Checker {
           pop_scope();
           return;
         }
-        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)), false,
-                         n->name_pos);
+        n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
+                         n->is_mut, n->name_pos);
+        alias(n->sym, n->cond, true);
         loop_depth++;
         check_stmt(n->body);
         loop_depth--;
@@ -3464,6 +3579,10 @@ struct Checker {
         error(n->lhs->pos,
               "%s cannot be discarded; handle it with 'try' or 'catch'",
               type_str(t).c_str());
+      else if (t && !does_something(n->lhs))
+        error(n->lhs->pos,
+              "this value is worked out and then thrown away; a statement on "
+              "its own has to call something, send or receive");
       break;
     }
 
@@ -3491,7 +3610,10 @@ struct Checker {
       return !n->is_range && !n->cond; // `for {}` only exits via return
     // Leaving a `lock` releases it on the way out, so a `return` inside one
     // counts the same as a `return` in a plain block.
-    case ND_LOCK: return always_returns(n->body);
+    case ND_LOCK:
+      if (n->is_try)
+        return n->els && always_returns(n->body) && always_returns(n->els);
+      return always_returns(n->body);
     // Only with a `default`: without one, falling past every case is a path.
     case ND_SWITCH: {
       // An exhaustive switch over an enum needs no default: the checker has
@@ -3521,9 +3643,26 @@ struct Checker {
     case ND_IF:
       return n->els && always_leaves(n->body) && always_leaves(n->els);
     case ND_LOCK:
+      if (n->is_try)
+        return n->els && always_leaves(n->body) && always_leaves(n->els);
       return always_leaves(n->body);
     default:
       return always_returns(n);
+    }
+  }
+
+  // What may stand alone as a statement: something with an effect. Separators
+  // are optional, so `c := a ~ b` reads as `c := a` and then `~b`, and only
+  // refusing the second keeps a typo from compiling into something else.
+  static bool does_something(Node *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case ND_CALL: case ND_SEND: case ND_RECV:
+      return true;
+    case ND_TRY: case ND_CATCH: case ND_ORELSE:
+      return does_something(e->lhs);
+    default:
+      return false;
     }
   }
 
@@ -3927,6 +4066,12 @@ struct Checker {
         sym->type->is_extern = true;
         c_boundary(sym->type, fn->pos, "extern '" + fn->name + "'");
         c_symbol(fn);
+        // A blocking call is made by name, through a wrapper that knows its
+        // signature, and C's `...` is settled at each call site, with nothing
+        // a wrapper could pass along.
+        if (fn->is_blocking && fn->is_c_variadic)
+          error(fn->pos, "'%s' cannot be blocking and take C's '...'",
+                fn->name.c_str());
       }
 
       if (fn->name == "main" && pkg.prefix.empty()) {
@@ -4488,6 +4633,538 @@ struct Determinism {
   }
 };
 
+// --- copies of read-only memory ----------------------------------------------
+
+// Copying a slice or a pointer copies the way to some memory, not the memory,
+// so a `mut` binding made from one that was lent read-only must not become a
+// way to write it. The binding stays what `mut` says — it can be reassigned and
+// its own fields written — and what it reaches through the copied part does not.
+//
+// Whether a call writes through what it is given is inferred for every function,
+// to a fixed point, the way det is: a method that only moves `p.at` may be called
+// on a parser that keeps a read-only `p.input`. A call through an interface or a
+// function value could be anything, so it is taken to write everything it may.
+struct Copies {
+  // A part of a binding's own storage, by the fields that lead there ("" for
+  // all of it), with the binding that lent the memory and where in that
+  // binding it came from — a parameter's `p.a` is not the whole of `p`.
+  struct Part {
+    std::string path;
+    Symbol *from;
+    std::string origin;
+  };
+  using Parts = std::vector<Part>;
+
+  // What a function may write through one of its parameters. For a pointer the
+  // path is in what it points at, and `deeper` means the write goes on through
+  // another pointer or slice found there; for anything else the path is in the
+  // value itself, and every write recorded goes through it.
+  struct Effect {
+    std::string path;
+    bool deeper;
+    bool operator==(const Effect &o) const {
+      return path == o.path && deeper == o.deeper;
+    }
+  };
+  struct Summary {
+    std::vector<std::vector<Effect>> writes;
+    std::vector<bool> returns; // whether the result may reach this parameter
+    bool operator==(const Summary &o) const {
+      return writes == o.writes && returns == o.returns;
+    }
+  };
+
+  // Where a place is: the binding it hangs off and the fields of that binding's
+  // own storage, then, once a pointer or a slice is crossed, the fields past it,
+  // and whether a second one was. `view` is an address of the place, or a slice
+  // of an array, which reaches all of it.
+  struct Reach {
+    Symbol *root = nullptr;
+    std::string path;
+    bool through = false;
+    std::string after;
+    bool deeper = false;
+    bool view = false;
+  };
+
+  // One argument, and what it lands in.
+  struct Arg {
+    Node *e;
+    bool receiver_value; // a method's receiver given by value: its address goes
+    size_t at;
+    bool writes;
+    Type *type;
+  };
+
+  Program &prog;
+  std::map<Symbol *, Node *> decls;
+  std::vector<Symbol *> order;
+  std::map<Symbol *, Summary> summaries;
+
+  // The function being walked. While summarising, its parameters are tracked as
+  // sources of their own and `out` collects what happens to them.
+  std::map<Symbol *, size_t> params;
+  std::map<Symbol *, Parts> parts;
+  Summary *out = nullptr;
+  bool reporting = false;
+  bool grew = false;
+
+  explicit Copies(Program &p) : prog(p) {}
+
+  static bool shares(const Type *t, int depth = 0) {
+    if (!t || depth > 8) return false;
+    switch (t->kind) {
+    case TY_SLICE: case TY_PTR: case TY_RAWPTR:
+      return true;
+    case TY_ARRAY: case TY_OPT:
+      return shares(t->elem, depth + 1);
+    case TY_STRUCT:
+      if (t->is_interface) return true;
+      for (const Field &f : t->fields)
+        if (shares(f.type, depth + 1)) return true;
+      return false;
+    default:
+      return false;
+    }
+  }
+
+  static std::string join(const std::string &at, const std::string &name) {
+    return at.empty() ? name : at + "." + name;
+  }
+
+  // Whether `inner` is `outer` or a field somewhere inside it.
+  static bool within(const std::string &inner, const std::string &outer) {
+    if (outer.empty() || inner == outer) return true;
+    return inner.size() > outer.size() &&
+           inner.compare(0, outer.size(), outer) == 0 &&
+           inner[outer.size()] == '.';
+  }
+
+  static void cross(Reach &r) {
+    if (r.through) r.deeper = true;
+    else r.through = true;
+  }
+
+  static void step(Reach &r, const std::string &name) {
+    if (!r.through) r.path = join(r.path, name);
+    else if (!r.deeper) r.after = join(r.after, name);
+  }
+
+  static bool reach(Node *n, Reach &r) {
+    if (!n) return false;
+    switch (n->kind) {
+    case ND_IDENT:
+      if (!n->sym || n->sym->is_func) return false;
+      r.root = n->sym;
+      return true;
+    case ND_FIELD: {
+      if (!reach(n->lhs, r)) return false;
+      const Type *base = n->lhs->type;
+      if (base && (base->kind == TY_PTR || base->kind == TY_RAWPTR)) cross(r);
+      step(r, n->name);
+      return true;
+    }
+    case ND_INDEX: {
+      if (!reach(n->lhs, r)) return false;
+      const Type *base = n->lhs->type;
+      if (!base || base->kind != TY_ARRAY) cross(r);
+      step(r, "[]");
+      return true;
+    }
+    case ND_SLICE_EXPR: {
+      if (!reach(n->lhs, r)) return false;
+      const Type *base = n->lhs->type;
+      if (base && base->kind == TY_ARRAY) r.view = true;
+      return true;
+    }
+    case ND_UNARY:
+      if (n->op != TK_STAR && n->op != TK_AMP) return false;
+      if (!reach(n->lhs, r)) return false;
+      if (n->op == TK_STAR) cross(r);
+      else r.view = true;
+      return true;
+    case ND_CONVERT:
+      return !n->kids.empty() && reach(n->kids[0], r);
+    default:
+      return false;
+    }
+  }
+
+  // A binding lent read-only is a source of its own; so is a parameter while
+  // its function is summarised. Either way, what was copied into it counts too.
+  Parts parts_of(Symbol *s) {
+    Parts own;
+    if (params.count(s) || !s->is_mut) own.push_back({"", s, ""});
+    auto at = parts.find(s);
+    if (at != parts.end())
+      own.insert(own.end(), at->second.begin(), at->second.end());
+    return own;
+  }
+
+  void add_part(Symbol *s, const Part &part) {
+    Parts &list = parts[s];
+    for (const Part &had : list)
+      if (had.path == part.path && had.from == part.from &&
+          had.origin == part.origin)
+        return;
+    list.push_back(part);
+    grew = true;
+  }
+
+  // Where in its own source the value at `r` sits, when the source is `r.root`
+  // itself: past the pointer for a pointer parameter, in the value otherwise.
+  static std::string origin_of(const Reach &r) {
+    bool pointer = r.root->type && r.root->type->kind == TY_PTR;
+    if (pointer) return r.through ? r.after : "";
+    return r.path;
+  }
+
+  // The read-only parts of the value at `r`, relative to that value.
+  void reached_parts(const Reach &r, const std::string &at, Parts &got) {
+    for (const Part &part : parts_of(r.root)) {
+      std::string origin = part.from == r.root ? origin_of(r) : part.origin;
+      if (within(r.path, part.path)) {
+        got.push_back({at, part.from, origin});
+      } else if (!r.through && within(part.path, r.path)) {
+        // Inside what is copied, a read-only part stays where it was, unless
+        // the value is an address, which reaches the whole place.
+        std::string rest = r.path.empty()
+                               ? part.path
+                               : part.path.substr(r.path.size() + 1);
+        got.push_back({r.view ? at : join(at, rest), part.from, origin});
+      }
+    }
+  }
+
+  void value_parts(Node *n, const std::string &at, Parts &got) {
+    if (!n || !n->type || !shares(n->type)) return;
+    switch (n->kind) {
+    case ND_STRUCT_LIT:
+      for (Node *init : n->kids)
+        if (init->kind == ND_FIELD_INIT)
+          value_parts(init->rhs, join(at, init->name), got);
+      return;
+    case ND_ARRAY_LIT:
+      for (Node *kid : n->kids) value_parts(kid, join(at, "[]"), got);
+      return;
+    case ND_TRY:
+      value_parts(n->lhs, at, got);
+      return;
+    case ND_ORELSE: case ND_CATCH:
+      value_parts(n->lhs, at, got);
+      value_parts(n->rhs, at, got);
+      return;
+    case ND_CALL: {
+      // What the callee may hand back of its arguments.
+      std::vector<Arg> args;
+      bool known = false;
+      Symbol *callee = decode(n, args, known);
+      for (const Arg &arg : args) {
+        if (known && !summaries[callee].returns[arg.at]) continue;
+        Parts theirs;
+        if (arg.receiver_value) {
+          Reach r;
+          if (!reach(arg.e, r)) continue;
+          r.view = true;
+          reached_parts(r, "", theirs);
+        } else {
+          value_parts(arg.e, "", theirs);
+        }
+        for (const Part &part : theirs)
+          got.push_back({at, part.from, part.origin});
+      }
+      return;
+    }
+    default:
+      break;
+    }
+    Reach r;
+    if (reach(n, r)) reached_parts(r, at, got);
+  }
+
+  // The arguments of a call with the parameters they land in, and the function
+  // when the call names one whose summary is known.
+  Symbol *decode(Node *n, std::vector<Arg> &args, bool &known) {
+    known = false;
+    Type *sig = nullptr;
+    Symbol *sym = nullptr;
+    size_t skip = 0;
+    if (n->form == 0 || n->form == 1) { // a function, or a method
+      sym = n->sym;
+      if (!sym || !sym->type || sym->type->kind != TY_FUNC) return nullptr;
+      sig = sym->type;
+      known = summaries.count(sym) > 0;
+      if (n->form == 1 && n->lhs && n->lhs->lhs) {
+        Node *recv = n->lhs->lhs;
+        bool mut = sym->decl && !sym->decl->kids.empty() &&
+                   sym->decl->kids[0]->is_mut;
+        bool pointer = recv->type && recv->type->kind == TY_PTR;
+        args.push_back({recv, !pointer, 0, mut,
+                        sig->params.empty() ? nullptr : sig->params[0]});
+        skip = 1;
+      }
+    } else if (n->form == 2) { // through an interface
+      Type *owner = n->lhs && n->lhs->lhs ? n->lhs->lhs->type : nullptr;
+      if (owner && owner->kind == TY_PTR) owner = owner->elem;
+      if (!owner || n->ival >= owner->methods.size()) return nullptr;
+      sig = owner->methods[n->ival].type;
+    } else if (n->form == 4) { // through a function value
+      sig = n->lhs ? n->lhs->type : nullptr;
+    }
+    if (!sig || sig->kind != TY_FUNC) return nullptr;
+    for (size_t i = 0; i < n->kids.size(); i++) {
+      size_t at = i + skip;
+      if (at >= sig->params.size()) break;
+      Node *param = sym && sym->decl && at < sym->decl->kids.size()
+                        ? sym->decl->kids[at]
+                        : nullptr;
+      if (param && param->is_variadic) break;
+      bool mut = param ? param->is_mut
+                       : at < sig->param_mut.size() && sig->param_mut[at];
+      args.push_back({n->kids[i], false, at, mut, sig->params[at]});
+    }
+    return sym;
+  }
+
+  void record(Symbol *param, const Reach &r) {
+    if (!out || !r.through) return; // the parameter's own copy, reassigned
+    size_t k = params[param];
+    bool pointer = param->type && param->type->kind == TY_PTR;
+    Effect e = pointer ? Effect{r.after, r.deeper} : Effect{r.path, true};
+    for (const Effect &had : out->writes[k])
+      if (had == e) return;
+    out->writes[k].push_back(e);
+  }
+
+  // A parameter's memory written, or kept, by way of a copy of it.
+  void escaped(Symbol *param, const std::string &origin) {
+    if (!out || !params.count(param)) return;
+    Effect e{origin, true};
+    for (const Effect &had : out->writes[params[param]])
+      if (had == e) return;
+    out->writes[params[param]].push_back(e);
+  }
+
+  // A write at `r`: through what it crossed when `r.through`, or else into the
+  // binding's own storage, which is the binding's to write.
+  void written(Node *at, const Reach &r, const char *what) {
+    if (params.count(r.root)) record(r.root, r);
+    if (!r.through) return;
+    for (const Part &part : parts_of(r.root)) {
+      Symbol *from = part.from;
+      if (from == r.root) continue; // its own parameter, or immutable: checked
+      if (!within(r.path, part.path) && !within(part.path, r.path)) continue;
+      if (out) {
+        escaped(from, part.origin);
+        continue;
+      }
+      if (!reporting) return;
+      error(at->pos,
+            "cannot %s this: '%s' was copied from immutable binding '%s', and "
+            "what it reaches through that copy is read-only",
+            what, r.root->name.c_str(), from->name.c_str());
+      note(from->pos, "declare it with 'mut' to allow mutation");
+      return;
+    }
+  }
+
+  // Storing a value somewhere this cannot follow — through a pointer, into a
+  // slice — would lose track of what it may reach, so a value with read-only
+  // parts can only go into a binding's own storage.
+  void store(Node *place, Node *value) {
+    Parts got;
+    value_parts(value, "", got);
+    if (got.empty()) return;
+    Reach r;
+    if (reach(place, r) && !r.through && !r.view &&
+        (r.root->is_mut || params.count(r.root))) {
+      for (const Part &part : got)
+        add_part(r.root, {join(r.path, part.path), part.from, part.origin});
+      return;
+    }
+    if (out) {
+      for (const Part &part : got) escaped(part.from, part.origin);
+      return;
+    }
+    if (!reporting) return;
+    error(value->pos,
+          "this reaches memory through immutable binding '%s', and storing it "
+          "here would let that memory be written",
+          got[0].from->name.c_str());
+    note(got[0].from->pos, "declare it with 'mut' to allow mutation");
+  }
+
+  void bind(Symbol *sym, Node *value) {
+    if (!sym) return;
+    Parts got;
+    value_parts(value, "", got);
+    for (const Part &part : got) add_part(sym, part);
+  }
+
+  // A `mut` parameter, or a mutating method, writes whatever its summary says
+  // it does, which lands in the caller here.
+  void call(Node *n) {
+    std::vector<Arg> args;
+    bool known = false;
+    Symbol *callee = decode(n, args, known);
+    for (const Arg &arg : args) {
+      if (!arg.writes) continue;
+      std::vector<Effect> effects =
+          known ? summaries[callee].writes[arg.at]
+                : std::vector<Effect>{Effect{"", true}};
+      bool by_address = arg.receiver_value ||
+                        (arg.e->kind == ND_UNARY && arg.e->op == TK_AMP);
+      Node *place = arg.e->kind == ND_UNARY && arg.e->op == TK_AMP
+                        ? arg.e->lhs
+                        : arg.e;
+      const char *what =
+          arg.receiver_value ? "call a mutating method on" : "pass";
+      Reach r;
+      if (!reach(place, r)) continue;
+      bool pointer = arg.type && arg.type->kind == TY_PTR;
+      for (const Effect &e : effects) {
+        Reach w = r;
+        if (by_address) {
+          // The callee writes the place itself, at the effect's path.
+          if (!w.through) {
+            if (!e.deeper) continue; // the caller's own storage
+            w.path = join(w.path, e.path);
+            w.through = true;
+          } else {
+            if (!w.deeper) w.after = join(w.after, e.path);
+            w.deeper = w.deeper || e.deeper;
+          }
+        } else if (pointer) {
+          // The pointer is a copy; what it points at is not.
+          if (!w.through) {
+            w.through = true;
+            w.after = e.path;
+            w.deeper = e.deeper;
+          } else {
+            w.deeper = true;
+          }
+        } else {
+          if (!w.through) {
+            w.path = join(w.path, e.path);
+            w.through = true;
+          } else {
+            w.deeper = true;
+          }
+        }
+        written(arg.e, w, what);
+      }
+    }
+  }
+
+  void visit(Node *n) {
+    if (!n) return;
+    switch (n->kind) {
+    case ND_VAR:
+      visit(n->rhs);
+      bind(n->sym, n->rhs);
+      return;
+    case ND_ASSIGN: {
+      visit(n->lhs);
+      visit(n->rhs);
+      Reach r;
+      if (reach(n->lhs, r)) written(n->lhs, r, "assign to");
+      if (n->op == TK_ASSIGN && n->lhs->type && shares(n->lhs->type))
+        store(n->lhs, n->rhs);
+      return;
+    }
+    case ND_IF:
+      if (!n->name.empty()) bind(n->sym, n->cond);
+      break;
+    case ND_FOR:
+      if (n->sym) bind(n->sym, n->form == 2 ? n->cond : n->lhs);
+      break;
+    case ND_CALL:
+      call(n);
+      break;
+    case ND_RETURN:
+      if (out && n->lhs) {
+        Parts got;
+        value_parts(n->lhs, "", got);
+        for (const Part &part : got)
+          if (params.count(part.from)) out->returns[params[part.from]] = true;
+      }
+      break;
+    default:
+      break;
+    }
+    for (Node *kid : n->kids) visit(kid);
+    visit(n->lhs);
+    visit(n->rhs);
+    visit(n->cond);
+    visit(n->body);
+    visit(n->els);
+  }
+
+  void walk(Symbol *sym, bool summarising) {
+    Node *decl = decls[sym];
+    params.clear();
+    parts.clear();
+    if (summarising)
+      for (size_t k = 0; k < decl->kids.size(); k++)
+        if (decl->kids[k]->sym) params[decl->kids[k]->sym] = k;
+
+    // What each binding holds settles first; a loop may copy into one after
+    // the write that goes through it.
+    out = nullptr;
+    reporting = false;
+    for (int round = 0; round < 64; round++) {
+      grew = false;
+      visit(decl->body);
+      if (!grew) break;
+    }
+
+    if (summarising) {
+      Summary now;
+      now.writes.assign(decl->kids.size(), {});
+      now.returns.assign(decl->kids.size(), false);
+      out = &now;
+      visit(decl->body);
+      out = nullptr;
+      summaries[sym] = now;
+    } else {
+      reporting = true;
+      visit(decl->body);
+      reporting = false;
+    }
+  }
+
+  void take(Node *decl) {
+    if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern || !decl->body)
+      return;
+    if (!decl->tparams.empty()) return; // only instances are compiled
+    if (decls.count(decl->sym)) return;
+    decls[decl->sym] = decl;
+    order.push_back(decl->sym);
+  }
+
+  void run() {
+    for (Package *pkg : prog.order) {
+      for (Node *decl : pkg->unit->kids) take(decl);
+      for (Node *decl : pkg->instances) take(decl);
+    }
+    for (Symbol *sym : order) {
+      size_t n = decls[sym]->kids.size();
+      summaries[sym].writes.assign(n, {});
+      summaries[sym].returns.assign(n, false);
+    }
+    // Summaries only grow, and only from what the program says, so this ends.
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (Symbol *sym : order) {
+        Summary before = summaries[sym];
+        walk(sym, true);
+        if (!(summaries[sym] == before)) changed = true;
+      }
+    }
+    for (Symbol *sym : order) walk(sym, false);
+  }
+};
+
 } // namespace
 
 bool check(Program &prog, TypeTable &types) {
@@ -4512,5 +5189,6 @@ bool check(Program &prog, TypeTable &types) {
   // Last, over the whole program: whether a function answers the same thing
   // every time is not a question about one package.
   Determinism(prog, types).run();
+  Copies(prog).run();
   return error_count() == 0;
 }

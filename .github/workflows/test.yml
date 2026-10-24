@@ -40,13 +40,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The packages themselves, kept between runs. Emacs alone is 54 MB from the
+      # universe pocket, which the Azure mirror has served at 23 kB/s: a job spent
+      # 26 of its 30 minutes downloading it. The cache comes from GitHub instead,
+      # and a run saves what it fetched for the next one.
+      - name: Cache of downloaded packages (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-
+
       # clang is needed to run the compiler, not only to build it. Emacs is here
       # so the indentation check has both of the editors that implement the rule.
+      # Without --no-install-recommends Emacs brings a mail server and Guile along.
       - name: Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev vim emacs-nox
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get install -y --no-install-recommends \
+            -o Dir::Cache::Archives="$HOME/apt-archives" \
+            clang libssl-dev vim emacs-nox
+          sudo chown -R "$USER" ~/apt-archives
 
       - run: make
       - run: make test
@@ -69,7 +86,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
 
       # ThreadSanitizer reserves fixed ranges of the address space, and the
       # runners randomise mappings more widely than the version of it that
@@ -89,6 +106,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           sudo apt-get update
-          sudo apt-get install -y clang libssl-dev
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
       - run: make
       - run: ./tests/docs.sh

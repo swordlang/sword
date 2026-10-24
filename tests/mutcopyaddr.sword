@@ -1,0 +1,13 @@
+// expect-error: cannot pass immutable binding 'x'
+// `&x` hands over x itself, so it needs the same right to write that passing
+// x would.
+
+func bump(mut p *i64) {
+    *p += 1
+}
+
+func main() int {
+    x := 5
+    bump(&x)
+    return int(x)
+}

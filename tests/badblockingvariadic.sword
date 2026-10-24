@@ -1,0 +1,9 @@
+// expect-error: 'printf' cannot be blocking and take C's '...'
+// How the extra arguments travel is settled at each call site, and the call is
+// made from a wrapper that has only the declared ones.
+
+extern blocking func printf(format [*]u8, ...) i32
+
+func main() int {
+    return 0
+}

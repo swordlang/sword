@@ -1,0 +1,26 @@
+// expect-error: cannot call a mutating method on this: 'p' was copied from immutable binding 'input'
+// What a method writes through its receiver is inferred: poke writes through
+// the input the parser was given read-only, and it does so from two calls away.
+
+struct parser {
+    input []u8
+    at    u64
+}
+
+func (mut p *parser) poke() {
+    p.input[0] = 1
+}
+
+func (mut p *parser) step() {
+    p.at += 1
+    p.poke()
+}
+
+func parse(input []u8) {
+    mut p := parser{input: input, at: 0}
+    p.step()
+}
+
+func main() int {
+    return 0
+}

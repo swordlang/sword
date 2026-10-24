@@ -1,0 +1,28 @@
+// expect: 42
+// `if mut` and `for mut` bind the unwrapped value to a name that can be
+// written, the way `mut x :=` does anywhere else.
+
+struct Counter { n i64 }
+func (mut c *Counter) Bump() { c.n += 1 }
+func main() int {
+    mut maybe ?Counter = Counter{n: 40}
+    if mut c := maybe {
+        c.Bump()
+        c.n += 1
+        maybe = c
+    }
+    mut left ?i64 = 3
+    mut total i64 = 0
+    for mut k := left {
+        k -= 1
+        total += 1
+        left = nonzero(k)
+    }
+    return int((maybe orelse Counter{n: 0}).n) + int(total) - 3
+}
+func nonzero(k i64) ?i64 {
+    if k == 0 {
+        return nil
+    }
+    return k
+}

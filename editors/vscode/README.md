@@ -1,6 +1,6 @@
 # Sword for Visual Studio Code
 
-Support for [Sword](https://github.com/PedroTessaro/sword), a compiled systems
+Support for [Sword](https://github.com/swordlang/sword), a compiled systems
 language with Go's syntax and Zig's memory model, whose compiler refuses a
 program where two tasks can touch the same memory at once.
 
@@ -36,14 +36,14 @@ column of stars on.
 Sword itself, installed so that `shield` and `swordls` are on your PATH:
 
 ```sh
-git clone https://github.com/PedroTessaro/sword
+git clone https://github.com/swordlang/sword
 cd sword
 make
 make install
 ```
 
 That puts both in `~/.local/bin`. The
-[install guide](https://github.com/PedroTessaro/sword/blob/main/docs/install.md)
+[install guide](https://github.com/swordlang/sword/blob/main/docs/install.md)
 has the details and what the build needs; Sword builds on macOS and Linux.
 
 Without `swordls` the extension says so once and keeps the grammar's colouring.
@@ -65,6 +65,6 @@ with Sword. Align those by hand.
 
 ## Learning the language
 
-The [tour](https://github.com/PedroTessaro/sword/blob/main/docs/tour.md) starts
+The [tour](https://github.com/swordlang/sword/blob/main/docs/tour.md) starts
 at hello world and gets to parallel code, and every section is a program you can
 run.

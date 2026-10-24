@@ -1,0 +1,16 @@
+// expect-error: 't' is already locked here
+// Reading what this task already holds to write would wait for itself.
+
+struct Table {
+    n u64
+}
+
+func main() int {
+    mut t := shared[Table](Table{n: 0})
+    lock c := t {
+        lock read d := t {
+            c.n = d.n
+        }
+    }
+    return 0
+}

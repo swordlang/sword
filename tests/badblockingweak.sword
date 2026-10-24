@@ -1,0 +1,9 @@
+// expect-error: an extern function is weak or blocking, not both
+// They share one place in the declaration: a weak function is called through
+// its value, and a blocking one only by name.
+
+extern weak blocking func getentropy(buf [*]u8, n u64) i32
+
+func main() int {
+    return 0
+}

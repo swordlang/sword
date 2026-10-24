@@ -155,7 +155,9 @@ func main() int {
 
 Drop the `mut` from `view` and the call fails to compile: handing a value to a
 `mut` parameter is granting write access, and only something you can write can
-grant it.
+grant it. Copying it into a `mut` binding does not get around that: the copy
+can be reassigned, but what it reaches is still the memory `view` could only
+read.
 
 ## Control flow
 
@@ -1448,7 +1450,7 @@ package strings
 import "std/testing"
 
 func TestTrimSpace(mut t *testing.T) !void {
-    try t.Equal(TrimSpace("  ada  "), "ada")
+    t.Equal(TrimSpace("  ada  "), "ada")
 }
 ```
 

@@ -1,0 +1,7 @@
+// expect-error: Sword has no closures: a function value names a function declared
+// Braces after a function type are where a closure would go.
+
+func main() int {
+    f := func(i64) i64 { 1 }
+    return 0
+}

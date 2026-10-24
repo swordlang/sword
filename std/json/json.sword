@@ -436,87 +436,154 @@ const MaxDepth = 32
 
 // A streaming writer: it tracks whether the level it is in has had anything
 // written yet, which is all it needs to put the commas in the right places.
+//
+// No write asks for `try`. The first thing that goes wrong is kept, every write
+// after it does nothing, and `Err` says what it was once the document is done:
+//
+//     w.BeginObject()
+//     w.Key("name")
+//     w.Str(user.name)
+//     w.EndObject()
+//     try w.Err()
 struct Writer {
     out    *bytes.Buffer
     depth  u64
     filled [MaxDepth]bool
+    first  ?error
 }
 
 func NewWriter(mut out *bytes.Buffer) Writer {
-    return Writer{out: out, depth: 0, filled: [MaxDepth]bool{}}
+    return Writer{out: out, depth: 0, filled: [MaxDepth]bool{}, first: nil}
 }
 
-func (mut w *Writer) separate() !void {
+// The first thing that went wrong, if anything did.
+func (w *Writer) Err() !void {
+    if e := w.first {
+        return e
+    }
+}
+
+func (mut w *Writer) keep(e error) {
+    if w.first == nil {
+        w.first = e
+    }
+}
+
+func (mut w *Writer) put(c u8) {
+    w.out.WriteByte(c) catch |e| {
+        w.keep(e)
+    }
+}
+
+func (mut w *Writer) separate() {
     if w.filled[w.depth] {
-        try w.out.WriteByte(44)
+        w.put(44)
     }
     w.filled[w.depth] = true
 }
 
-func (mut w *Writer) open(c u8) !void {
-    if w.depth + 1 >= MaxDepth {
-        return error.TooDeep
+func (mut w *Writer) open(c u8) {
+    if w.first != nil {
+        return
     }
-    try w.separate()
-    try w.out.WriteByte(c)
+    if w.depth + 1 >= MaxDepth {
+        w.keep(error.TooDeep)
+        return
+    }
+    w.separate()
+    w.put(c)
     w.depth += 1
     w.filled[w.depth] = false
 }
 
-func (mut w *Writer) close(c u8) !void {
+func (mut w *Writer) close(c u8) {
+    if w.first != nil {
+        return
+    }
     if w.depth == 0 {
-        return error.Unbalanced
+        w.keep(error.Unbalanced)
+        return
     }
     w.depth -= 1
-    try w.out.WriteByte(c)
+    w.put(c)
 }
 
-func (mut w *Writer) BeginObject() !void {
-    try w.open(123)
+func (mut w *Writer) BeginObject() {
+    w.open(123)
 }
 
-func (mut w *Writer) EndObject() !void {
-    try w.close(125)
+func (mut w *Writer) EndObject() {
+    w.close(125)
 }
 
-func (mut w *Writer) BeginArray() !void {
-    try w.open(91)
+func (mut w *Writer) BeginArray() {
+    w.open(91)
 }
 
-func (mut w *Writer) EndArray() !void {
-    try w.close(93)
+func (mut w *Writer) EndArray() {
+    w.close(93)
 }
 
 // A key is written without a separator of its own: the value that follows
 // belongs to the same comma.
-func (mut w *Writer) Key(name string) !void {
-    try w.separate()
-    try fmt.Quote(w.out, name)
-    try w.out.WriteByte(58)
+func (mut w *Writer) Key(name string) {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    fmt.Quote(w.out, name) catch |e| {
+        w.keep(e)
+    }
+    w.put(58)
     w.filled[w.depth] = false
 }
 
-func (mut w *Writer) Str(s string) !void {
-    try w.separate()
-    try fmt.Quote(w.out, s)
+func (mut w *Writer) Str(s string) {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    fmt.Quote(w.out, s) catch |e| {
+        w.keep(e)
+    }
 }
 
-func (mut w *Writer) Int(v i64) !void {
-    try w.separate()
-    try fmt.I64(w.out, v)
+func (mut w *Writer) Int(v i64) {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    fmt.I64(w.out, v) catch |e| {
+        w.keep(e)
+    }
 }
 
-func (mut w *Writer) Number(v f64, decimals u64) !void {
-    try w.separate()
-    try fmt.F64(w.out, v, decimals)
+func (mut w *Writer) Number(v f64, decimals u64) {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    fmt.F64(w.out, v, decimals) catch |e| {
+        w.keep(e)
+    }
 }
 
-func (mut w *Writer) Bool(v bool) !void {
-    try w.separate()
-    try fmt.Bool(w.out, v)
+func (mut w *Writer) Bool(v bool) {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    fmt.Bool(w.out, v) catch |e| {
+        w.keep(e)
+    }
 }
 
-func (mut w *Writer) Null() !void {
-    try w.separate()
-    try w.out.WriteString("null")
+func (mut w *Writer) Null() {
+    if w.first != nil {
+        return
+    }
+    w.separate()
+    w.out.WriteString("null") catch |e| {
+        w.keep(e)
+    }
 }

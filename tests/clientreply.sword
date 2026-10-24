@@ -17,24 +17,24 @@ struct Site {
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
     if req.Path == "/here" {
         res.Status = 302
-        try res.SetHeader("Location", "/there")
+        res.SetHeader("Location", "/there")
         return
     }
     if req.Path == "/far" {
         res.Status = 301
         // Absolute, which a redirect is allowed to be.
-        try res.SetHeader("Location", "http://127.0.0.1:0/there")
+        res.SetHeader("Location", "http://127.0.0.1:0/there")
         return
     }
     if req.Path == "/loop" {
         res.Status = 302
-        try res.SetHeader("Location", "/loop")
+        res.SetHeader("Location", "/loop")
         return
     }
     // Chunked, with no length anybody could have known in advance.
-    try res.Stream(200)
+    res.Stream(200)
     for i in 0..3 {
-        try res.Printf("piece{} ", i)
+        res.Printf("piece{} ", i)
     }
 }
 

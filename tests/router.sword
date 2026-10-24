@@ -16,7 +16,7 @@ struct Users {
 func (h *Users) Serve(req *http.Request, mut res *http.Response) !void {
     mut room := [64]u8{}
     name := try http.Unescape(req.Query("name"), room[..])
-    try res.Printf("{}/{}", req.Param("id"), name)
+    res.Printf("{}/{}", req.Param("id"), name)
     res.Status = 200
 }
 
@@ -25,7 +25,7 @@ struct Health {
 }
 
 func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Text(200, "ok")
+    res.Text(200, "ok")
 }
 
 func serve(s *http.Server, m *http.Mux) !void {

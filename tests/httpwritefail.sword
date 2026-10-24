@@ -1,0 +1,81 @@
+// expect: 42
+// expect-output: a write that failed is answered for
+// A handler writes without `try`; the first write that fails is kept and the
+// server answers for it once the handler returns. Here the body outgrows the
+// connection's memory before the head is sent, so the client gets a 500 and the
+// server counts a failure, and the next request on its own is answered as usual.
+
+import "std/http"
+import "std/io"
+import "std/net"
+import "std/strings"
+
+struct Big {
+    n u64
+}
+
+func (h *Big) Serve(req *http.Request, mut res *http.Response) !void {
+    if strings.Equal(req.Path, "/small") {
+        res.Text(200, "small")
+        return
+    }
+    // Far more than a connection's memory holds, written as a handler would.
+    res.SetHeader("Content-Type", "text/plain")
+    for i in 0..4096 {
+        res.WriteString("0123456789abcdef0123456789abcdef")
+    }
+}
+
+func serve(s *http.Server, h *Big) !void {
+    try s.ServeWith(h, 8)
+}
+
+func ask(port i32, request string, mut into []u8) !u64 {
+    mut c := try net.Dial("127.0.0.1", port)
+    try c.WriteString(request)
+    mut have u64 = 0
+    for {
+        n := c.Read(into[have..into.len]) catch 0
+        if n == 0 {
+            break
+        }
+        have += n
+    }
+    c.Close()
+    return have
+}
+
+func client(port i32, mut seen *atomic[u64], s *http.Server) !void {
+    mut room := [4096]u8{}
+    n := ask(port, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", room[..]) catch 0
+    if strings.Contains(string(room[0..n]), "500 ") {
+        seen.Add(1)
+    }
+    m := ask(port, "GET /small HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", room[..]) catch 0
+    reply := string(room[0..m])
+    if strings.Contains(reply, "200 OK") && strings.Contains(reply, "small") {
+        seen.Add(1)
+    }
+    s.Close()
+}
+
+func main() !int {
+    mut h := Big{n: 0}
+    mut srv := try http.Listen(0)
+    port := srv.Port()
+    mut seen := atomic[u64](0)
+    scope {
+        spawn serve(&srv, &h)
+        spawn client(port, &seen, &srv)
+    }
+    if seen.Load() != 2 {
+        try io.Printf("{} of 2 answers as expected\n", seen.Load())
+        return 1
+    }
+    if srv.Failed() != 1 {
+        try io.Printf("{} failures counted, want 1\n", srv.Failed())
+        return 2
+    }
+    try io.Print("a write that failed is answered for\n")
+    return 42
+}

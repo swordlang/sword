@@ -106,6 +106,10 @@ struct Node {
   bool is_hidden = false;
   bool is_errdefer = false;
   bool is_parallel = false; // ND_FOR spread across workers
+  // ND_LOCK: `lock read`, one of any number of readers; and `if lock`, which
+  // takes the guard only if it is free and runs `els` when it is not.
+  bool is_read = false;
+  bool is_try = false;
   // ND_PARAM: gathers the rest of the arguments. On a call or an argument:
   // the gathered list is being passed straight through.
   bool is_variadic = false;
@@ -123,6 +127,9 @@ struct Node {
   // and on nothing else — not on the schedule, the thread count, the clock or
   // an address. The compiler checks it and it changes no generated code.
   bool is_det = false;
+  // ND_FUNC on an extern: `blocking`, a C call that may hold its thread for a
+  // long time, made on the io pool so a scheduler thread is not the one held.
+  bool is_blocking = false;
   int form = 0;    // return/call/for: which shape the checker settled on
   int reduce_kind = 0;    // which fold a parallel loop combines its pieces with
   // `reduce(f: acc)`: the function that combines two partial answers. The
@@ -163,6 +170,10 @@ struct Symbol {
   Pos pos;
   int slot = -1;         // IR value holding this local's address
   Node *decl = nullptr;  // for functions: the declaration, for parameter info
+  // For a binding that holds a copy of another's slice or pointer: the bindings
+  // whose memory it reaches, so the race checker sees one memory under two
+  // names. Empty when the binding's memory is its own.
+  std::vector<Symbol *> aliases;
 };
 
 // Owns the nodes and the symbols they point at, so both outlive the passes
@@ -198,6 +209,7 @@ struct Ast {
     copy->is_variadic = src->is_variadic;
     copy->is_c_variadic = src->is_c_variadic;
     copy->is_det = src->is_det;
+    copy->is_blocking = src->is_blocking;
     copy->lhs = clone(src->lhs);
     copy->rhs = clone(src->rhs);
     copy->cond = clone(src->cond);
@@ -212,7 +224,7 @@ struct Ast {
   Symbol *make_symbol(const std::string &name, Type *type, bool is_mut,
                       Pos pos) {
     symbols.push_back(Symbol{name, type, is_mut, false, false, nullptr,
-                             nullptr, pos, -1});
+                             nullptr, pos, -1, nullptr, {}});
     return &symbols.back();
   }
 

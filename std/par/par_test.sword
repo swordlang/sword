@@ -35,7 +35,7 @@ func TestScan(mut t *testing.T) !void {
     for i in 0..many {
         running += xs[i]
         if out[i] != running {
-            try t.Failf("at {}: got {} want {}", i, out[i], running)
+            t.Failf("at {}: got {} want {}", i, out[i], running)
             return
         }
     }
@@ -43,17 +43,17 @@ func TestScan(mut t *testing.T) !void {
     one := [1]i64{5}
     mut single := [1]i64{}
     try Scan[i64](one[..], single[..], add)
-    try t.Equal(single[0], i64(5))
+    t.Equal(single[0], i64(5))
 
     empty := [0]i64{}
     mut none := [0]i64{}
     try Scan[i64](empty[..], none[..], add)
 
     Scan[i64](one[..], none[..], add) catch |e| {
-        try t.Equal(e, error.LengthMismatch)
+        t.Equal(e, error.LengthMismatch)
         return
     }
-    try t.Failf("scanned into an output of the wrong length")
+    t.Failf("scanned into an output of the wrong length")
 }
 
 func TestKeepKeepsTheOrder(mut t *testing.T) !void {
@@ -64,20 +64,20 @@ func TestKeepKeepsTheOrder(mut t *testing.T) !void {
         xs[i] = i64(many - i)
     }
     n := try Keep[i64](&sys, xs, out, even)
-    try t.Equal(n, u64(many / 2))
+    t.Equal(n, u64(many / 2))
     for i in 0..n {
         if out[i] != i64(many) - i64(i) * 2 {
-            try t.Failf("at {}: got {}", i, out[i])
+            t.Failf("at {}: got {}", i, out[i])
             return
         }
     }
 
     mut small := [3]i64{}
     Keep[i64](&sys, xs, small[..], even) catch |e| {
-        try t.Equal(e, error.ShortOutput)
+        t.Equal(e, error.ShortOutput)
         return
     }
-    try t.Failf("kept more than there was room for")
+    t.Failf("kept more than there was room for")
 }
 
 func TestMinIndexTakesTheFirst(mut t *testing.T) !void {
@@ -90,7 +90,7 @@ func TestMinIndexTakesTheFirst(mut t *testing.T) !void {
     xs[70000] = -1
     xs[3000] = -1
     xs[90000] = -1
-    try t.Equal(MinIndex[i64](xs, lessI64) orelse 0, u64(3000))
+    t.Equal(MinIndex[i64](xs, lessI64) orelse 0, u64(3000))
     empty := [0]i64{}
     try t.Require(MinIndex[i64](empty[..], lessI64) == nil)
 }
@@ -119,7 +119,7 @@ func TestSortIsStable(mut t *testing.T) !void {
             a := xs[i - 1]
             b := xs[i]
             if a.Key > b.Key || (a.Key == b.Key && a.Place > b.Place) {
-                try t.Failf("n {} at {}: {}/{} before {}/{}", n, i, a.Key,
+                t.Failf("n {} at {}: {}/{} before {}/{}", n, i, a.Key,
                             a.Place, b.Key, b.Place)
                 return
             }

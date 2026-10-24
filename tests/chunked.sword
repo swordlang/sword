@@ -16,15 +16,15 @@ struct Echo {
 
 func (h *Echo) Serve(req *http.Request, mut res *http.Response) !void {
     if req.Path == "/stream" {
-        try res.Stream(200)
+        res.Stream(200)
         for i in 0..4 {
-            try res.Printf("part{}\n", i)
+            res.Printf("part{}\n", i)
         }
         return
     }
     // Whatever arrived, back out again — which only says anything if the
     // chunked framing was decoded.
-    try res.Write(req.Body)
+    res.Write(req.Body)
     res.Status = 200
 }
 

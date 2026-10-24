@@ -1,6 +1,7 @@
 #include "lower.h"
 
 #include <functional>
+#include <map>
 #include <set>
 
 namespace {
@@ -28,6 +29,7 @@ struct Lowerer {
     // A `lock` block's release rather than a user statement: the slot holds the
     // address of the guard, so every way out of the block unlocks it.
     int unlock_guard = -1;
+    bool unlock_read = false;
   };
   // One list per open block. Leaving a block runs its list backwards; leaving
   // through an error runs the errdefer entries as well.
@@ -50,8 +52,15 @@ struct Lowerer {
     std::string callee;
     Type *args;
     Type *box; // the callee's !void type, or null when it cannot fail
+    std::string unit;
   };
   std::vector<Thunk> thunks;
+
+  // Every `extern blocking func` called somewhere. Each gets a wrapper with its
+  // own signature, which callers reach instead of the C symbol, and a job the
+  // io pool runs.
+  std::vector<Node *> blocking;
+  std::set<std::string> blocking_names;
 
   // The body of a `parallel for` runs on other workers, so the locals it
   // touches are reached through a block of pointers the loop hands over.
@@ -60,9 +69,18 @@ struct Lowerer {
     Node *loop;
     Type *env;
     std::vector<Symbol *> captured;
+    std::string unit;
   };
   std::vector<Chunk> chunks;
-  int task_serial = 0;
+  // The package being lowered. Thunks are numbered within it, so a package's
+  // code reads the same whatever else the program holds, which is what lets
+  // its object be reused by a split build.
+  std::string unit;
+  std::map<std::string, int> task_serial;
+
+  std::string next_task_id() {
+    return unit + std::to_string(task_serial[unit]++);
+  }
   // Whether anything hashed a string, which is the only thing that needs the
   // loop written out.
   bool wants_hash_bytes = false;
@@ -347,16 +365,41 @@ struct Lowerer {
     Type *opaque = types.rawptr(types.u8_ty);
     int holder = alloca_slot(opaque);
     store(gep_named(base, box, "guard"), holder, opaque);
-    call_runtime("sword_mutex_lock", {load(holder, opaque)}, types.void_ty);
+
+    // `if lock` only goes in when the guard was free; the other branch runs
+    // without it.
+    int else_bb = -1, join = -1;
+    if (n->is_try) {
+      const char *attempt = n->is_read ? "sword_mutex_try_lock_read"
+                                       : "sword_mutex_try_lock";
+      int got = call_runtime(attempt, {load(holder, opaque)}, types.bool_ty);
+      int then_bb = new_block();
+      else_bb = n->els ? new_block() : -1;
+      join = new_block();
+      cond_branch(got, then_bb, else_bb >= 0 ? else_bb : join);
+      cur = then_bb;
+    } else {
+      call_runtime(n->is_read ? "sword_mutex_lock_read" : "sword_mutex_lock",
+                   {load(holder, opaque)}, types.void_ty);
+    }
 
     n->sym->slot = alloca_slot(n->sym->type);
     store(gep_named(base, box, "value"), n->sym->slot, n->sym->type);
 
     scopes.emplace_back();
-    scopes.back().push_back({nullptr, false, holder});
+    scopes.back().push_back({nullptr, false, holder, n->is_read});
     stmt(n->body);
     emit_defers(scopes.size() - 1, false);
     scopes.pop_back();
+
+    if (!n->is_try) return;
+    branch(join);
+    if (else_bb >= 0) {
+      cur = else_bb;
+      stmt(n->els);
+      branch(join);
+    }
+    cur = join;
   }
 
   void scope_stmt(Node *n) {
@@ -385,7 +428,7 @@ struct Lowerer {
   void spawn_stmt(Node *n) {
     Node *call = n->lhs;
     Type *sig = call->sym->type;
-    std::string id = std::to_string(task_serial++);
+    std::string id = next_task_id();
 
     // The arguments are copied into one block the runtime owns, so the task
     // does not depend on the caller's frame staying put.
@@ -405,7 +448,7 @@ struct Lowerer {
     std::string thunk = "sword.task." + id;
     thunks.push_back(
         {thunk, call->name,
-         args, sig->ret->is_error_union ? sig->ret : nullptr});
+         args, sig->ret->is_error_union ? sig->ret : nullptr, unit});
 
     call_runtime("sword_scope_spawn",
                  {scope_blobs.back(), func_address(thunk), slot,
@@ -424,6 +467,8 @@ struct Lowerer {
     scope_blobs.clear();
 
     out.name = t.name;
+    out.unit = t.unit;
+    out.is_local = true;
     out.ret = types.error_ty;
     out.params.push_back(types.rawptr(types.u8_ty));
 
@@ -455,6 +500,101 @@ struct Lowerer {
 
     auto &entry = out.blocks[0].insts;
     entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // --- blocking calls -----------------------------------------------------
+
+  // The arguments, the answer and errno, in one block on the caller's stack,
+  // which stays put while the task is down.
+  Type *blocking_block(Node *decl) {
+    std::string name = "sword.offload." + decl->name;
+    if (Type *known = types.named(name)) return known;
+    Type *block = types.declare_struct(name);
+    block->is_extern = true;
+    Type *sig = decl->sym->type;
+    std::vector<Field> fields;
+    for (size_t i = 0; i < sig->params.size(); i++)
+      fields.push_back(Field{"a" + std::to_string(i), sig->params[i], 0, 0});
+    fields.push_back(Field{"errno", types.named("i32"), 0, 0});
+    if (sig->ret->kind != TY_VOID) fields.push_back(Field{"ret", sig->ret, 0, 0});
+    types.layout_struct(block, std::move(fields));
+    mod.structs.push_back(block);
+    return block;
+  }
+
+  void start(IrFunc &out) {
+    fn = &out;
+    cur = 0;
+    sret = -1;
+    entry_allocas.clear();
+    loops.clear();
+    scopes.clear();
+    scope_blobs.clear();
+  }
+
+  void finish(IrFunc &out) {
+    auto &entry = out.blocks[0].insts;
+    entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // What callers call: the same signature as the C function, handing the call
+  // to the io pool and the task down until it is done. errno travels back with
+  // the answer, so os.Errno right after the call means what it says.
+  void emit_blocking_wrapper(Node *decl, IrFunc &out) {
+    start(out);
+    Type *sig = decl->sym->type;
+    Type *block = blocking_block(decl);
+    out.name = decl->name + ".blocking";
+    out.ret = ret = sig->ret;
+    out.params = sig->params;
+    out.is_internal = true;
+    std::vector<int> params;
+    for (Type *p : sig->params) params.push_back(new_value(p));
+    new_block();
+
+    int slot = alloca_slot(block);
+    for (size_t i = 0; i < params.size(); i++)
+      store(params[i], gep_field(slot, block, (int)i), sig->params[i]);
+    call_runtime("sword_offload", {func_address(decl->name + ".job"), slot},
+                 types.named("i64"));
+    int errno_at = (int)sig->params.size();
+    call_runtime("sword_set_errno",
+                 {load(gep_field(slot, block, errno_at), types.named("i32"))},
+                 types.void_ty);
+    if (sig->ret->kind == TY_VOID) emit_ret(-1, nullptr);
+    else emit_ret(load(gep_field(slot, block, errno_at + 1), sig->ret), sig->ret);
+    finish(out);
+  }
+
+  // What the io thread runs: the C call itself. errno is cleared first, so a
+  // function that fails only through errno can be told from one that did not.
+  void emit_blocking_job(Node *decl, IrFunc &out) {
+    start(out);
+    Type *sig = decl->sym->type;
+    Type *block = blocking_block(decl);
+    out.name = decl->name + ".job";
+    out.ret = ret = types.named("i64");
+    out.params.push_back(types.rawptr(types.u8_ty));
+    out.is_internal = true;
+    int argp = new_value(types.rawptr(types.u8_ty));
+    new_block();
+
+    call_runtime("sword_set_errno", {constant(0, types.named("i32"))}, types.void_ty);
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = decl->name;
+    in.type = sig->ret;
+    for (size_t i = 0; i < sig->params.size(); i++)
+      in.args.push_back(load(gep_field(argp, block, (int)i), sig->params[i]));
+    if (sig->ret->kind != TY_VOID) in.dst = new_value(sig->ret);
+    emit(in);
+    int errno_at = (int)sig->params.size();
+    store(call_runtime("sword_errno", {}, types.named("i32")),
+          gep_field(argp, block, errno_at), types.named("i32"));
+    if (in.dst >= 0)
+      store(in.dst, gep_field(argp, block, errno_at + 1), sig->ret);
+    emit_ret(constant(0, types.named("i64")), types.named("i64"));
+    finish(out);
   }
 
   // --- captures -----------------------------------------------------------
@@ -494,7 +634,7 @@ struct Lowerer {
   }
 
   void parallel_for(Node *n) {
-    std::string id = std::to_string(task_serial++);
+    std::string id = next_task_id();
     std::vector<Symbol *> captured;
     captures_of(n, captured);
 
@@ -537,7 +677,7 @@ struct Lowerer {
     }
 
     std::string name = "sword.chunk." + id;
-    chunks.push_back({name, n, env, captured});
+    chunks.push_back({name, n, env, captured, unit});
 
     int lo = to_word(expr(n->lhs));
     int hi = to_word(expr(n->rhs));
@@ -643,6 +783,8 @@ struct Lowerer {
     scope_blobs.clear();
 
     out.name = c.name;
+    out.unit = c.unit;
+    out.is_local = true;
     out.ret = types.error_ty;
     out.params = {types.rawptr(types.u8_ty), types.usize_ty, types.usize_ty,
                   types.usize_ty};
@@ -745,7 +887,9 @@ struct Lowerer {
         const Deferred &entry = list[j - 1];
         if (entry.unlock_guard >= 0) {
           int guard = load(entry.unlock_guard, types.rawptr(types.u8_ty));
-          call_runtime("sword_mutex_unlock", {guard}, types.void_ty);
+          call_runtime(entry.unlock_read ? "sword_mutex_unlock_read"
+                                         : "sword_mutex_unlock",
+                       {guard}, types.void_ty);
         } else if (!entry.on_error_only || error_path) {
           stmt(entry.stmt);
         }
@@ -1331,6 +1475,11 @@ struct Lowerer {
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
     in.type = n->type;
+    if (n->form == 0 && n->sym && n->sym->decl && n->sym->decl->is_blocking) {
+      if (blocking_names.insert(in.callee).second)
+        blocking.push_back(n->sym->decl);
+      in.callee += ".blocking";
+    }
 
     int result = -1;
     if (is_aggregate(n->type)) {
@@ -1456,6 +1605,10 @@ struct Lowerer {
         int p = expr(n->lhs);
         return is_aggregate(n->type) ? p : load(p, n->type);
       }
+      // Every bit flipped is a xor with every bit set, which a constant of -1
+      // is at any width.
+      if (n->op == TK_TILDE)
+        return binop(IR_XOR, expr(n->lhs), constant(-1, n->type), n->type);
       IrInst in{};
       in.op = n->op == TK_BANG ? IR_NOT : IR_NEG;
       in.dst = new_value(n->type);
@@ -2208,6 +2361,7 @@ struct Lowerer {
     // chain into a switch on its own.
     const std::vector<TypeTable::ErrorDecl> &all = types.errors();
     for (size_t i = 0; i < all.size(); i++) {
+      if (!all[i].declared) continue;
       int same = binop(IR_EQ, code,
                        constant((int64_t)i + 1, types.error_ty), types.bool_ty);
       int hit = new_block();
@@ -2377,19 +2531,26 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   // Dependencies come first, so a package is always lowered after everything
   // it refers to.
   for (Package *pkg : prog.order) {
+    lowerer.unit = pkg->prefix.empty() ? "main." : pkg->prefix;
     for (Node *decl : pkg->unit->kids) {
       // A generic is never compiled, only its instantiations are; and a
       // declaration with no symbol is a template or a rejected one.
       if (decl->kind != ND_FUNC || !decl->tparams.empty()) continue;
       if (!decl->sym) continue;
       mod.funcs.emplace_back();
+      mod.funcs.back().unit = lowerer.unit;
       lowerer.func(decl, mod.funcs.back());
     }
+    // Which instances a package owns depends on the program using it, so they
+    // are kept apart from the code that does not.
+    lowerer.unit += "inst.";
     for (Node *decl : pkg->instances) {
       mod.funcs.emplace_back();
+      mod.funcs.back().unit = lowerer.unit;
       lowerer.func(decl, mod.funcs.back());
     }
   }
+  lowerer.unit.clear();
 
   // After everything else: the tables are only complete once every error in the
   // program has been declared.
@@ -2413,5 +2574,11 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
   for (const auto &chunk : lowerer.chunks) {
     mod.funcs.emplace_back();
     lowerer.emit_chunk(chunk, mod.funcs.back());
+  }
+  for (Node *decl : lowerer.blocking) {
+    mod.funcs.emplace_back();
+    lowerer.emit_blocking_wrapper(decl, mod.funcs.back());
+    mod.funcs.emplace_back();
+    lowerer.emit_blocking_job(decl, mod.funcs.back());
   }
 }

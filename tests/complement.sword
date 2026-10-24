@@ -1,0 +1,35 @@
+// expect: 42
+// `~x` flips every bit of an integer, at its own width.
+
+const MinusOne = ~0
+
+func flip(x u32) u32 {
+    return ~x
+}
+
+func main() int {
+    low u8 = 0x0F
+    if ~low != 0xF0 {
+        return 1
+    }
+    if MinusOne != -1 {
+        return 2
+    }
+    if flip(0) != 0xFFFF_FFFF || flip(0xFFFF_0000) != 0x0000_FFFF {
+        return 3
+    }
+    a i64 = 41
+    if ~a != -42 {
+        return 4
+    }
+    mask u64 = 0xFF
+    if ~mask & 0xFFF != 0xF00 {
+        return 5
+    }
+    // `x & ~m` clears the bits of m, which is what it is mostly for.
+    flags u8 = 0b1011
+    if flags & ~u8(0b0010) != 0b1001 {
+        return 6
+    }
+    return 42
+}

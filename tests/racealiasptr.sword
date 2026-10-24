@@ -1,0 +1,17 @@
+// expect-error: this writes 'n', through 'q', while it is already written concurrently
+// Two pointers taken from the same variable point at one i64 (#72).
+
+func bump(mut p *i64) {
+    *p += 1
+}
+
+func main() int {
+    mut n i64 = 0
+    mut p := &n
+    mut q := &n
+    scope {
+        spawn bump(p)
+        spawn bump(q)
+    }
+    return int(n)
+}

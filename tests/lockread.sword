@@ -1,0 +1,132 @@
+// expect: 42
+// expect-output: lock read: all checks passed
+// Readers hold a shared value together and a writer holds it alone, and
+// `if lock` takes it only when that would not mean waiting.
+
+import "std/io"
+import "std/time"
+
+struct Table {
+    value  u64
+    writes u64
+}
+
+// Waits inside the read lock until the other reader is inside too, which
+// cannot happen if readers exclude each other, and then until the other has
+// seen this one, so neither leaves before both have met. Sleeping puts the task
+// down, so this holds on one thread as well as on sixteen.
+func meet(t *shared[Table], inside *atomic[i64], met *atomic[u64]) {
+    lock read c := t {
+        inside.Add(1)
+        for i in 0..2000 {
+            if inside.Load() >= 2 {
+                met.Add(1)
+                break
+            }
+            time.Sleep(time.Millis(1))
+        }
+        for i in 0..2000 {
+            if met.Load() >= 2 {
+                break
+            }
+            time.Sleep(time.Millis(1))
+        }
+        inside.Sub(1)
+    }
+}
+
+// A writer keeps value and writes equal only by holding the table alone: in
+// between the two stores, any reader would see them differ.
+func write(t *shared[Table], n u64) {
+    for i in 0..n {
+        lock c := t {
+            c.value += 1
+            time.Sleep(time.Millis(0))
+            c.writes += 1
+        }
+    }
+}
+
+func read(t *shared[Table], n u64, torn *atomic[u64]) {
+    for i in 0..n {
+        lock read c := t {
+            if c.value != c.writes {
+                torn.Add(1)
+            }
+        }
+    }
+}
+
+func tryWrite(t *shared[Table]) bool {
+    if lock c := t {
+        c.value += 0
+        return true
+    } else {
+        return false
+    }
+}
+
+func tryRead(t *shared[Table]) bool {
+    if lock read c := t {
+        return c.value == c.writes
+    }
+    return false
+}
+
+func main() !int {
+    mut table := shared[Table](Table{value: 0, writes: 0})
+
+    mut inside := atomic[i64](0)
+    mut met := atomic[u64](0)
+    scope {
+        spawn meet(&table, &inside, &met)
+        spawn meet(&table, &inside, &met)
+    }
+    if met.Load() != 2 {
+        return 1
+    }
+
+    mut torn := atomic[u64](0)
+    scope {
+        spawn write(&table, 200)
+        spawn read(&table, 400, &torn)
+        spawn write(&table, 200)
+        spawn read(&table, 400, &torn)
+    }
+    if torn.Load() != 0 {
+        return 2
+    }
+    lock read c := table {
+        if c.value != 400 || c.writes != 400 {
+            return 3
+        }
+    }
+
+    // Free: both kinds go in.
+    if !tryWrite(&table) || !tryRead(&table) {
+        return 4
+    }
+    // Held to write: neither does, and nothing waits.
+    lock c := table {
+        if tryWrite(&table) || tryRead(&table) {
+            return 5
+        }
+    }
+    // Held to read: another reader does, a writer does not.
+    lock read c := table {
+        if !tryRead(&table) || tryWrite(&table) {
+            return 6
+        }
+    }
+    // And every way out of an `if lock` let go of it.
+    if !tryWrite(&table) {
+        return 7
+    }
+    // `read` is only special before a name: here it is the name.
+    lock read := table {
+        read.value += 0
+    }
+
+    try io.Println("lock read: all checks passed")
+    return 42
+}

@@ -14,7 +14,7 @@ struct Counter {
 }
 
 func (c *Counter) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Text(200, req.Path)
+    res.Text(200, req.Path)
 }
 
 func serve(s *http.Server, h *Counter) !void {

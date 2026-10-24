@@ -16,14 +16,14 @@ struct Router {
 
 func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
     if strings.Equal(req.Path, "/health") {
-        try res.Text(200, "ok")
+        res.Text(200, "ok")
         return
     }
     if strings.Equal(req.Path, "/") {
-        try res.Text(200, r.greeting)
+        res.Text(200, r.greeting)
         return
     }
-    try res.Text(404, "not found")
+    res.Text(404, "not found")
 }
 
 func main() !int {
@@ -110,6 +110,12 @@ of the keep-alive loop — waiting for a request and serving it. A timeout alone
 cannot bound a client that dribbles a byte at a time, because no single wait ever
 runs out.
 
+No write to a response asks for `try`. The first one that fails is kept and
+every write after it does nothing; once the handler returns, the server looks.
+A failed response counts as a failed request, and is answered with a 500 if its
+head has not gone yet — or, if it has, its connection is closed, since the client
+already has part of something else.
+
 A request is capped at 32 headers and 8 KiB of head. Past that the connection is
 dropped rather than grown, which keeps a hostile client from deciding how much
 memory the server uses.
@@ -122,16 +128,19 @@ stream — say so and every write goes out as its own chunk:
 
 ```sword
 func (h *Feed) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.SetHeader("Content-Type", "text/event-stream")
-    try res.Stream(200)
+    res.SetHeader("Content-Type", "text/event-stream")
+    res.Stream(200)
     for update := h.updates.Recv() {
-        try res.Printf("data: {}\n\n", update)
+        res.Printf("data: {}\n\n", update)
+        try res.Err()       // the client has gone: stop feeding it
     }
 }
 ```
 
 `Stream` sends the head immediately, so headers set after it are too late. The
-handler returning ends the body. Nothing else about writing changes — `Write`,
+handler returning ends the body. A handler that keeps working between writes —
+a stream fed for minutes — asks `res.Err()` now and then, so a client that went
+away does not keep it busy. Nothing else about writing changes — `Write`,
 `WriteString` and `Printf` do what they always did, they just leave rather than
 accumulate.
 
@@ -142,10 +151,10 @@ learns how much is coming and nothing has to be held in memory to be measured:
 
 ```sword
 func (h *Download) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.SetHeader("Content-Type", "application/octet-stream")
-    try res.Send(200, h.size)
+    res.SetHeader("Content-Type", "application/octet-stream")
+    res.Send(200, h.size)
     for part in h.pieces() {
-        try res.Write(part)
+        res.Write(part)
     }
 }
 ```
@@ -215,10 +224,10 @@ it may not — both kinds of connection get through, so the handler has to look:
 ```sword
 func (h *Site) Serve(req *http.Request, mut res *http.Response) !void {
     if req.PeerName.len == 0 {
-        try res.Text(401, "who are you\n")
+        res.Text(401, "who are you\n")
         return
     }
-    try res.Printf("hello {}\n", req.PeerName)
+    res.Printf("hello {}\n", req.PeerName)
 }
 ```
 
@@ -359,7 +368,7 @@ struct Health {
 }
 
 func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Text(200, "ok\n")
+    res.Text(200, "ok\n")
 }
 
 func serve(s *http.Server, m *http.Mux) !void {
@@ -408,7 +417,7 @@ import "std/runtime"
 
 func (h *Admin) Serve(req *http.Request, mut res *http.Response) !void {
     r := runtime.Read()
-    try res.Printf("threads {} stacks {} running {}\n",
+    res.Printf("threads {} stacks {} running {}\n",
                    r.Threads, r.Stacks, r.Running())
     res.Status = 200
 }
@@ -432,7 +441,7 @@ struct Users {
 }
 
 func (h *Users) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Printf("user {}\n", req.Param("id"))
+    res.Printf("user {}\n", req.Param("id"))
 }
 
 struct Health {
@@ -440,7 +449,7 @@ struct Health {
 }
 
 func (h *Health) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Text(200, "ok\n")
+    res.Text(200, "ok\n")
 }
 
 func main() !int {
@@ -482,18 +491,18 @@ live on the stack of `main` and be shared by every accept loop.
 ```sword
 func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
     if !strings.Equal(req.Method, "POST") {
-        try res.Text(405, "method not allowed")
+        res.Text(405, "method not allowed")
         return
     }
 
     kind := req.Headers.Get("Content-Type")     // case-insensitive
     if !strings.HasPrefix(kind, "application/json") {
-        try res.Text(415, "send me json")
+        res.Text(415, "send me json")
         return
     }
 
-    try res.JSON(200, "{\"length\":0}")
-    try res.Write(req.Body)
+    res.JSON(200, "{\"length\":0}")
+    res.Write(req.Body)
 }
 ```
 

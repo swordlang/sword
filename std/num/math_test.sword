@@ -17,7 +17,7 @@ func checkBits(mut t *testing.T, name string, f func(f64) f64,
     for c in cases {
         got := bitsOf(f(fromBits(c.x)))
         if got != c.y {
-            try t.Failf("{}({}): got bits {} want {}", name, fromBits(c.x), got, c.y)
+            t.Failf("{}({}): got bits {} want {}", name, fromBits(c.x), got, c.y)
         }
     }
 }
@@ -220,21 +220,21 @@ func TestSinCosNearMultiplesOfHalfPi(mut t *testing.T) !void {
 
 func TestSpecialValues(mut t *testing.T) !void {
     try t.Require(IsNaN(Sqrt(-1.0)))
-    try t.Equal(Sqrt(0.0), 0.0)
-    try t.Equal(Sqrt(Inf()), Inf())
-    try t.Equal(Sqrt(4.0), 2.0)
-    try t.Equal(Log(0.0), -Inf())
+    t.Equal(Sqrt(0.0), 0.0)
+    t.Equal(Sqrt(Inf()), Inf())
+    t.Equal(Sqrt(4.0), 2.0)
+    t.Equal(Log(0.0), -Inf())
     try t.Require(IsNaN(Log(-1.0)))
-    try t.Equal(Log(1.0), 0.0)
-    try t.Equal(Log(Inf()), Inf())
-    try t.Equal(Exp(0.0), 1.0)
-    try t.Equal(Exp(Inf()), Inf())
-    try t.Equal(Exp(-Inf()), 0.0)
-    try t.Equal(Exp(1000.0), Inf())
-    try t.Equal(Exp(-1000.0), 0.0)
+    t.Equal(Log(1.0), 0.0)
+    t.Equal(Log(Inf()), Inf())
+    t.Equal(Exp(0.0), 1.0)
+    t.Equal(Exp(Inf()), Inf())
+    t.Equal(Exp(-Inf()), 0.0)
+    t.Equal(Exp(1000.0), Inf())
+    t.Equal(Exp(-1000.0), 0.0)
     try t.Require(IsNaN(Exp(NaN())))
-    try t.Equal(Sin(0.0), 0.0)
-    try t.Equal(Cos(0.0), 1.0)
+    t.Equal(Sin(0.0), 0.0)
+    t.Equal(Cos(0.0), 1.0)
     try t.Require(IsNaN(Sin(Inf())))
     try t.Require(IsNaN(Cos(-Inf())))
     try t.Require(IsNaN(Sin(NaN())))

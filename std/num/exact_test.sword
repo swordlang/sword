@@ -14,29 +14,29 @@ func TestExactSum(mut t *testing.T) !void {
     // Ten tenths are 1 plus about 5.6e-17, and the nearest double to that is 1;
     // adding them one after another reaches 0.9999999999999999.
     tenths := [10]f64{0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1}
-    try t.Equal(exactOf(tenths[..]), 1.0)
+    t.Equal(exactOf(tenths[..]), 1.0)
 
     // Two huge terms cancel exactly, where plain addition overflows first.
     big := [4]f64{1.0e308, 1.0e308, -1.0e308, -1.0e308}
-    try t.Equal(exactOf(big[..]), 0.0)
+    t.Equal(exactOf(big[..]), 0.0)
     cancel := [4]f64{1.0, 1.0e100, 1.0, -1.0e100}
-    try t.Equal(exactOf(cancel[..]), 2.0)
+    t.Equal(exactOf(cancel[..]), 2.0)
 
     // Ties go to even: 2^53 + 1 is halfway, 2^53 + 3 is too.
     tie := [2]f64{9007199254740992.0, 1.0}
-    try t.Equal(exactOf(tie[..]), 9007199254740992.0)
+    t.Equal(exactOf(tie[..]), 9007199254740992.0)
     tie3 := [2]f64{9007199254740992.0, 3.0}
-    try t.Equal(exactOf(tie3[..]), 9007199254740996.0)
+    t.Equal(exactOf(tie3[..]), 9007199254740996.0)
 
     tiny := fromBits(1)
     subs := [3]f64{tiny, tiny, tiny}
-    try t.Equal(bitsOf(exactOf(subs[..])), u64(3))
+    t.Equal(bitsOf(exactOf(subs[..])), u64(3))
 
     negatives := [3]f64{-0.5, -0.25, 0.125}
-    try t.Equal(exactOf(negatives[..]), -0.625)
+    t.Equal(exactOf(negatives[..]), -0.625)
 
     over := [2]f64{1.7976931348623157e308, 1.7976931348623157e308}
-    try t.Equal(exactOf(over[..]), Inf())
+    t.Equal(exactOf(over[..]), Inf())
     both := [2]f64{Inf(), -Inf()}
     try t.Require(IsNaN(exactOf(both[..])))
 }
@@ -51,6 +51,6 @@ func TestExactMerge(mut t *testing.T) !void {
         left.Add(xs[5 - i])
         right.Add(xs[i])
     }
-    try t.Equal(bitsOf(MergeExact(left, right).Value()), bitsOf(whole))
-    try t.Equal(bitsOf(MergeExact(right, left).Value()), bitsOf(whole))
+    t.Equal(bitsOf(MergeExact(left, right).Value()), bitsOf(whole))
+    t.Equal(bitsOf(MergeExact(right, left).Value()), bitsOf(whole))
 }

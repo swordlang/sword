@@ -1,0 +1,14 @@
+// expect-error: cannot assign to data reached through immutable binding 'c'
+// Readers hold the value together, so what a reader is lent cannot be written.
+
+struct Table {
+    n u64
+}
+
+func main() int {
+    mut t := shared[Table](Table{n: 0})
+    lock read c := t {
+        c.n = 1
+    }
+    return 0
+}

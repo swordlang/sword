@@ -1,0 +1,11 @@
+// expect-error: this value is worked out and then thrown away
+// A statement on its own has to do something. `total + 1` computes a number
+// and drops it, which is almost always a `+=` that lost its `=`.
+
+func main() int {
+    mut total i64 = 0
+    for i in 0..10 {
+        total + i
+    }
+    return int(total)
+}

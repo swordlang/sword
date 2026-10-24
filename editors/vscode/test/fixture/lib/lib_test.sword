@@ -3,9 +3,9 @@ package lib
 import "std/testing"
 
 func TestPasses(mut t *testing.T) !void {
-    try t.Equal(Double(2), 4)
+    t.Equal(Double(2), 4)
 }
 
 func TestFails(mut t *testing.T) !void {
-    try t.Equal(Double(2), 5)
+    t.Equal(Double(2), 5)
 }

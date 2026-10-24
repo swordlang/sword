@@ -17,7 +17,7 @@ struct Slow {
 }
 
 func (h *Slow) Serve(req *http.Request, mut res *http.Response) !void {
-    try res.Printf("from {}\n", req.RemoteAddr)
+    res.Printf("from {}\n", req.RemoteAddr)
 }
 
 func serve(s *http.Server, h *Slow) !void {

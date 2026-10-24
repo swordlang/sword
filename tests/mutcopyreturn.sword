@@ -1,0 +1,16 @@
+// expect-error: cannot assign to this: 'ys' was copied from immutable binding 'xs'
+// A function that hands back what it was given hands back the right it was
+// given, and no more.
+
+func same(xs []i64) []i64 {
+    return xs
+}
+
+func f(xs []i64) {
+    mut ys := same(xs)
+    ys[0] = 1
+}
+
+func main() int {
+    return 0
+}

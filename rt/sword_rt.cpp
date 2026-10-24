@@ -948,17 +948,49 @@ uint64_t holder_tag() {
   return thread_tag();
 }
 
-// `held` is 0 when free, 1 when held, and 2 when held and somebody may be
-// parked behind it — Drepper's mutex, so an unlock only goes looking for a
-// waiter when there can be one. A task that was parked takes it back as 2: it
-// cannot know whether others are still queued, and saying so costs one look.
-bool take_guard(Guard *g, uint64_t me, int32_t as = 1) {
-  int32_t idle = 0;
-  if (!__atomic_compare_exchange_n(&g->held, &idle, as, false, __ATOMIC_ACQUIRE,
-                                   __ATOMIC_RELAXED))
-    return false;
-  __atomic_store_n(&g->owner, me, __ATOMIC_RELEASE);
-  return true;
+// `held` says everything about who has the guard, in one word so every change
+// is one atomic step: a bit for a writer, one for "somebody is parked behind
+// it", one for "a writer is among them", and the rest counts readers. An unlock
+// only goes looking for a parked task when the second bit says there may be
+// one, which is Drepper's mutex with room for readers.
+//
+// A writer waiting keeps new readers out, or a steady stream of them would
+// never leave a gap for it. A reader that was parked and woken does not wait
+// for that: it was in the queue before the writer it would be yielding to, and
+// with the lock free it could otherwise wait for an unlock nobody will make.
+enum : int32_t {
+  kWriter = 1,
+  kParked = 2,
+  kWriterWaits = 4,
+  kReader = 8,
+};
+
+bool writable(int32_t s) { return (s & kWriter) == 0 && s / kReader == 0; }
+
+bool readable(int32_t s, bool woken) {
+  return (s & kWriter) == 0 && (woken || (s & kWriterWaits) == 0);
+}
+
+bool take_guard(Guard *g, uint64_t me) {
+  int32_t s = __atomic_load_n(&g->held, __ATOMIC_RELAXED);
+  while (writable(s)) {
+    if (__atomic_compare_exchange_n(&g->held, &s, s | kWriter, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+      __atomic_store_n(&g->owner, me, __ATOMIC_RELEASE);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool take_read(Guard *g, bool woken) {
+  int32_t s = __atomic_load_n(&g->held, __ATOMIC_RELAXED);
+  while (readable(s, woken)) {
+    if (__atomic_compare_exchange_n(&g->held, &s, s + kReader, false,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+      return true;
+  }
+  return false;
 }
 
 // Tasks parked behind a held guard. A guard is 32 bytes the compiler lays out,
@@ -968,6 +1000,7 @@ bool take_guard(Guard *g, uint64_t me, int32_t as = 1) {
 struct LockWaiter {
   Guard *g;
   Fiber *f;
+  bool writer;
   LockWaiter *next;
 };
 
@@ -982,42 +1015,80 @@ LockBucket &bucket_of(Guard *g) {
   return g_lock_buckets[((uintptr_t)g >> 4) % 256];
 }
 
-// Parks the running task until an unlock of `g` picks it, unless the guard
-// came free on the way here. Queued in arrival order.
-void park_behind(Guard *g, Fiber *f) {
+// Parks the running task until an unlock of `g` picks it, unless the guard came
+// free for it on the way here; false then, and the caller tries again. Queued in
+// arrival order. The bits are set under the bucket's lock, with the same atomic
+// step that saw the guard taken, so an unlock either finds this task queued or
+// came before the look that said it was taken.
+bool park_behind(Guard *g, Fiber *f, bool writer, bool woken) {
   LockBucket &b = bucket_of(g);
-  LockWaiter node{g, f, nullptr};
+  LockWaiter node{g, f, writer, nullptr};
   {
     std::lock_guard<std::mutex> held(b.lock);
-    int32_t seen = __atomic_load_n(&g->held, __ATOMIC_ACQUIRE);
-    if (seen == 0) return;
-    if (seen == 1 && !__atomic_compare_exchange_n(&g->held, &seen, 2, false,
-                                                  __ATOMIC_ACQ_REL,
-                                                  __ATOMIC_ACQUIRE))
-      return;
+    int32_t s = __atomic_load_n(&g->held, __ATOMIC_ACQUIRE);
+    for (;;) {
+      if (writer ? writable(s) : readable(s, woken)) return false;
+      int32_t want = s | kParked | (writer ? kWriterWaits : 0);
+      if (want == s ||
+          __atomic_compare_exchange_n(&g->held, &s, want, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        break;
+    }
     LockWaiter **end = &b.head;
     while (*end) end = &(*end)->next;
     *end = &node;
     f->state.store(FIBER_PARKING, std::memory_order_release);
   }
   leave(f, false);
+  return true;
 }
 
-void unpark_one(Guard *g) {
+// The guard came free, at least for somebody: wake the first task queued on it,
+// and when that is a reader, every reader queued on it, since they can all go in
+// together. What stays queued decides the two bits that say so.
+void unpark(Guard *g) {
   LockBucket &b = bucket_of(g);
-  Fiber *f = nullptr;
+  LockWaiter *woken = nullptr;
+  LockWaiter **tail = &woken;
   {
     std::lock_guard<std::mutex> held(b.lock);
-    for (LockWaiter **at = &b.head; *at; at = &(*at)->next) {
-      if ((*at)->g != g) continue;
-      f = (*at)->f;
-      *at = (*at)->next;
-      break;
+    bool readers = false;
+    bool first = true;
+    for (LockWaiter **at = &b.head; *at;) {
+      LockWaiter *w = *at;
+      bool take = w->g == g && (first ? true : readers && !w->writer);
+      if (w->g == g && first) {
+        readers = !w->writer;
+        first = false;
+      }
+      if (!take) {
+        at = &w->next;
+        continue;
+      }
+      *at = w->next;
+      w->next = nullptr;
+      *tail = w;
+      tail = &w->next;
+      if (!readers) break;
     }
+    bool queued = false, writer = false;
+    for (LockWaiter *w = b.head; w; w = w->next)
+      if (w->g == g) {
+        queued = true;
+        writer = writer || w->writer;
+      }
+    int32_t clear = (queued ? 0 : kParked) | (writer ? 0 : kWriterWaits);
+    if (clear) __atomic_fetch_and(&g->held, ~clear, __ATOMIC_RELAXED);
   }
-  if (f && f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
-               FIBER_PARKED)
-    make_runnable(f);
+  // A node lives on its task's stack, so read it before the task can run.
+  while (woken) {
+    LockWaiter *next = woken->next;
+    Fiber *f = woken->f;
+    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+        FIBER_PARKED)
+      make_runnable(f);
+    woken = next;
+  }
 }
 
 } // namespace
@@ -1037,41 +1108,34 @@ void sword_fiber_entry(void) {
   leave(f, true);
   __builtin_unreachable();
 }
+}
 
-void sword_mutex_lock(void *blob) {
-  sword_sim_point();
-  Guard *g = (Guard *)blob;
-  uint64_t me = holder_tag();
+namespace {
 
-  if (__atomic_load_n(&g->held, __ATOMIC_ACQUIRE) != 0 &&
-      __atomic_load_n(&g->owner, __ATOMIC_ACQUIRE) == me) {
-    // The checker catches the case it can see. This is the one it cannot: two
-    // `lock` blocks on the same value with a call in between.
-    fputs("sword: deadlock, this task already holds this shared value\n",
-          stderr);
-    abort();
-  }
-
-  if (take_guard(g, me)) return;
-
-  // Contended. Most critical sections are over in nanoseconds, so a moment of
-  // spinning usually wins; after that a task parks behind the guard and its
-  // thread goes to other work. Spinning or sleeping the thread instead — which
-  // is all code outside a task can do — hung a program on one thread: the
-  // holder was waiting for a timer inside its `lock`, and the only thread that
-  // could run it was the one spinning.
+// Contended. Most critical sections are over in nanoseconds, so a moment of
+// spinning usually wins; after that a task parks behind the guard and its
+// thread goes to other work. Spinning or sleeping the thread instead — which
+// is all code outside a task can do — hung a program on one thread: the
+// holder was waiting for a timer inside its `lock`, and the only thread that
+// could run it was the one spinning.
+void contend(Guard *g, uint64_t me, bool writer) {
+  auto take = [&](bool woken) {
+    return writer ? take_guard(g, me) : take_read(g, woken);
+  };
   if (Fiber *f = tl_fiber) {
     for (int spins = 0; !g_sim && spins < 64; spins++) {
       std::this_thread::yield();
-      if (take_guard(g, me)) return;
+      if (take(false)) return;
     }
-    while (!take_guard(g, me, 2)) park_behind(g, f);
+    bool woken = false;
+    while (!take(woken))
+      if (park_behind(g, f, writer, woken)) woken = true;
     return;
   }
 
   sword_blocking_enter();
   int64_t nap = 1000; // nanoseconds, doubling to a millisecond
-  for (int spins = 0; !take_guard(g, me, 2); spins++) {
+  for (int spins = 0; !take(false); spins++) {
     if (spins < 64) {
       std::this_thread::yield();
       continue;
@@ -1082,13 +1146,71 @@ void sword_mutex_lock(void *blob) {
   sword_blocking_exit();
 }
 
+bool held_by(Guard *g, uint64_t me) {
+  return (__atomic_load_n(&g->held, __ATOMIC_ACQUIRE) & kWriter) != 0 &&
+         __atomic_load_n(&g->owner, __ATOMIC_ACQUIRE) == me;
+}
+
+void self_deadlock() {
+  // The checker catches the case it can see. This is the one it cannot: two
+  // `lock` blocks on the same value with a call in between.
+  fputs("sword: deadlock, this task already holds this shared value\n",
+        stderr);
+  abort();
+}
+
+} // namespace
+
+extern "C" {
+
+void sword_mutex_lock(void *blob) {
+  sword_sim_point();
+  Guard *g = (Guard *)blob;
+  uint64_t me = holder_tag();
+  if (held_by(g, me)) self_deadlock();
+  if (take_guard(g, me)) return;
+  contend(g, me, true);
+}
+
 // Owner first: it is what the self-deadlock check reads, and clearing it before
 // releasing keeps a thread that locks the same value twice in a row from
 // mistaking its own stale tag for a live one.
 void sword_mutex_unlock(void *blob) {
   Guard *g = (Guard *)blob;
   __atomic_store_n(&g->owner, (uint64_t)0, __ATOMIC_RELEASE);
-  if (__atomic_exchange_n(&g->held, 0, __ATOMIC_RELEASE) == 2) unpark_one(g);
+  int32_t was = __atomic_fetch_and(&g->held, ~kWriter, __ATOMIC_RELEASE);
+  if (was & kParked) unpark(g);
+}
+
+// Any number of readers at once, and no writer while there are. A reader holds
+// no owner tag — there may be many — so a task that takes the same value to
+// read and then to write in another function hangs rather than being told; the
+// checker refuses the case it can see.
+void sword_mutex_lock_read(void *blob) {
+  sword_sim_point();
+  Guard *g = (Guard *)blob;
+  if (held_by(g, holder_tag())) self_deadlock();
+  if (take_read(g, false)) return;
+  contend(g, 0, false);
+}
+
+void sword_mutex_unlock_read(void *blob) {
+  Guard *g = (Guard *)blob;
+  int32_t was = __atomic_fetch_sub(&g->held, kReader, __ATOMIC_RELEASE);
+  if ((was - kReader) / kReader == 0 && (was & kParked)) unpark(g);
+}
+
+// The guard if it is free now, without waiting. Held by this same task, it is
+// not free, and saying so is the answer rather than a deadlock.
+bool sword_mutex_try_lock(void *blob) {
+  sword_sim_point();
+  Guard *g = (Guard *)blob;
+  return take_guard(g, holder_tag());
+}
+
+bool sword_mutex_try_lock_read(void *blob) {
+  sword_sim_point();
+  return take_read((Guard *)blob, false);
 }
 
 // Waits for somebody else to change the value. The guard is released while the
@@ -1587,6 +1709,7 @@ void sword_sim_refuse(const char *what) {
 // because the thread it started on had errno 0. A call into another file, never
 // inlined, has to ask for the address again every time.
 __attribute__((noinline)) int sword_errno(void) { return errno; }
+__attribute__((noinline)) void sword_set_errno(int value) { errno = value; }
 
 void sword_runtime_stats(struct sword_stats *out) {
   memset(out, 0, sizeof(*out));

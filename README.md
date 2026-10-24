@@ -47,13 +47,13 @@ that makes it happen again.
 ## Install
 
 ```sh
-git clone https://github.com/PedroTessaro/sword
+git clone https://github.com/swordlang/sword
 cd sword
 make
 make install
 ```
 
-That builds the latest release, 0.2.4 "Fold", from `main`; `develop` has
+That builds the latest release, 0.3.0 "Quench", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -140,6 +140,9 @@ TLS comes from OpenSSL, found at build time — `http.ListenTLS` for a server,
 `http.Fetch("https://...")` for a client, and `http.ListenWith` for a server that
 asks its clients for a certificate of their own. A build made on a machine without
 OpenSSL says so (`tls.Available()`) instead of failing to link.
+
+What comes next — packages, speed, smaller machines, and the compiler rewritten
+in Sword — is in the [roadmap](docs/roadmap.md).
 
 ## Contributing
 

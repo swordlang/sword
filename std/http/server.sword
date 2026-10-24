@@ -85,6 +85,9 @@ struct Response {
     conn    ?net.Stream
     sent    bool
     chunked bool
+    // The first write that failed. Every write after it does nothing, and the
+    // server looks once the handler is done, so a handler writes without `try`.
+    first ?error
 }
 
 // A handler is an interface rather than a function value, the same way Go's
@@ -105,24 +108,47 @@ func newRequest(buf []u8, from string, peer string) Request {
                    Body: buf[0..0], params: [MaxParams]Param{}, pcount: 0}
 }
 
-func (mut r *Response) SetHeader(name string, value string) !void {
-    try r.Headers.Set(name, value)
+// The first write that failed, if any did. The server checks this itself after
+// the handler returns; a handler asks only when what it does next depends on it.
+func (r *Response) Err() !void {
+    if e := r.first {
+        return e
+    }
+}
+
+func (mut r *Response) keep(e error) {
+    if r.first == nil {
+        r.first = e
+    }
+}
+
+func (mut r *Response) SetHeader(name string, value string) {
+    if r.first != nil {
+        return
+    }
+    r.Headers.Set(name, value) catch |e| {
+        r.keep(e)
+    }
 }
 
 // Sends the head now and switches to chunked, for a response whose length is
 // not known in advance — a long list, a file being read, an event stream. After
 // this every write goes out as its own chunk instead of being collected.
 //
-//     try res.SetHeader("Content-Type", "text/event-stream")
-//     try res.Stream(200)
+//     res.SetHeader("Content-Type", "text/event-stream")
+//     res.Stream(200)
 //     for update := feed.Recv() {
-//         try res.Printf("data: {}\n\n", update)
+//         res.Printf("data: {}\n\n", update)
+//         try res.Err()      // the client went away: stop feeding it
 //     }
-func (mut r *Response) Stream(status u64) !void {
-    if r.sent {
+func (mut r *Response) Stream(status u64) {
+    if r.sent || r.first != nil {
         return
     }
-    try r.sendHead(status, "Transfer-Encoding: chunked\r\n")
+    r.sendHead(status, "Transfer-Encoding: chunked\r\n") catch |e| {
+        r.keep(e)
+        return
+    }
     r.chunked = true
 }
 
@@ -133,8 +159,8 @@ func (mut r *Response) Stream(status u64) !void {
 //
 // Write exactly `length` bytes after this. Fewer leaves the client waiting for
 // the rest; more is a response that says one thing and does another.
-func (mut r *Response) Send(status u64, length u64) !void {
-    if r.sent {
+func (mut r *Response) Send(status u64, length u64) {
+    if r.sent || r.first != nil {
         return
     }
     mut room := [32]u8{}
@@ -146,7 +172,9 @@ func (mut r *Response) Send(status u64, length u64) !void {
     at += writeDecimal(room[at..room.len], length)
     room[at] = 13
     room[at+1] = 10
-    try r.sendHead(status, string(room[0..at+2]))
+    r.sendHead(status, string(room[0..at+2])) catch |e| {
+        r.keep(e)
+    }
 }
 
 // The status line, one header the caller has already formatted, and whatever
@@ -242,7 +270,20 @@ func (mut r *Response) flush() !void {
     r.body.Reset()
 }
 
-func (mut r *Response) Write(p []u8) !void {
+func (mut r *Response) Write(p []u8) {
+    if r.first != nil {
+        return
+    }
+    r.write(p) catch |e| {
+        r.keep(e)
+    }
+}
+
+func (mut r *Response) WriteString(s string) {
+    r.Write([]u8(s))
+}
+
+func (mut r *Response) write(p []u8) !void {
     // Once the head has gone the buffer has nothing left to do — it is there to
     // measure a body, and the length is already decided. Writing through it
     // instead would cap a response at the size of the buffer, which is how a
@@ -253,15 +294,6 @@ func (mut r *Response) Write(p []u8) !void {
         return
     }
     try r.body.Write(p)
-}
-
-func (mut r *Response) WriteString(s string) !void {
-    if r.sent {
-        try r.flush()
-        try r.writeOut([]u8(s))
-        return
-    }
-    try r.body.WriteString(s)
 }
 
 // One write to the connection, framed as a chunk if that is what the head
@@ -283,21 +315,29 @@ func (mut r *Response) writeOut(p []u8) !void {
 }
 
 // Formats straight into the body; `{}` takes the next argument.
-func (mut r *Response) Printf(format string, args ...any) !void {
-    try fmt.Format(&r.body, format, args)
-    try r.flush()
+func (mut r *Response) Printf(format string, args ...any) {
+    if r.first != nil {
+        return
+    }
+    fmt.Format(&r.body, format, args) catch |e| {
+        r.keep(e)
+        return
+    }
+    r.flush() catch |e| {
+        r.keep(e)
+    }
 }
 
-func (mut r *Response) Text(status u64, s string) !void {
+func (mut r *Response) Text(status u64, s string) {
     r.Status = status
-    try r.Headers.Set("Content-Type", "text/plain; charset=utf-8")
-    try r.body.WriteString(s)
+    r.SetHeader("Content-Type", "text/plain; charset=utf-8")
+    r.WriteString(s)
 }
 
-func (mut r *Response) JSON(status u64, s string) !void {
+func (mut r *Response) JSON(status u64, s string) {
     r.Status = status
-    try r.Headers.Set("Content-Type", "application/json")
-    try r.body.WriteString(s)
+    r.SetHeader("Content-Type", "application/json")
+    r.WriteString(s)
 }
 
 // `METHOD SP TARGET SP PROTO`
@@ -502,10 +542,26 @@ func handleConn(c net.Stream, h Handler, mut a mem.Allocator,
 
         body.Reset()
         mut res := Response{Status: 200, Headers: NewHeaders(), body: body,
-                            conn: c, sent: false, chunked: false}
+                            conn: c, sent: false, chunked: false, first: nil}
+        mut failed := false
         h.Serve(&req, &res) catch {
-            res.Status = 500
+            failed = true
+        }
+        // A write that failed is the handler failing too, said once here so the
+        // handler need not say it at every write.
+        if res.first != nil {
+            failed = true
+        }
+        if failed {
             s.failed.Add(1)
+            // The head has gone and the client has part of an answer: nothing
+            // that follows on this connection could be trusted to line up.
+            if res.sent {
+                s.served.Add(1)
+                return
+            }
+            res.Status = 500
+            res.body.Reset()
         }
         s.served.Add(1)
         body = res.body

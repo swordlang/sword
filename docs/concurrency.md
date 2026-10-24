@@ -288,6 +288,23 @@ scope {
 }
 ```
 
+A second name for the same memory is the same memory. A binding made from a
+copy of another's slice or pointer — `ys := xs`, `p := &n`, a struct literal
+holding `xs` — reaches what that other one reaches, and the checker compares
+them as one:
+
+```sword
+mut p := &n
+scope {
+    spawn bump(p)
+    n = 5               // error: this writes 'n' while it is already written
+}
+```
+
+A binding reassigned keeps everything it was ever given. What a function hands
+back is not followed: `ys := same(xs)` is a new name as far as this goes, so
+keep copies that cross tasks in plain sight.
+
 ## Partitions
 
 Handing different pieces of one slice to different tasks is safe, and it is the
@@ -819,8 +836,33 @@ because eight threads hammering one cache line contend harder than eight
 threads taking turns. Read nothing general
 into that: the point is only that the lock is not going to be your bottleneck.
 
-What is missing: no read-only lock, so two readers still take turns, and no
-try-lock, so there is no way to do something else instead of waiting.
+### Readers, and not waiting
+
+A value that is read far more often than it is written — a configuration, a
+routing table, a cache that misses rarely — does not need its readers to take
+turns. `lock read` lets any number in together and keeps writers out while they
+are there; the binding is an immutable `*T`, so a reader cannot write by
+mistake, and `Wait` and `Notify` need the writer's `lock`:
+
+```sword
+lock read routes := &table {
+    target := routes.Get(path) orelse return error.NotFound
+}
+```
+
+A writer waiting keeps new readers out, so a steady stream of them cannot keep
+it waiting for good.
+
+And when waiting is the wrong answer — a cache that is busy can be skipped, a
+statistic can be counted next time — `if lock` takes the lock only if it is
+free, and runs `else` without it otherwise:
+
+```sword
+if lock stats := &counters {
+    stats.hits += pending
+    pending = 0
+}
+```
 
 ## Channels
 

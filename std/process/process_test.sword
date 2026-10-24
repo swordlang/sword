@@ -8,10 +8,10 @@ import "std/testing"
 
 func TestRunAnswersTheStatus(mut t *testing.T) !void {
     mut args := [2]string{"-c", "exit 7"}
-    try t.Equal(try Run("sh", args[..], t.Mem), 7)
+    t.Equal(try Run("sh", args[..], t.Mem), 7)
 
     mut fine := [2]string{"-c", "true"}
-    try t.Equal(try Run("sh", fine[..], t.Mem), 0)
+    t.Equal(try Run("sh", fine[..], t.Mem), 0)
 }
 
 func TestStartReadsBothStreams(mut t *testing.T) !void {
@@ -21,13 +21,13 @@ func TestStartReadsBothStreams(mut t *testing.T) !void {
 
     mut room := [64]u8{}
     n := try c.Out.Read(room[..])
-    try t.Equal(string(room[0..n]), "out")
+    t.Equal(string(room[0..n]), "out")
 
     mut other := [64]u8{}
     m := try c.Err.Read(other[..])
-    try t.Equal(string(other[0..m]), "err")
+    t.Equal(string(other[0..m]), "err")
 
-    try t.Equal(try c.Wait(), 2)
+    t.Equal(try c.Wait(), 2)
     c.Close()
 }
 
@@ -40,15 +40,15 @@ func TestTalkToIt(mut t *testing.T) !void {
     try c.In.WriteString("one\n")
     mut room := [64]u8{}
     n := try c.Out.Read(room[..])
-    try t.Equal(string(room[0..n]), "got one\n")
+    t.Equal(string(room[0..n]), "got one\n")
 
     try c.In.WriteString("two\n")
     m := try c.Out.Read(room[..])
-    try t.Equal(string(room[0..m]), "got two\n")
+    t.Equal(string(room[0..m]), "got two\n")
 
     // Closing its input is how it is told that was all of it.
     c.CloseIn()
-    try t.Equal(try c.Wait(), 0)
+    t.Equal(try c.Wait(), 0)
     c.Close()
 }
 
@@ -59,15 +59,15 @@ func TestKill(mut t *testing.T) !void {
 
     try c.Kill(15) // SIGTERM
     // 128 plus the signal, which is what a shell reports.
-    try t.Equal(try c.Wait(), 143)
+    t.Equal(try c.Wait(), 143)
     c.Close()
 }
 
 func TestNoSuchProgram(mut t *testing.T) !void {
     mut none := [0]string{}
     Run("sword_no_such_program", none[..], t.Mem) catch |e| {
-        try t.Equal(e, error.CannotStart)
+        t.Equal(e, error.CannotStart)
         return
     }
-    try t.Failf("ran a program that is not there")
+    t.Failf("ran a program that is not there")
 }

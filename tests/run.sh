@@ -464,11 +464,11 @@ cat > "$tmp/picked/picked_test.sword" <<'EOF'
 import "std/testing"
 
 func TestPasses(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 2)
+    t.Equal(1 + 1, 2)
 }
 
 func TestFails(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 3)
+    t.Equal(1 + 1, 3)
 }
 EOF
 picked() { # expected exit, expected text, arguments
@@ -488,6 +488,159 @@ picked 0 "ok    1 tests" -run TestPasses
 picked 1 "2 tests, 1 failed" -run TestPasses -run TestFails
 picked 1 "no test 'TestPass'" -run TestPass
 
+# Equal records and carries on, so one run reports every mismatch; Must records
+# and stops, so what depends on the value never runs.
+mkdir -p "$tmp/asserts"
+cat > "$tmp/asserts/asserts_test.sword" <<'EOF'
+import "std/testing"
+
+func TestCarriesOn(mut t *testing.T) !void {
+    t.Equal(1 + 1, 3)
+    t.Equal(2 + 2, 5)
+}
+
+func TestStops(mut t *testing.T) !void {
+    try t.Must(1, 2)
+    t.Equal(9, 10)
+}
+EOF
+out=$("$shield" test "$tmp/asserts" -p 1 2>&1)
+if ! printf '%s\n' "$out" | grep -qF "got 2, want 3" ||
+   ! printf '%s\n' "$out" | grep -qF "got 4, want 5" ||
+   ! printf '%s\n' "$out" | grep -qF "got 1, want 2" ||
+   printf '%s\n' "$out" | grep -qF "got 9"; then
+    echo "FAIL shield test: Equal should carry on and Must should stop"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# A module: sword.mod names the tree, its packages are imported under that name,
+# `replace` points a path at a directory, and a /v2 path is the package before it.
+mkdir -p "$tmp/mod/site/util" "$tmp/mod/lib" "$tmp/mod/deep2" "$tmp/mod/sword-term"
+cat > "$tmp/mod/site/sword.mod" <<'EOF'
+// The site, and two packages it works on beside it.
+module example.com/site
+sword 0.2
+
+replace example.com/lib => ../lib
+replace example.com/deep/v2 => ../deep2
+replace example.com/sword-term => ../sword-term
+EOF
+cat > "$tmp/mod/site/main.sword" <<'EOF'
+import "example.com/site/util"
+import "example.com/lib"
+import "example.com/deep/v2"
+import "example.com/sword-term"
+
+func main() int {
+    return util.Two() + lib.Thirty() + deep.Ten() + term.Zero()
+}
+EOF
+printf 'package util\n\nfunc Two() int {\n    return 2\n}\n' > "$tmp/mod/site/util/util.sword"
+printf 'package lib\n\nfunc Thirty() int {\n    return 30\n}\n' > "$tmp/mod/lib/lib.sword"
+printf 'package deep\n\nfunc Ten() int {\n    return 10\n}\n' > "$tmp/mod/deep2/deep.sword"
+# A path no program could write before a dot is named by its package clause.
+printf 'package term\n\nfunc Zero() int {\n    return 0\n}\n' > "$tmp/mod/sword-term/term.sword"
+if ! "$shield" "$tmp/mod/site" -o "$tmp/mod/prog" 2>"$tmp/mod/err"; then
+    echo "FAIL module: did not build"
+    sed 's/^/     /' "$tmp/mod/err"
+    fail=$((fail + 1))
+else
+    "$tmp/mod/prog"
+    got=$?
+    if [ "$got" != 42 ]; then
+        echo "FAIL module: exit $got, want 42"
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+fi
+
+# What a sword.mod may not say, each refused where it is written.
+badmod() { # expected text, then the sword.mod
+    want=$1
+    printf '%s\n' "$2" > "$tmp/mod/site/sword.mod"
+    out=$("$shield" "$tmp/mod/site" -o "$tmp/mod/prog" 2>&1)
+    if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "$want"; then
+        echo "FAIL sword.mod: want '$want'"
+        printf '%s\n' "$out" | sed 's/^/     /'
+        fail=$((fail + 1))
+    else
+        pass=$((pass + 1))
+    fi
+}
+badmod "this module needs Sword 9.9" "module example.com/site
+sword 9.9"
+badmod "'1.4' is not a version" "module example.com/site
+require example.com/lib 1.4"
+badmod "required as 'example.com/lib/v2'" "module example.com/site
+require example.com/lib v2.0.1"
+badmod "is not something a sword.mod says" "module example.com/site
+include example.com/lib"
+badmod "a sword.mod starts by naming its module" "sword 0.2"
+badmod "'Example.com/Site' is not a module path" "module Example.com/Site"
+badmod "a module cannot be named under it" "module std/site"
+
+# A package clause has to agree with the name its importers write.
+printf 'package other\n\nfunc Two() int {\n    return 2\n}\n' > "$tmp/mod/site/util/util.sword"
+badmod "but it is imported as 'example.com/site/util'" "module example.com/site
+sword 0.2"
+
+# Two imports that give one name: every use would quietly mean the first, so
+# one of them has to be named where it is imported.
+mkdir -p "$tmp/twice/a/util" "$tmp/twice/b/util"
+printf 'package util\n\nfunc One() int {\n    return 1\n}\n' > "$tmp/twice/a/util/util.sword"
+printf 'package util\n\nfunc One() int {\n    return 2\n}\n' > "$tmp/twice/b/util/util.sword"
+printf 'import "a/util"\nimport "b/util"\n\nfunc main() int {\n    return util.One()\n}\n' > "$tmp/twice/main.sword"
+out=$("$shield" "$tmp/twice/main.sword" -o "$tmp/twice/prog" 2>&1)
+if [ $? -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "'a/util' and 'b/util' are both called 'util'; give one of them another name"; then
+    echo "FAIL two imports called util: want an error"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+printf 'import "a/util"\nimport other "b/util"\n\nfunc main() int {\n    return util.One() * 10 + other.One()\n}\n' > "$tmp/twice/main.sword"
+if "$shield" "$tmp/twice/main.sword" -o "$tmp/twice/prog" >"$tmp/twice/err" 2>&1 && { "$tmp/twice/prog"; [ $? = 12 ]; }; then
+    pass=$((pass + 1))
+else
+    echo "FAIL two imports called util, one renamed: want 12"
+    sed 's/^/     /' "$tmp/twice/err"
+    fail=$((fail + 1))
+fi
+
+# shield doc prints what a package exports as it was written, with the comment
+# above it, and nothing it keeps to itself.
+said=$("$shield" doc std/mem 2>&1)
+if printf '%s\n' "$said" | grep -qx 'func NewArena(backing \[\]u8) Arena' &&
+    printf '%s\n' "$said" | grep -qx '    func (mut a \*Arena) Reset()' &&
+    ! "$shield" doc std/strings 2>&1 | grep -q 'isSpace'; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc std/mem"
+    printf '%s\n' "$said" | sed 's/^/     /'
+    fail=$((fail + 1))
+fi
+said=$("$shield" doc mem.Arena 2>&1)
+if printf '%s\n' "$said" | grep -q '^    Bumps a pointer through a buffer' &&
+    printf '%s\n' "$said" | grep -qx '    Watch bool' &&
+    printf '%s\n' "$said" | grep -qx '    // and more that only the package sees'; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc mem.Arena"
+    printf '%s\n' "$said" | sed 's/^/     /'
+    fail=$((fail + 1))
+fi
+if ! "$shield" doc std/mem.Nope > "$tmp/doc.out" 2>&1 &&
+    grep -qF "std/mem has nothing exported called 'Nope'" "$tmp/doc.out"; then
+    pass=$((pass + 1))
+else
+    echo "FAIL shield doc std/mem.Nope"
+    fail=$((fail + 1))
+fi
+
 # A program can be tested too: its own main steps aside for the runner's, and
 # the tests still reach everything else it declares (issue #4).
 mkdir -p "$tmp/program"
@@ -504,7 +657,7 @@ cat > "$tmp/program/main_test.sword" <<'EOF'
 import "std/testing"
 
 func TestTwice(mut t *testing.T) !void {
-    try t.Equal(twice(21), 42)
+    t.Equal(twice(21), 42)
 }
 EOF
 out=$("$shield" test "$tmp/program" 2>&1)
@@ -536,7 +689,7 @@ cat > "$tmp/bench/bench_test.sword" <<'EOF'
 import "std/testing"
 
 func TestStillRuns(mut t *testing.T) !void {
-    try t.Equal(1 + 1, 2)
+    t.Equal(1 + 1, 2)
 }
 
 func BenchmarkAdding(mut b *testing.B) !void {
@@ -613,7 +766,7 @@ extern func abs(x i32) i32
 
 func TestThroughAValue(mut t *testing.T) !void {
     f := abs
-    try t.Equal(f(-3), 3)
+    t.Equal(f(-3), 3)
 }
 EOF
 out=$("$shield" test "$tmp/simextern" -sim -seeds 1 2>&1)
@@ -707,6 +860,92 @@ if [ "$warned" -gt 0 ] && [ "$quiet" = 0 ]; then
     pass=$((pass + 1))
 else
     echo "FAIL --sim: $warned warnings about calling out with it, $quiet without"
+    fail=$((fail + 1))
+fi
+
+# --split: one object per package in the cache. A second build of the same
+# program adds nothing to it, and editing the program's own package adds one
+# object, its own, and leaves the standard library's alone.
+cp "$root/tests/channels.sword" "$tmp/split.sword"
+split_build() {
+    SWORD_CACHE="$tmp/splitcache" "$shield" --split "$tmp/split.sword" \
+        -o "$tmp/split" >/dev/null 2>&1 &&
+    "$tmp/split" >/dev/null 2>&1
+    [ $? = 42 ] || return 1
+    ls "$tmp/splitcache/build" | wc -l | tr -d ' '
+}
+first=$(split_build)
+again=$(split_build)
+printf '\nfunc edited() int {\n    return 7\n}\n' >> "$tmp/split.sword"
+edited=$(split_build)
+if [ -n "$first" ] && [ "$first" -gt 1 ] && [ "$again" = "$first" ] &&
+   [ "$edited" = $((first + 1)) ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --split: objects '$first', again '$again', after an edit '$edited'"
+    fail=$((fail + 1))
+fi
+
+# The cache keeps a month of objects: one nobody has used in that long goes at
+# the next build that sweeps, and one in use stays. `shield clean` takes the rest.
+touch -t 200001010000 "$tmp/splitcache/build/0000old.o" "$tmp/splitcache/build/.swept"
+kept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+SWORD_CACHE="$tmp/splitcache" "$shield" --split "$tmp/split.sword" -o "$tmp/split" >/dev/null 2>&1
+swept=$(ls "$tmp/splitcache/build" | wc -l | tr -d ' ')
+cleaned=$(SWORD_CACHE="$tmp/splitcache" "$shield" clean 2>&1)
+case $cleaned in "removed $swept objects, "*) said=yes ;; *) said=no ;; esac
+if [ "$swept" = $((kept - 1)) ] && [ ! -e "$tmp/splitcache/build" ] &&
+   [ "$said" = yes ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL cache: $kept objects, $swept after the sweep, clean said '$cleaned'"
+    fail=$((fail + 1))
+fi
+
+# A standard library error has the same code whichever packages a program
+# imports, and whatever errors of its own it declares first.
+mkdir -p "$tmp/codes"
+printf 'import "std/net"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/few.sword"
+printf 'import "std/http"\nimport "std/json"\nimport "std/net"\n\nerror Mine = "mine"\n\nfunc main() !void {\n    return error.Timeout\n}\n' \
+    > "$tmp/codes/many.sword"
+for program in few many; do
+    "$shield" "$tmp/codes/$program.sword" -o "$tmp/codes/$program" >/dev/null 2>&1
+    "$tmp/codes/$program"
+    eval "code_$program=$?"
+done
+std_errors=$(wc -l < "$root/src/std_errors.inc" | tr -d ' ')
+codes=" $code_few $code_many"
+if [ "$code_few" = "$code_many" ] && [ "$code_few" -gt 0 ] &&
+   [ "$code_few" -le "$std_errors" ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL error.Timeout should have one code in every program:$codes"
+    fail=$((fail + 1))
+fi
+
+# An exit status is eight bits. A code of 256 cut to them would be 0, a
+# success, so every code past 255 leaves with 255.
+for code in 254 256; do
+    own=$((code - std_errors))
+    {
+        printf 'error'
+        i=1
+        while [ $i -le $own ]; do
+            [ $i -gt 1 ] && printf ','
+            printf ' E%d' $i
+            i=$((i + 1))
+        done
+        printf '\n\nfunc main() !void {\n    return error.E%d\n}\n' $own
+    } > "$tmp/codes/status.sword"
+    "$shield" "$tmp/codes/status.sword" -o "$tmp/codes/status" >/dev/null 2>&1
+    "$tmp/codes/status"
+    eval "status_$code=$?"
+done
+if [ "$status_254" = 254 ] && [ "$status_256" = 255 ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL exit status of codes 254 and 256: $status_254 and $status_256, want 254 and 255"
     fail=$((fail + 1))
 fi
 

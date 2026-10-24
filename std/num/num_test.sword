@@ -14,11 +14,11 @@ func TestCompensatesWhatAdditionLoses(mut t *testing.T) !void {
         kept.Add(1.0)
     }
 
-    try t.Equal(plain, 1.0e16)
-    try t.Equal(kept.Value(), 1.0e16 + 1000000.0)
+    t.Equal(plain, 1.0e16)
+    t.Equal(kept.Value(), 1.0e16 + 1000000.0)
     // And it knows what it saved: the running total on its own is the wrong
     // answer, which is the one plain addition reaches.
-    try t.Equal(kept.Rounded(), plain)
+    t.Equal(kept.Rounded(), plain)
 }
 
 // The case Kahan's own form misses: a term far larger than the running total.
@@ -29,7 +29,7 @@ func TestLargeTermAfterSmallOnes(mut t *testing.T) !void {
     k.Add(1.0e100)
     k.Add(1.0)
     k.Add(-1.0e100)
-    try t.Equal(k.Value(), 2.0)
+    t.Equal(k.Value(), 2.0)
 }
 
 // Merging partial answers has to give what adding them in one go gives, since
@@ -63,8 +63,8 @@ func TestZeroIsTheIdentity(mut t *testing.T) !void {
     some.Add(2.25)
     nothing := NewKahan()
 
-    try t.Equal(nothing.Value(), 0.0)
-    try t.Equal(Merge(some, nothing).Value(), 3.75)
-    try t.Equal(Merge(nothing, some).Value(), 3.75)
-    try t.Equal(Merge(nothing, nothing).Value(), 0.0)
+    t.Equal(nothing.Value(), 0.0)
+    t.Equal(Merge(some, nothing).Value(), 3.75)
+    t.Equal(Merge(nothing, some).Value(), 3.75)
+    t.Equal(Merge(nothing, nothing).Value(), 0.0)
 }

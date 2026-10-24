@@ -1,0 +1,16 @@
+// expect-error: this writes 'n' while it is already written concurrently
+// The task reaches n through p, and the parent writes n by its own name (#72).
+
+func bump(mut p *i64) {
+    *p += 1
+}
+
+func main() int {
+    mut n i64 = 0
+    mut p := &n
+    scope {
+        spawn bump(p)
+        n = 5
+    }
+    return int(n)
+}

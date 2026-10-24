@@ -8,18 +8,25 @@
 
 namespace {
 
-std::string ll_type(const Type *t) {
+// A split module names its structs by where they are first used, so that a
+// package's module reads the same whatever else the program declared.
+using StructNames = std::map<const Type *, std::string>;
+
+std::string type_text(const Type *t, const StructNames *names) {
   switch (t->kind) {
   case TY_VOID: return "void";
   case TY_BOOL: return "i1";
   case TY_INT: return "i" + std::to_string(t->bits);
   case TY_FLOAT: return t->bits == 32 ? "float" : "double";
   case TY_PTR: case TY_RAWPTR: case TY_FUNC: return "ptr";
-  case TY_OPT: case TY_ATOMIC: case TY_ENUM: return ll_type(t->elem);
+  case TY_OPT: case TY_ATOMIC: case TY_ENUM: return type_text(t->elem, names);
   case TY_SLICE: case TY_STRING: return "%slice";
   case TY_ARRAY:
-    return "[" + std::to_string(t->count) + " x " + ll_type(t->elem) + "]";
-  case TY_STRUCT: return "%" + t->name;
+    return "[" + std::to_string(t->count) + " x " + type_text(t->elem, names) +
+           "]";
+  case TY_STRUCT:
+    if (names) return "%" + names->at(t);
+    return "%" + t->name;
   }
   return "void";
 }
@@ -61,6 +68,17 @@ const char *entry_name(const std::string &name) {
 struct Emitter {
   const IrModule &mod;
   FILE *out;
+  // The functions this module defines: every one, or a single unit's when the
+  // build is split. A split module names only what its own functions reach —
+  // strings, vtables, structs, declarations — so that it reads the same
+  // whatever the rest of the program holds.
+  std::vector<const IrFunc *> mine;
+  bool split = false;
+  std::vector<int> string_ids, vtable_ids; // the program's id -> this module's
+  std::vector<int> strings_used, vtables_used;
+  std::vector<const Type *> reached;
+  StructNames struct_names;
+  std::set<std::string> callees;
   const IrFunc *fn = nullptr;
   std::vector<std::string> operand; // value id -> LLVM operand text
   std::set<std::string> intrinsics;
@@ -70,7 +88,77 @@ struct Emitter {
   // where the callee looks for them.
   std::map<std::string, std::string> variadic_type;
 
-  Emitter(const IrModule &m, FILE *o) : mod(m), out(o) {}
+  Emitter(const IrModule &m, FILE *o) : mod(m), out(o) {
+    for (const IrFunc &f : mod.funcs)
+      if (!f.is_extern) mine.push_back(&f);
+  }
+
+  Emitter(const IrModule &m, const std::string &unit, FILE *o)
+      : mod(m), out(o), split(true) {
+    for (const IrFunc &f : mod.funcs)
+      if (!f.is_extern && f.unit == unit) mine.push_back(&f);
+  }
+
+  std::string ll_type(const Type *t) const {
+    return type_text(t, split ? &struct_names : nullptr);
+  }
+
+  int string_id(int64_t id) const { return split ? string_ids[id] : (int)id; }
+  int vtable_id(int64_t id) const { return split ? vtable_ids[id] : (int)id; }
+
+  void reach(const Type *t) {
+    while (t->kind == TY_OPT || t->kind == TY_ATOMIC || t->kind == TY_ENUM ||
+           t->kind == TY_ARRAY)
+      t = t->elem;
+    if (t->kind != TY_STRUCT || struct_names.count(t)) return;
+    struct_names[t] = "t" + std::to_string(reached.size());
+    reached.push_back(t);
+    for (const Field &f : t->fields) reach(f.type);
+  }
+
+  void reach_signature(const IrFunc &f) {
+    for (const Type *p : f.params) reach(p);
+    reach(f.ret);
+  }
+
+  // Numbers this module's strings and vtables from zero, in the order its
+  // functions use them, and gathers every type and function they mention.
+  void collect() {
+    string_ids.assign(mod.strings.size(), -1);
+    vtable_ids.assign(mod.vtables.size(), -1);
+    for (const IrFunc *f : mine) {
+      reach_signature(*f);
+      for (const Type *t : f->value_type)
+        if (t) reach(t);
+      for (const IrBlock &bb : f->blocks)
+        for (const IrInst &in : bb.insts) {
+          if (in.type) reach(in.type);
+          if (in.op == IR_STR_VALUE || in.op == IR_STR_DATA) {
+            if (string_ids[in.imm] < 0) {
+              string_ids[in.imm] = (int)strings_used.size();
+              strings_used.push_back((int)in.imm);
+            }
+          } else if (in.op == IR_VTABLE) {
+            if (vtable_ids[in.imm] < 0) {
+              vtable_ids[in.imm] = (int)vtables_used.size();
+              vtables_used.push_back((int)in.imm);
+              for (const std::string &entry : mod.vtables[in.imm])
+                callees.insert(entry);
+            }
+          } else if ((in.op == IR_CALL || in.op == IR_FUNCADDR) &&
+                     !in.callee.empty()) {
+            callees.insert(in.callee);
+          }
+        }
+    }
+    // By name, not in the program's order, which another package can change.
+    std::map<std::string, const IrFunc *> by_name;
+    for (const IrFunc &f : mod.funcs) by_name.emplace(f.name, &f);
+    for (const std::string &name : callees) {
+      auto found = by_name.find(name);
+      if (found != by_name.end()) reach_signature(*found->second);
+    }
+  }
 
   const std::string &val(int id) const { return operand[id]; }
   std::string type_of(int id) const { return ll_type(fn->value_type[id]); }
@@ -388,7 +476,7 @@ struct Emitter {
     }
   }
 
-  void signature(const IrFunc &f, const char *keyword) {
+  void signature(const IrFunc &f, const char *keyword, bool named) {
     const char *renamed = entry_name(f.name);
     const char *name = renamed ? renamed : f.name.c_str();
     std::string ret =
@@ -397,7 +485,6 @@ struct Emitter {
 
     fprintf(out, "%s %s @%s(", keyword, ret.c_str(), name);
     int index = 0;
-    bool named = f.blocks.size() > 0;
     if (f.ret_by_pointer) {
       fputs(named ? "ptr %v0" : "ptr", out);
       index = 1;
@@ -427,7 +514,7 @@ struct Emitter {
     if (f.is_extern) {
       if (f.is_c_variadic) variadic_type[f.name] = variadic_signature(f);
       if (!declared.insert(f.name).second) return;
-      signature(f, f.is_weak ? "declare extern_weak" : "declare");
+      signature(f, f.is_weak ? "declare extern_weak" : "declare", false);
       fputc('\n', out);
       return;
     }
@@ -458,17 +545,21 @@ struct Emitter {
           }
         }
         else if (in.op == IR_STR_VALUE)
-          operand[in.dst] = "@strv." + std::to_string(in.imm);
+          operand[in.dst] = "@strv." + std::to_string(string_id(in.imm));
         else if (in.op == IR_STR_DATA)
-          operand[in.dst] = "@str." + std::to_string(in.imm);
+          operand[in.dst] = "@str." + std::to_string(string_id(in.imm));
         else if (in.op == IR_VTABLE)
-          operand[in.dst] = "@vt." + std::to_string(in.imm);
+          operand[in.dst] = "@vt." + std::to_string(vtable_id(in.imm));
         else if (in.op == IR_FUNCADDR)
           operand[in.dst] = "@" + in.callee;
       }
     }
 
-    signature(f, f.is_internal ? "define internal" : "define");
+    // Split, a function is reached from other objects, and hidden keeps it
+    // out of the executable's exports all the same.
+    const char *linkage = split ? (f.is_local ? "define internal" : "define hidden")
+                                : (f.is_internal ? "define internal" : "define");
+    signature(f, linkage, true);
     fputs(" {\n", out);
     for (const IrBlock &bb : f.blocks) {
       fprintf(out, "bb%d:\n", bb.id);
@@ -480,7 +571,13 @@ struct Emitter {
   // A program only gets the argument vector if it asks: `main` takes no
   // parameters otherwise, and nothing from the runtime gets linked in.
   bool wants_args() const {
-    return calls("sword_os_argc") || calls("sword_os_arg");
+    for (const IrFunc &f : mod.funcs)
+      for (const IrBlock &bb : f.blocks)
+        for (const IrInst &in : bb.insts)
+          if (in.op == IR_CALL &&
+              (in.callee == "sword_os_argc" || in.callee == "sword_os_arg"))
+            return true;
+    return false;
   }
 
   // `main` is a task like any other, which is what lets it wait on a
@@ -550,7 +647,11 @@ struct Emitter {
             "  %failed = icmp ne i16 %code, 0\n"
             "  br i1 %failed, label %bad, label %good\n"
             "bad:\n"
-            "  %status = zext i16 %code to i32\n"
+            // An exit status is eight bits, and a code of 256 cut to them is
+            // 0, which says it worked. Past 255 every code says 255.
+            "  %wide = zext i16 %code to i32\n"
+            "  %over = icmp ugt i32 %wide, 255\n"
+            "  %status = select i1 %over, i32 255, i32 %wide\n"
             "  ret i32 %status\n"
             "good:\n",
             out);
@@ -619,16 +720,27 @@ struct Emitter {
          "declare i16 @sword_parallel_for(i64, i64, ptr, ptr, ptr, i64)"},
         {"sword_mutex_lock", "declare void @sword_mutex_lock(ptr)"},
         {"sword_mutex_unlock", "declare void @sword_mutex_unlock(ptr)"},
+        {"sword_mutex_lock_read", "declare void @sword_mutex_lock_read(ptr)"},
+        {"sword_mutex_unlock_read",
+         "declare void @sword_mutex_unlock_read(ptr)"},
+        {"sword_mutex_try_lock",
+         "declare zeroext i1 @sword_mutex_try_lock(ptr)"},
+        {"sword_mutex_try_lock_read",
+         "declare zeroext i1 @sword_mutex_try_lock_read(ptr)"},
         {"sword_mutex_wait", "declare void @sword_mutex_wait(ptr)"},
         {"sword_mutex_notify", "declare void @sword_mutex_notify(ptr)"},
         {"sword_chan_select",
          "declare i64 @sword_chan_select(ptr, ptr, ptr, i64, i32, ptr)"},
         {"sword_mutex_notify_all",
          "declare void @sword_mutex_notify_all(ptr)"},
+        {"sword_offload", "declare i64 @sword_offload(ptr, ptr)"},
+        {"sword_errno", "declare i32 @sword_errno()"},
+        {"sword_set_errno", "declare void @sword_set_errno(i32)"},
     };
     bool any = false;
     for (const auto &entry : runtime) {
-      if (!calls(entry.name)) continue;
+      // std/os declares sword_errno itself, and one declaration is enough.
+      if (!calls(entry.name) || declared.count(entry.name)) continue;
       fprintf(out, "%s\n", entry.decl);
       any = true;
     }
@@ -645,8 +757,8 @@ struct Emitter {
       fputs("declare void @sword_os_set_args(i32, ptr)\n", out);
       any = true;
     }
-    for (const IrFunc &f : mod.funcs)
-      if (f.name == "main.main") {
+    for (const IrFunc *f : mine)
+      if (f->name == "main.main") {
         fputs("declare i16 @sword_run_main(ptr, ptr, i64)\n", out);
         any = true;
       }
@@ -659,38 +771,36 @@ struct Emitter {
   }
 
   bool calls(const std::string &name) const {
-    for (const IrFunc &f : mod.funcs)
-      for (const IrBlock &bb : f.blocks)
+    for (const IrFunc *f : mine)
+      for (const IrBlock &bb : f->blocks)
         for (const IrInst &in : bb.insts)
           if (in.op == IR_CALL && in.callee == name) return true;
     return false;
   }
 
-  bool uses_panic() const {
-    for (const IrFunc &f : mod.funcs)
-      for (const IrBlock &bb : f.blocks)
-        for (const IrInst &in : bb.insts)
-          if (in.op == IR_CALL && in.callee == "sword_panic") return true;
-    return false;
-  }
+  bool uses_panic() const { return calls("sword_panic"); }
 
   void run() {
     fputs("; generated by shield\n\n", out);
+    if (split) collect();
 
     // Both are part of the language rather than of any program, and `any`
     // refers to `slice`, so neither is worth making conditional.
     fputs("%slice = type { ptr, i64 }\n", out);
 
-    for (Type *s : mod.structs) {
-      fprintf(out, "%%%s = type { ", s->name.c_str());
+    std::vector<const Type *> structs(mod.structs.begin(), mod.structs.end());
+    if (split) structs = reached;
+    for (const Type *s : structs) {
+      fprintf(out, "%s = type { ", ll_type(s).c_str());
       for (size_t i = 0; i < s->fields.size(); i++)
         fprintf(out, "%s%s", i ? ", " : "", ll_type(s->fields[i].type).c_str());
       fputs(" }\n", out);
     }
     fputc('\n', out);
 
-    for (size_t i = 0; i < mod.strings.size(); i++) {
-      const std::string &text = mod.strings[i];
+    size_t strings = split ? strings_used.size() : mod.strings.size();
+    for (size_t i = 0; i < strings; i++) {
+      const std::string &text = mod.strings[split ? strings_used[i] : i];
       fprintf(out, "@str.%zu = private unnamed_addr constant [%zu x i8] c\"%s\"\n",
               i, text.size(), quote(text).c_str());
       fprintf(out,
@@ -698,22 +808,33 @@ struct Emitter {
               "{ ptr @str.%zu, i64 %zu }\n",
               i, i, text.size());
     }
-    if (!mod.strings.empty()) fputc('\n', out);
+    if (strings) fputc('\n', out);
 
-    for (size_t i = 0; i < mod.vtables.size(); i++) {
-      const auto &entries = mod.vtables[i];
+    size_t vtables = split ? vtables_used.size() : mod.vtables.size();
+    for (size_t i = 0; i < vtables; i++) {
+      const auto &entries = mod.vtables[split ? vtables_used[i] : i];
       fprintf(out, "@vt.%zu = private unnamed_addr constant [%zu x ptr] [", i,
               entries.size());
       for (size_t j = 0; j < entries.size(); j++)
         fprintf(out, "%sptr @%s", j ? ", " : "", entries[j].c_str());
       fputs("]\n", out);
     }
-    if (!mod.vtables.empty()) fputc('\n', out);
+    if (vtables) fputc('\n', out);
 
     // Extern declarations first: the panic helper needs to know whether the
     // source already declared write or abort.
     for (const IrFunc &f : mod.funcs)
-      if (f.is_extern) func(f);
+      if (f.is_extern && (!split || callees.count(f.name))) func(f);
+    if (split) {
+      std::set<std::string> defined;
+      for (const IrFunc *f : mine) defined.insert(f->name);
+      for (const IrFunc &f : mod.funcs) {
+        if (f.is_extern || defined.count(f.name) || !callees.count(f.name))
+          continue;
+        signature(f, "declare hidden", false);
+        fputc('\n', out);
+      }
+    }
     if (!mod.funcs.empty()) fputc('\n', out);
 
     bool panics = uses_panic();
@@ -721,17 +842,16 @@ struct Emitter {
     runtime_declarations();
 
     const IrFunc *entry = nullptr;
-    for (const IrFunc &f : mod.funcs) {
-      if (f.is_extern) continue;
-      func(f);
-      if (f.name == "main.main") entry = &f;
+    for (const IrFunc *f : mine) {
+      func(*f);
+      if (f->name == "main.main") entry = f;
     }
     if (entry) entry_wrapper(*entry);
 
     bool uses_memcpy = false;
     bool uses_memset = false;
-    for (const IrFunc &f : mod.funcs)
-      for (const IrBlock &bb : f.blocks)
+    for (const IrFunc *f : mine)
+      for (const IrBlock &bb : f->blocks)
         for (const IrInst &in : bb.insts) {
           if (in.op == IR_MEMCPY) uses_memcpy = true;
           if (in.op == IR_ZERO) uses_memset = true;
@@ -747,3 +867,15 @@ struct Emitter {
 } // namespace
 
 void emit_llvm(const IrModule &mod, FILE *out) { Emitter(mod, out).run(); }
+
+std::vector<std::string> llvm_units(const IrModule &mod) {
+  std::vector<std::string> units;
+  std::set<std::string> seen;
+  for (const IrFunc &f : mod.funcs)
+    if (!f.is_extern && seen.insert(f.unit).second) units.push_back(f.unit);
+  return units;
+}
+
+void emit_llvm_unit(const IrModule &mod, const std::string &unit, FILE *out) {
+  Emitter(mod, unit, out).run();
+}

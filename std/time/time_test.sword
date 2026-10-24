@@ -6,31 +6,31 @@ import "std/testing"
 // reader has to understand.
 func TestHttpDateForms(mut t *testing.T) !void {
     mut room := [HttpDateSize]u8{}
-    try t.Equal(try HttpDate(784111777, room[..]), "Sun, 06 Nov 1994 08:49:37 GMT")
+    t.Equal(try HttpDate(784111777, room[..]), "Sun, 06 Nov 1994 08:49:37 GMT")
 
-    try t.Equal(try ParseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT"), i64(784111777))
-    try t.Equal(try ParseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT"), i64(784111777))
-    try t.Equal(try ParseHttpDate("Sun Nov  6 08:49:37 1994"), i64(784111777))
+    t.Equal(try ParseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT"), i64(784111777))
+    t.Equal(try ParseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT"), i64(784111777))
+    t.Equal(try ParseHttpDate("Sun Nov  6 08:49:37 1994"), i64(784111777))
 }
 
 // Two digits of year: 69 and up is the last century, below it this one.
 func TestRfc850Years(mut t *testing.T) !void {
-    try t.Equal(try ParseHttpDate("Wednesday, 31-Dec-69 23:59:59 GMT"), i64(-1))
-    try t.Equal(try ParseHttpDate("Sunday, 01-Jan-68 00:00:00 GMT"), i64(3092601600))
+    t.Equal(try ParseHttpDate("Wednesday, 31-Dec-69 23:59:59 GMT"), i64(-1))
+    t.Equal(try ParseHttpDate("Sunday, 01-Jan-68 00:00:00 GMT"), i64(3092601600))
 }
 
 func TestRfc3339(mut t *testing.T) !void {
     mut room := [Rfc3339Size]u8{}
-    try t.Equal(try Rfc3339(1792504980, room[..]), "2026-10-20T14:03:00Z")
-    try t.Equal(try Rfc3339(0, room[..]), "1970-01-01T00:00:00Z")
-    try t.Equal(try Rfc3339(-1, room[..]), "1969-12-31T23:59:59Z")
-    try t.Equal(try Rfc3339(1709208000, room[..]), "2024-02-29T12:00:00Z")
+    t.Equal(try Rfc3339(1792504980, room[..]), "2026-10-20T14:03:00Z")
+    t.Equal(try Rfc3339(0, room[..]), "1970-01-01T00:00:00Z")
+    t.Equal(try Rfc3339(-1, room[..]), "1969-12-31T23:59:59Z")
+    t.Equal(try Rfc3339(1709208000, room[..]), "2024-02-29T12:00:00Z")
 
     // The same instant at three offsets, with and without a fraction.
-    try t.Equal(try ParseRfc3339("2026-10-20T14:03:00Z"), i64(1792504980))
-    try t.Equal(try ParseRfc3339("2026-10-20T11:03:00-03:00"), i64(1792504980))
-    try t.Equal(try ParseRfc3339("2026-10-20T19:33:00.999+05:30"), i64(1792504980))
-    try t.Equal(try ParseRfc3339("2026-10-20t14:03:00z"), i64(1792504980))
+    t.Equal(try ParseRfc3339("2026-10-20T14:03:00Z"), i64(1792504980))
+    t.Equal(try ParseRfc3339("2026-10-20T11:03:00-03:00"), i64(1792504980))
+    t.Equal(try ParseRfc3339("2026-10-20T19:33:00.999+05:30"), i64(1792504980))
+    t.Equal(try ParseRfc3339("2026-10-20t14:03:00z"), i64(1792504980))
 }
 
 func refused(text string) bool {
@@ -44,37 +44,37 @@ func refusedHttp(text string) bool {
 }
 
 func TestRefusals(mut t *testing.T) !void {
-    try t.Equal(refused("2026-10-20T14:03:00"), true)        // no zone
-    try t.Equal(refused("2026-10-20 14:03:00Z"), true)       // a space for the T
-    try t.Equal(refused("2026-02-29T00:00:00Z"), true)       // not a leap year
-    try t.Equal(refused("1900-02-29T00:00:00Z"), true)       // nor is a century
-    try t.Equal(refused("2000-02-29T00:00:00Z"), false)      // unless it is a fourth one
-    try t.Equal(refused("2026-10-20T24:00:00Z"), true)
-    try t.Equal(refused("2026-10-20T23:59:60Z"), true)       // a leap second
-    try t.Equal(refused("2026-10-20T14:03:00.Z"), true)      // a dot with no digits
-    try t.Equal(refused("2026-10-20T14:03:00Zjunk"), true)
-    try t.Equal(refused("2026-13-01T00:00:00Z"), true)
+    t.Equal(refused("2026-10-20T14:03:00"), true)        // no zone
+    t.Equal(refused("2026-10-20 14:03:00Z"), true)       // a space for the T
+    t.Equal(refused("2026-02-29T00:00:00Z"), true)       // not a leap year
+    t.Equal(refused("1900-02-29T00:00:00Z"), true)       // nor is a century
+    t.Equal(refused("2000-02-29T00:00:00Z"), false)      // unless it is a fourth one
+    t.Equal(refused("2026-10-20T24:00:00Z"), true)
+    t.Equal(refused("2026-10-20T23:59:60Z"), true)       // a leap second
+    t.Equal(refused("2026-10-20T14:03:00.Z"), true)      // a dot with no digits
+    t.Equal(refused("2026-10-20T14:03:00Zjunk"), true)
+    t.Equal(refused("2026-13-01T00:00:00Z"), true)
 
-    try t.Equal(refusedHttp("Sun, 06 Nov 1994 08:49:37 UTC"), true)
-    try t.Equal(refusedHttp("Sun, 31 Nov 1994 08:49:37 GMT"), true)
-    try t.Equal(refusedHttp("Xyz, 06 Nov 1994 08:49:37 GMT"), true)
-    try t.Equal(refusedHttp("Sun, 06 Nov 1994 08:49:37 GMT "), true)
-    try t.Equal(refusedHttp(""), true)
+    t.Equal(refusedHttp("Sun, 06 Nov 1994 08:49:37 UTC"), true)
+    t.Equal(refusedHttp("Sun, 31 Nov 1994 08:49:37 GMT"), true)
+    t.Equal(refusedHttp("Xyz, 06 Nov 1994 08:49:37 GMT"), true)
+    t.Equal(refusedHttp("Sun, 06 Nov 1994 08:49:37 GMT "), true)
+    t.Equal(refusedHttp(""), true)
 }
 
 func TestLimits(mut t *testing.T) !void {
     mut room := [Rfc3339Size]u8{}
-    try t.Equal(try Rfc3339(253402300799, room[..]), "9999-12-31T23:59:59Z")
+    t.Equal(try Rfc3339(253402300799, room[..]), "9999-12-31T23:59:59Z")
     mut beyond := false
     Rfc3339(253402300800, room[..]) catch {
         beyond = true
     }
-    try t.Equal(beyond, true)
+    t.Equal(beyond, true)
 
     mut short := [28]u8{}
     mut refusedShort := false
     HttpDate(0, short[..]) catch {
         refusedShort = true
     }
-    try t.Equal(refusedShort, true)
+    t.Equal(refusedShort, true)
 }
