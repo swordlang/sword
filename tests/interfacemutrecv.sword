@@ -1,0 +1,26 @@
+// expect-error: Count.Bump writes through its receiver, but Counter does not say it may; declare it 'mut Bump' in the interface
+// A caller holding a Counter checks its call against the interface, so a method
+// that writes where the interface does not say so would write memory nobody
+// lent it.
+
+interface Counter {
+    Bump()
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump() {
+    c.n += 1
+}
+
+func poke(c Counter) {
+    c.Bump()
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    poke(&k)
+    return int(k.n)
+}

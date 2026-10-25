@@ -84,6 +84,7 @@ struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
 extern struct Name { ... }         // declared field order, for C
 interface Name { Method(a T) R ... }
+interface Name { mut Method(a T) R }  // the method writes through its receiver
 enum Name T { A; B = 3; C }        // T is the width, default int
 error Name = "what went wrong"     // declared, with the sentence it says
 error Name                         // declared, saying nothing
@@ -96,6 +97,14 @@ import "path/to/package"
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
 mutable binding can be passed to one, and `&x` only when `x` is one.
+
+An interface method has no receiver to mark, so `mut` goes ahead of its name:
+`mut Bump()` writes through whatever the interface value points at, and only a
+mutable interface value can call it. A call through an interface is checked
+against the interface's signature, since that is all the caller sees, so a
+method satisfies it only if it writes nothing the interface does not allow: a
+`mut` receiver needs `mut` on the interface method, and a `mut` parameter needs
+`mut` on the same parameter there. A method that writes less is fine.
 
 A copy of a slice or a pointer reaches the same memory as the original, so a
 `mut` binding made from one lent read-only can be reassigned, and its own fields
@@ -113,7 +122,8 @@ A struct holding a read-only slice is the same: `p.at += 1` is the struct's own
 field, `p.input[0] = 1` goes through the copy. Whether a method or a function
 writes through what it is given is worked out from its body, so `p.Step()` is
 allowed when Step only moves `p.at`. A call through an interface or a function
-value is taken to write whatever it may. A value with a read-only part cannot be
+value is taken to write whatever its signature allows. Nothing can write through
+an interface with no `mut` method, so a copy of one lends nothing read-only. A value with a read-only part cannot be
 stored behind a pointer, and what a function hands back of its arguments keeps
 the right it was given. The check does not follow order within a function: a
 binding that is ever given read-only memory cannot be written through anywhere.
@@ -858,8 +868,8 @@ func (mut w *Writer) Flush() !void
 
 ```sword
 interface Allocator {
-    Alloc(n u64, align u64) ?[*]u8
-    Release(mut p [*]u8, n u64)
+    mut Alloc(n u64, align u64) ?[*]u8
+    mut Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64
@@ -1073,8 +1083,8 @@ code serves a growable buffer, a socket, or a block of stack.
 
 ```sword
 interface Sink {
-    WriteByte(c u8) !void
-    Write(p []u8) !void
+    mut WriteByte(c u8) !void
+    mut Write(p []u8) !void
 }
 
 func Format(mut out Sink, format string, args []any) !void

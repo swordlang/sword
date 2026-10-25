@@ -80,7 +80,8 @@ def main():
     bad_dir = os.path.join(tmp, "bad")
     pkg_dir = os.path.join(tmp, "pkg")
     alias_dir = os.path.join(tmp, "alias")
-    for d in (good_dir, bad_dir, pkg_dir, alias_dir):
+    iface_dir = os.path.join(tmp, "iface")
+    for d in (good_dir, bad_dir, pkg_dir, alias_dir, iface_dir):
         os.mkdir(d)
     good = write(good_dir, "good.sword", "func main() int {\n    x := 21\n    return x * 2\n}\n")
     bad = write(bad_dir, "bad.sword", "func main() int {\n    return nope\n}\n")
@@ -99,6 +100,12 @@ def main():
                      "    p := Point{X: 3, Y: 4}\n"
                      "    return int(twice(p.X) + p.Y)\n"
                      "}\n")
+    # An interface method has no receiver in its type, so whether it writes
+    # through one has to be said apart.
+    iface = write(iface_dir, "iface.sword",
+                  "interface Counter {\n    mut Bump()\n    Get() i64\n}\n\n"
+                  "func show(c Counter) i64 {\n    return c.Get()\n}\n\n"
+                  "func main() int {\n    return 0\n}\n")
 
     client = Client()
     reply = client.send("initialize", {"processId": None, "rootUri": None}) or client.read()
@@ -167,6 +174,25 @@ def main():
     check("a local is offered", "p" in names)
     check("a keyword is offered", "return" in names)
     check("a builtin type is offered", "u64" in names)
+
+    client.send(
+        "textDocument/didOpen",
+        {"textDocument": {"uri": "file://" + iface, "languageId": "sword",
+                          "version": 1, "text": open(iface).read()}},
+        want_reply=False,
+    )
+    client.until(lambda m: m.get("method") == "textDocument/publishDiagnostics")
+    at = open(iface).read().split("\n").index("    return c.Get()")
+    client.send("textDocument/completion",
+                {"textDocument": {"uri": "file://" + iface},
+                 "position": {"line": at, "character": len("    return c.")}})
+    reply = client.until(lambda m: "result" in m and "items" in m.get("result", {}))
+    details = {i["label"]: i.get("detail", "")
+               for i in (reply["result"]["items"] if reply else [])}
+    check("an interface method that writes says so",
+          details.get("Bump", "").startswith("mut "), str(details))
+    check("one that does not, does not",
+          not details.get("Get", "mut").startswith("mut "), str(details))
 
     client.send("textDocument/semanticTokens/full",
                 {"textDocument": {"uri": "file://" + good}})

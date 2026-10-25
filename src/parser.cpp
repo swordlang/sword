@@ -1163,7 +1163,8 @@ struct Parser {
   }
 
   // An interface body is a list of signatures: a name, parameters, and an
-  // optional result. No receiver, no body.
+  // optional result. No receiver and no body, but `mut` ahead of the name says
+  // the method writes through the value it is called on.
   Node *interface_decl() {
     Node *n = make(ND_INTERFACE_DECL, advance().pos);
     if (kind() != TK_IDENT) {
@@ -1177,6 +1178,7 @@ struct Parser {
     skip_terms();
     while (kind() != TK_RBRACE && kind() != TK_EOF) {
       Node *m = make(ND_FUNC, peek().pos);
+      m->is_mut = match(TK_MUT);
       if (kind() != TK_IDENT) {
         fail("expected a method name");
         return nullptr;

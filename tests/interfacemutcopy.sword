@@ -1,0 +1,26 @@
+// expect-error: cannot call a mutating method on this: 'd' was copied from immutable binding 'c'
+// A `mut` copy of an interface lent read-only points at the same memory, which
+// is still read-only.
+
+interface Counter {
+    mut Bump()
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump() {
+    c.n += 1
+}
+
+func poke(c Counter) {
+    mut d := c
+    d.Bump()
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    poke(&k)
+    return int(k.n)
+}

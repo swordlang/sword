@@ -9,7 +9,7 @@ struct P {
 }
 
 interface Sink {
-    Put(b u8) !void
+    mut Put(b u8) !void
 }
 
 struct Counter {
@@ -38,8 +38,8 @@ func through(v ?*P) i64 {
     return p.x
 }
 
-func sink(v ?Sink) i64 {
-    s := v orelse return -1
+func sink(mut v ?Sink) i64 {
+    mut s := v orelse return -1
     s.Put(3) catch return -2
     return 1
 }

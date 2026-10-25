@@ -15,6 +15,17 @@
 
 namespace {
 
+// The interface method a call through an interface lands in, which is where
+// what it may write is written down.
+const Field *called_method(const Node *call) {
+  const Type *owner =
+      call->lhs && call->lhs->lhs ? call->lhs->lhs->type : nullptr;
+  if (owner && owner->kind == TY_PTR) owner = owner->elem;
+  if (!owner || !owner->is_interface || call->ival >= owner->methods.size())
+    return nullptr;
+  return &owner->methods[call->ival];
+}
+
 struct Checker {
   Program &prog;
   Package &pkg;
@@ -962,10 +973,14 @@ struct Checker {
       Type *sig = n->sym ? n->sym->type : nullptr;
       if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
         sig = n->lhs->type;
+      const Field *dynamic = n->form == CALL_DYNAMIC ? called_method(n)
+                                                     : nullptr;
+      if (dynamic) sig = dynamic->type;
       if (!sig) return;
       const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
                                                         : nullptr;
       size_t skip = 0;
+      if (dynamic && dynamic->writes) note_write(n->lhs->lhs, how);
       if (n->form == CALL_METHOD) {
         skip = 1;
         if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
@@ -1260,6 +1275,27 @@ struct Checker {
         note(value->pos, "%s.%s is %s, but %s wants %s",
              owner->name.c_str(), want.name.c_str(), type_str(got).c_str(),
              iface->name.c_str(), type_str(want.type).c_str());
+        return false;
+      }
+      // A caller holding the interface checks its call against the
+      // interface's signature, so a method that writes where the interface
+      // does not say it may would write memory nobody lent it. Writing less
+      // than the interface allows is fine.
+      if (got->param_mut[0] && !want.writes) {
+        note(value->pos,
+             "%s.%s writes through its receiver, but %s does not say it may;"
+             " declare it 'mut %s' in the interface",
+             shown_name(owner->name).c_str(), want.name.c_str(),
+             shown_name(iface->name).c_str(), want.name.c_str());
+        return false;
+      }
+      for (size_t i = 0; i < want.type->params.size(); i++) {
+        if (!got->param_mut[i + 1] || want.type->param_mut[i]) continue;
+        note(value->pos,
+             "%s.%s writes through parameter %zu, but %s does not say it may;"
+             " mark that parameter 'mut' in the interface",
+             shown_name(owner->name).c_str(), want.name.c_str(), i + 1,
+             shown_name(iface->name).c_str());
         return false;
       }
       entries.push_back(have->name);
@@ -1717,6 +1753,9 @@ struct Checker {
       for (size_t i = 0; i < owner->methods.size(); i++) {
         const Field &m = owner->methods[i];
         if (m.name != field->name) continue;
+        if (m.writes &&
+            !require_mutable(field->lhs, "call a mutating method on"))
+          return nullptr;
         n->form = 2; // dynamic: the function pointer comes from the vtable
         n->ival = i;
         Symbol probe{field->name, m.type, false,      false, false,
@@ -3870,13 +3909,15 @@ struct Checker {
           return false;
         }
         std::vector<Type *> params;
+        std::vector<bool> param_mut;
         for (Node *p : m->kids) {
           p->type = resolve(p->type_expr);
           params.push_back(p->type);
+          param_mut.push_back(p->is_mut);
         }
         Type *ret = m->type_expr ? resolve(m->type_expr) : types.void_ty;
         decl->type->methods.push_back(
-            Field{m->name, types.func(params, ret), 0, 0});
+            Field{m->name, types.func(params, ret, param_mut), 0, 0, m->is_mut});
       }
     }
 
@@ -4719,7 +4760,11 @@ struct Copies {
     case TY_ARRAY: case TY_OPT:
       return shares(t->elem, depth + 1);
     case TY_STRUCT:
-      if (t->is_interface) return true;
+      // An interface is reached only through its methods, so a copy of one
+      // with no `mut` method can write nothing, whatever it points at.
+      if (t->is_interface)
+        return std::any_of(t->methods.begin(), t->methods.end(),
+                           [](const Field &m) { return m.writes; });
       for (const Field &f : t->fields)
         if (shares(f.type, depth + 1)) return true;
       return false;
@@ -4904,10 +4949,13 @@ struct Copies {
         skip = 1;
       }
     } else if (n->form == 2) { // through an interface
-      Type *owner = n->lhs && n->lhs->lhs ? n->lhs->lhs->type : nullptr;
-      if (owner && owner->kind == TY_PTR) owner = owner->elem;
-      if (!owner || n->ival >= owner->methods.size()) return nullptr;
-      sig = owner->methods[n->ival].type;
+      const Field *method = called_method(n);
+      if (!method) return nullptr;
+      sig = method->type;
+      // The interface value is a copy; what it points at is not, and a `mut`
+      // method writes there.
+      Node *recv = n->lhs->lhs;
+      args.push_back({recv, false, 0, method->writes, recv->type});
     } else if (n->form == 4) { // through a function value
       sig = n->lhs ? n->lhs->type : nullptr;
     }
@@ -5017,8 +5065,8 @@ struct Copies {
       Node *place = arg.e->kind == ND_UNARY && arg.e->op == TK_AMP
                         ? arg.e->lhs
                         : arg.e;
-      const char *what =
-          arg.receiver_value ? "call a mutating method on" : "pass";
+      bool receiver = arg.receiver_value || (n->form == 2 && arg.e == n->lhs->lhs);
+      const char *what = receiver ? "call a mutating method on" : "pass";
       Reach r;
       if (!reach(place, r)) continue;
       bool pointer = arg.type && arg.type->kind == TY_PTR;

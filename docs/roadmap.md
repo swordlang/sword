@@ -93,6 +93,15 @@ Every change is measured before and after, and the
 numbers go out together with a comparison against C, C++, Rust and Go: the same
 algorithms, idiomatic in each language, with versions and flags written down.
 
+One change in Temper is not about speed. A method called through an interface
+could write through a value lent read-only, because an interface did not say
+which of its methods write; the race checker trusted the signature and missed
+it. Interface methods now say so with `mut`, and a call through an interface is
+checked like any other
+([#78](https://github.com/swordlang/sword/issues/78)). Programs that call a
+writing method of `mem.Allocator` or `fmt.Sink` on a value that is not `mut`
+stop compiling, and the message says what to add.
+
 ## 0.5 Polish — smaller machines
 
 Sword assumes a 64-bit computer with an operating system. Polish takes that
@@ -176,8 +185,6 @@ Certification itself is a process, not a compiler, and stays out of scope.
   that means the same wherever it is copied, flash included.
 - A growable container in the standard library that never moves what it holds,
   so a pointer to an element stays good as it grows.
-- `mut` on an interface method's receiver, so that a call through an interface
-  is checked like any other ([#78](https://github.com/swordlang/sword/issues/78)).
 
 ## 0.8 — compile time, and the rest of C
 

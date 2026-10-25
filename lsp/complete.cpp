@@ -179,7 +179,7 @@ void members_of(const Type *type, const std::string &prefix, Program &prog,
     add(out, f.name, K_FIELD, type_str(f.type));
   }
   for (const Field &m : owner->methods) // an interface's method set
-    add(out, m.name, K_METHOD, type_str(m.type));
+    add(out, m.name, K_METHOD, (m.writes ? "mut " : "") + type_str(m.type));
 
   auto methods = prog.methods.find(owner->name);
   if (methods == prog.methods.end()) return;
