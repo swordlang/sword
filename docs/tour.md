@@ -890,6 +890,48 @@ allocating, and nothing in Sword allocates on its own, so the pointer is
 explicit. An interface value is two words — the data and a table of methods —
 and costs nothing to pass.
 
+An interface has no receiver to write `mut` on, so a method that writes through
+the value says so ahead of its name:
+
+```sword
+interface Tally {
+    mut Add(n i64)
+    Total() i64
+}
+
+struct Sum {
+    n i64
+}
+
+func (mut s *Sum) Add(n i64) {
+    s.n += n
+}
+
+func (s *Sum) Total() i64 {
+    return s.n
+}
+
+func count(mut t Tally, xs []i64) {
+    for x in xs {
+        t.Add(x)
+    }
+}
+
+func main() int {
+    mut s := Sum{n: 0}
+    xs := [3]i64{10, 12, 20}
+    count(&s, xs[..])
+    return int(s.Total())
+}
+```
+<!-- exits: 42 -->
+
+Take the `mut` off `t` and the call is refused: *cannot call a mutating method
+on immutable binding 't'*. The caller only sees the interface, so the interface
+is what has to say where the writes go. That is also why `Sum.Add`, with its
+`mut` receiver, could not satisfy a `Tally` whose `Add` lacked the `mut`: a
+function holding a read-only `Tally` would be writing through it.
+
 ## Function values
 
 A function named without being called is its own address:
