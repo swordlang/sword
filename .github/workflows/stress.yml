@@ -1,0 +1,87 @@
+# The concurrency tests, many times over, once a week. The bugs that cost this
+# runtime the most showed once in a hundred runs or rarer — a lost wake-up, a
+# descriptor closed under a waiter, errno read on the wrong thread — and a pull
+# request runs each test a handful of times. A failure here opens an issue (or
+# comments on the open one), since nobody is watching a scheduled run.
+name: Stress
+
+# A schedule only runs from the default branch, so a pull request that changes
+# this file runs it too, briefly, to show it still works before it gets there.
+on:
+  pull_request:
+    paths: [.github/workflows/stress.yml]
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Runs at each thread count
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        kind: [threads, tsan]
+    name: ${{ matrix.os }}, ${{ matrix.kind }}
+    runs-on: ${{ matrix.os }}
+    # A hang is the most useful thing this can find; it shows as this limit.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
+
+      - name: Address space ThreadSanitizer can use
+        if: runner.os == 'Linux' && matrix.kind == 'tsan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - run: make
+
+      # tests/threads.sh skips nothing: every runnable test, at every count, with
+      # its answers compared across all of them.
+      - name: The suite at 1 to 16 threads, many rounds
+        if: matrix.kind == 'threads'
+        env:
+          SWORD_ROUNDS: ${{ github.event_name == 'pull_request' && '1' || inputs.rounds || '20' }}
+        run: ./tests/threads.sh
+
+      - name: The concurrency tests under ThreadSanitizer, ten times
+        if: matrix.kind == 'tsan'
+        env:
+          TIMES: ${{ github.event_name == 'pull_request' && '1' || '10' }}
+        run: |
+          for i in $(seq "$TIMES"); do
+            echo "::group::round $i"
+            ./tests/sanitize.sh thread || { echo "::endgroup::"; echo "failed in round $i"; exit 1; }
+            echo "::endgroup::"
+          done
+
+  report:
+    needs: stress
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="The weekly stress run failed"
+          open=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number -q '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "Again: $RUN"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label bug \
+              --body "A concurrency test failed or hung in $RUN. A test that fails sometimes is a runtime bug until shown otherwise; the log names the test and the thread count."
+          fi
