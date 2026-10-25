@@ -35,6 +35,7 @@ func main() !int {
     return int(rows[0] + rows[63])
 }
 ```
+<!-- exits: 6 -->
 
 `spawn` only exists inside `scope`, and the closing brace of the `scope` is the
 join — it waits for every task it started. There is no handle to keep, nothing
@@ -747,6 +748,7 @@ func main() !int {
     }
 }
 ```
+<!-- exits: 2 -->
 
 Six tasks writing one map, and it compiles. The exemption the race checker makes
 is the same one it makes for an atomic, and it rests on the same thing: **there
@@ -900,6 +902,7 @@ func fill(jobs chan[u64]) !void {
     close(jobs)
 }
 ```
+<!-- exits: 50 -->
 
 Four consumers on one channel, and every value reaches exactly one of them.
 `for job := <-jobs` runs while there is something there — closing the channel is

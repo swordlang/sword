@@ -1909,6 +1909,10 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello -> HELLO
+again -> AGAIN
+-->
 
 ### `std/tls`
 
