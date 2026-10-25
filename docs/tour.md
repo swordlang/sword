@@ -14,6 +14,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello
+-->
 
 ```sh
 shield hello.sword -o hello
@@ -40,6 +43,10 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+42 items, 1.5 each
+or just this: 42 1.5 true
+-->
 
 `{}` takes the next argument. There are no type letters like `%d`, because
 there is nothing for them to do — the argument already knows what it is, so a
@@ -60,6 +67,7 @@ func main() int {
     return x * 2
 }
 ```
+<!-- exits: 42 -->
 
 Write `x = 5` after that and the compiler stops you. To get a variable you can
 assign to, say so:
@@ -73,6 +81,7 @@ func main() int {
     return total
 }
 ```
+<!-- exits: 45 -->
 
 This is not a style preference. Immutable data can be shared between tasks with
 no locking at all, and the concurrency checker leans on that. Making it the
@@ -91,6 +100,7 @@ func main() int {
     return int(big)
 }
 ```
+<!-- exits: 1 -->
 
 Sword never narrows a value for you. `i64(x)` is how you say you meant it.
 
@@ -105,6 +115,7 @@ func main() int {
     return add(20, 22)
 }
 ```
+<!-- exits: 42 -->
 
 Types come after names, as in Go. A function with no result just omits it. When
 several parameters share a type, write it once:
@@ -130,6 +141,7 @@ func main() int {
     return int(total("a", 20, 22))
 }
 ```
+<!-- exits: 42 -->
 
 Inside the function `xs` is an ordinary `[]i64`. Gathering `...any` is how
 `Printf` accepts a mixed list; passing an already-gathered list on to another
@@ -152,6 +164,7 @@ func main() int {
     return int(view[3])
 }
 ```
+<!-- exits: 8 -->
 
 Drop the `mut` from `view` and the call fails to compile: handing a value to a
 `mut` parameter is granting write access, and only something you can write can
@@ -177,6 +190,7 @@ func main() int {
     return classify(7) + classify(-3) + 42
 }
 ```
+<!-- exits: 42 -->
 
 When one value is being compared against several, `switch` says so more
 directly than a chain of `if`:
@@ -199,6 +213,7 @@ func main() int {
     return int(statusText(404).len) + 32
 }
 ```
+<!-- exits: 42 -->
 
 One case per value, several values per case, and no fallthrough — a case body
 ends where the next `case` begins. The subject can be an integer, a bool, a
@@ -238,6 +253,7 @@ func main() int {
     return sum
 }
 ```
+<!-- exits: 23 -->
 
 The element form binds a copy, so writing to it changes nothing behind it. When
 you need the position too, bind both:
@@ -253,6 +269,11 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+0: ada
+1: grace
+2: alan
+-->
 
 There is a fifth form, `for part in xs.chunks(n)`, but it exists for
 concurrency and is covered there.
@@ -269,6 +290,7 @@ func main() int {
     return int(copy[0])     // still 7
 }
 ```
+<!-- exits: 7 -->
 
 `[64]u8{}` is the zeroed array. Any other literal has to be written out in
 full.
@@ -292,6 +314,7 @@ func main() int {
     return int(sum(all) + sum(middle))
 }
 ```
+<!-- exits: 28 -->
 
 Copying a slice copies those two words, so the elements stay shared. That is
 the distinction to keep in mind: arrays are values, slices are views.
@@ -318,6 +341,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello, world
+-->
 
 Indexing a string gives you bytes. Decoding UTF-8 is a library's job, not the
 type's — `std/unicode` is that library:
@@ -344,6 +370,10 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+6 bytes, 4 characters
+4 columns
+-->
 
 `Width` is what decides whether a program that draws a screen lines up: a
 combining mark takes no columns and a CJK character takes two.
@@ -363,6 +393,7 @@ func main() int {
     return kind("GET") + 41
 }
 ```
+<!-- exits: 42 -->
 
 Joining two strings makes a third, and the third has to live somewhere. In
 Sword nothing allocates without being handed an allocator, so there is no `+`
@@ -393,6 +424,10 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello, ada!
+hello, world a,b,c
+-->
 
 The allocator is not ceremony. It is what lets you read a signature and know a
 function cannot touch the heap, and it is what lets a server answer a request
@@ -414,6 +449,7 @@ func main() int {
     return int(p.x + p.y)
 }
 ```
+<!-- exits: 24 -->
 
 Every field has to be given a value in a literal. There is no partial
 initialisation, because a half-built struct is a bug waiting for a reader.
@@ -453,6 +489,7 @@ func main() int {
     return int(warmer(reading)) + int(p.x + p.y)
 }
 ```
+<!-- exits: 24 -->
 
 An alias is the type it names, not a new one: a plain `f64` goes into `warmer`
 without a conversion, and `Point2{...}` is a `Point`. It is there to say what a
@@ -492,6 +529,7 @@ func main() int {
     return int(hit.key) + 39
 }
 ```
+<!-- exits: 42 -->
 
 `?*Node` still fits in one word — the null pointer is the marker, so the safety
 costs nothing. Over a non-pointer type, `?T` is a value and a flag beside it.
@@ -520,6 +558,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+gave up: NotFound — there is nothing there
+-->
 
 `orelse` also takes a jump, which is the shape you will write most:
 
@@ -576,6 +617,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+a string
+-->
 
 Look at what is not in that switch: a `default`. It is not needed, and that is
 the point of naming the set. **A switch over an enum with no `default` has to
@@ -622,6 +666,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+Text is 9, and None
+-->
 
 `nameof(k)` asks for the name on its own, and gives the empty string for a value
 that is not a member.
@@ -707,6 +754,7 @@ func main() int {
     return int(a) + int(b)
 }
 ```
+<!-- exits: 12 -->
 
 and `catch {}` when you mean to carry on regardless — which is most of what you
 write inside a `defer`.
@@ -741,6 +789,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+abcd
+-->
 
 That prints `abcd`. Block scope is what makes `defer` inside a loop do the
 obvious thing — release once per iteration, instead of piling up until the
@@ -783,6 +834,7 @@ func main() int {
     return int(c.Value())
 }
 ```
+<!-- exits: 42 -->
 
 `mut` on the receiver means the same thing it means on any parameter, and only
 a mutable binding can call such a method.
@@ -831,6 +883,7 @@ func main() int {
     return int(describe(&sq)) + 6
 }
 ```
+<!-- exits: 42 -->
 
 Note the `&`. **Only pointers satisfy an interface.** Boxing a value would mean
 allocating, and nothing in Sword allocates on its own, so the pointer is
@@ -858,6 +911,7 @@ func main() int {
     return int(apply(add, 20, 22))
 }
 ```
+<!-- exits: 42 -->
 
 The type is written `func(T, U) R`, the result omitted when there is none. A
 parameter the function may write through says `mut` there too — `func(mut []i64)`
@@ -890,6 +944,7 @@ func main() int {
     return int(total) + 23
 }
 ```
+<!-- exits: 42 -->
 
 **There are no closures.** A function value is one top-level function and
 nothing else — it captures nothing, allocates nothing, and has no lifetime to
@@ -916,6 +971,7 @@ func main() int {
     return int(x) + int(y) - 2
 }
 ```
+<!-- exits: 22 -->
 
 Each combination of types becomes a real compiled copy. There is no boxing and
 no indirection. Type arguments are usually inferred from what you pass; write
@@ -947,6 +1003,7 @@ func main() int {
     return int(total(&p, &q))
 }
 ```
+<!-- exits: 42 -->
 
 One concept, two kinds of polymorphism. The difference is where the call is
 resolved: through a constraint it is decided at instantiation and compiles to a
@@ -976,6 +1033,7 @@ func main() !int {
     return int(xs[8])
 }
 ```
+<!-- exits: 64 -->
 
 `Arena` bumps a pointer through a buffer it does not own — here, an array on
 the stack. Individual releases do nothing; you throw the whole arena away at
@@ -1001,6 +1059,7 @@ func main() !int {
     return int(result)
 }
 ```
+<!-- exits: 42 -->
 
 Both are values of type `Allocator` at the call site, so code written against
 the interface works with either. Because an `Allocator` is a parameter and
@@ -1143,6 +1202,7 @@ func main() !int {
     return int(total % 100)
 }
 ```
+<!-- exits: 28 -->
 
 Eight tasks, each writing its own piece. The closing brace of `scope` waits for
 all of them. Nothing here is a convention you have to remember — the compiler
@@ -1196,6 +1256,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+sum of squares: 285
+-->
 
 Three forms: `jobs <- v` sends, `<-jobs` receives, `close(jobs)` says there will
 be no more. A receive answers `?T` — nil once the channel is closed and empty —
@@ -1339,6 +1402,7 @@ func main() int {
     return int(abs(-42))
 }
 ```
+<!-- exits: 42 -->
 
 Only scalars cross — numbers, `bool`, raw pointers — because a `string` or a
 slice is two words to Sword and a pointer to C, so you pass `.ptr` and `.len`.
@@ -1369,6 +1433,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+errno 9
+-->
 
 Read errno straight after the call. It belongs to the thread, and a task that
 waits for anything may carry on from another one.

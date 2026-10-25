@@ -33,6 +33,7 @@ func main() !int {
     return int(dst[63] % 100)
 }
 ```
+<!-- exits: 69 -->
 
 Eight tasks write into eight pieces of the same array. That compiles because
 `chunks` hands out pieces that cannot overlap. Slice `dst` by hand inside the
@@ -65,6 +66,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+8 workers, 12.5ms each
+-->
 
 That puts `shield` (the compiler) and `swordls` (the language server) in
 `~/.local/bin`. See [docs/install.md](docs/install.md) for prefixes, editor
