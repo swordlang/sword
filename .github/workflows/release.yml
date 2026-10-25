@@ -1,0 +1,51 @@
+# A version tag publishes its release. The tag is checked against the version
+# the compiler reports, the tree at the tag is built and tested from scratch
+# (which is what a reader who clones it will do), and the notes are the
+# CHANGELOG entry for that version, so they are written once.
+name: Release
+
+# v and a digit: the editor extension has tags of its own, vscode-v….
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libssl-dev vim emacs-nox
+
+      - name: The tag names the version the compiler reports
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          grep -q "SWORD_VERSION \"$version\"" src/version.h || {
+            echo "::error::$GITHUB_REF_NAME does not match src/version.h"; exit 1; }
+
+      - run: make
+      - run: make test
+
+      - name: Publish, with the CHANGELOG entry as the notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          name=$(sed -n 's/^#define SWORD_RELEASE_NAME "\(.*\)"/\1/p' src/version.h)
+          awk -v v="$version" '$0 ~ "^## " v " " {f=1; next} /^## /{f=0} f' CHANGELOG.md |
+            awk 'NF || s {s=1; print}' > notes.md
+          [ -s notes.md ] || { echo "::error::no CHANGELOG entry for $version"; exit 1; }
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "$GITHUB_REF_NAME is already published"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Sword $version — $name" --notes-file notes.md
+          fi
