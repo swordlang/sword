@@ -239,9 +239,9 @@ Go cannot see. A Sword task is joined by the closing brace of its `scope`, so th
 shape does not exist: a task that never finishes blocks the join instead, which you
 find out about immediately rather than through a memory graph three weeks later.
 
-**The whole thing is small enough to read.** The compiler is about 11 400 lines of
-C++, the runtime 4 500, the language server 1 300, and the standard library 8 100
-lines of Sword with no hidden compiler primitives behind it. For a language you are
+**The whole thing is small enough to read.** The compiler is about 16 000 lines of
+C++, the runtime 5 300, the language server 1 300, and the standard library 10 000
+lines of Sword with no hidden compiler primitives behind it, comments included. For a language you are
 going to depend on, being able to read all of it in a weekend is worth something.
 
 **It is tested where it runs.** Every change is built and tested on Linux and on
