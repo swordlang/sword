@@ -72,6 +72,9 @@ struct Lowerer {
     std::string unit;
   };
   std::vector<Chunk> chunks;
+  // The loops being lowered that walk `0..xs.len` over a slice that cannot
+  // change, as (loop variable, slice): `xs[i]` inside one needs no check.
+  std::vector<std::pair<Symbol *, Symbol *>> walked;
   // The package being lowered. Thunks are numbered within it, so a package's
   // code reads the same whatever else the program holds, which is what lets
   // its object be reused by a split build.
@@ -840,11 +843,16 @@ struct Lowerer {
     cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty), body_bb,
                 exit_bb);
 
+    // Each piece is a part of the range the parent worked out from `xs.len`
+    // before cutting it, so the same proof holds in every one.
+    Symbol *slice = walked_slice(loop);
+    if (slice) walked.push_back({loop->sym, slice});
     loops.push_back({step_bb, exit_bb, scopes.size()});
     cur = body_bb;
     stmt(loop->body);
     branch(step_bb);
     loops.pop_back();
+    if (slice) walked.pop_back();
 
     cur = step_bb;
     store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
@@ -980,6 +988,31 @@ struct Lowerer {
     return in.dst;
   }
 
+  // The slice `for i in a..xs.len` walks, when every `xs[i]` in its body is in
+  // range by construction. The loop variable cannot be assigned, and nothing
+  // can change the header of an immutable binding: assigning it is refused and
+  // `&xs` lends it read-only. A slice reached through a pointer or a field is
+  // not one of these, because the same memory can be lent `mut` under another
+  // name in the same call and shortened mid-loop.
+  Symbol *walked_slice(Node *loop) {
+    Node *hi = loop->rhs;
+    if (!hi || hi->kind != ND_FIELD || hi->name != "len") return nullptr;
+    Node *base = hi->lhs;
+    if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
+    Symbol *s = base->sym;
+    if (s->is_mut || s->is_func || !s->type) return nullptr;
+    if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
+    return s;
+  }
+
+  bool proven_in_range(Node *index) {
+    Node *base = index->lhs, *at = index->rhs;
+    if (base->kind != ND_IDENT || at->kind != ND_IDENT) return false;
+    for (const auto &w : walked)
+      if (w.first == at->sym && w.second == base->sym) return true;
+    return false;
+  }
+
   void bounds_check(int index, int len, Pos pos) {
     if (!mode_checks(mode)) return;
     // Unsigned comparison catches negative indices too: they wrap to huge.
@@ -1064,7 +1097,8 @@ struct Lowerer {
       bool checked = base->kind != TY_RAWPTR;
       int data = data_pointer(n->lhs, checked ? &len : nullptr);
       int index = to_word(expr(n->rhs));
-      if (checked && len >= 0) bounds_check(index, len, n->pos);
+      if (checked && len >= 0 && !proven_in_range(n))
+        bounds_check(index, len, n->pos);
       return gep_index(data, index, n->type);
     }
 
@@ -1849,11 +1883,14 @@ struct Lowerer {
     cond_branch(binop(IR_LT, load(slot, type), limit, types.bool_ty), body_bb,
                 exit_bb);
 
+    Symbol *slice = walked_slice(n);
+    if (slice) walked.push_back({n->sym, slice});
     loops.push_back({step_bb, exit_bb, scopes.size()});
     cur = body_bb;
     stmt(n->body);
     branch(step_bb);
     loops.pop_back();
+    if (slice) walked.pop_back();
 
     cur = step_bb;
     store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot, type);
