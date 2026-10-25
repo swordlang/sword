@@ -5,8 +5,9 @@
 # checked rather than claimed.
 #
 # Then the runtime again under AddressSanitizer and ThreadSanitizer, since most
-# of what can go wrong in it passes an ordinary run, and every example program
-# in the documentation, which a reader will paste and expect to build.
+# of what can go wrong in it passes an ordinary run, the suite once more built
+# with --split, and every example program in the documentation, which a reader
+# will paste and expect to build.
 name: Tests
 
 on:
@@ -97,6 +98,20 @@ jobs:
 
       - run: make
       - run: ./tests/sanitize.sh ${{ matrix.sanitizer }}
+
+  # The same programs built one object per package. Nothing else builds that
+  # way, so without this a mistake in it would wait for somebody to ask for it.
+  split:
+    name: split build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libssl-dev
+      - run: make
+      - run: SWORD_SPLIT=1 SWORD_CACHE="$RUNNER_TEMP/sword-cache" ./tests/run.sh
 
   docs:
     name: documentation examples
