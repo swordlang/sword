@@ -4,6 +4,91 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.3.0 — Quench
+
+*2026-10-24.* Quenching sets the steel: this release lets a program be built
+from packages other people wrote, fetched from git and pinned by hash, and
+closes the ways read-only memory could still be written.
+
+### What changes for existing programs
+
+- **A copy of read-only memory cannot write it.** `mut ys := xs`, where `xs` was
+  lent read-only, used to write through to it, and `&x` passed an immutable `x`
+  to a `mut` parameter. The copy is still legal and can be reassigned; writing
+  through it is refused. What a call writes through its arguments is worked out
+  for every function, so a method that only moves its own position can still be
+  called on a parser that holds its input read-only.
+- **The race checker sees one memory under two names.** `ys := xs` with both
+  spawned to write, two pointers taken from one variable, a task given
+  `p := &n` while its parent writes `n`: each compiled and each is a data race.
+  The error names the memory and the name it was reached through.
+- **`~x` is the complement**, at the width of `x`. `a ~ b` used to be a xor;
+  it no longer compiles into anything else. `->` is no longer a token.
+- **A statement on its own has to call, send or receive.** `total + i`, a bare
+  name or a comparison computed a value and dropped it, which is almost always
+  a `+=` or a `=` that lost a character.
+- A struct field takes no `mut` and no `...`, and `defer` takes no declaration;
+  all three were accepted and meant nothing.
+- **Tests and writers ask for less `try`.** `t.Equal`, `Same`, `Check`, `Fail`,
+  `Failf` and `Logf` record and carry on, so one run reports every mismatch;
+  **`try t.Must`** compares and ends the test. Writes to a `json.Writer` and to
+  an `http.Response` keep their first error and do nothing after it:
+  `w.Err()` and `res.Err()` report it, and the server answers 500 for a failed
+  response, or closes the connection when the head has gone. A `try` left in
+  front of one of these no longer compiles.
+- `Allocator.Release` and the `Mux`'s `Handle` and its shortcuts take what they
+  write as `mut`.
+- **Two imports that give one name are an error**, where the first used to win
+  silently. `import name "path"` gives one of them another.
+- **The standard library's errors keep the same codes in every program**, 1 to
+  75, whether the program imports their package or not, and a program's own
+  come after them. Exit statuses of fallible programs change accordingly, and an
+  error code past 255 exits with 255: a code of 256 used to leave with 0.
+
+### Packages
+
+- **`sword.mod`** names a module and what it requires; `replace` points a
+  dependency at a local directory. Versions are git tags, chosen by minimal
+  version selection; a branch or a commit with no tag gets a version of its
+  own that sorts before every release.
+- **A build fetches** what the cache (`~/.sword`) is missing, over git, and
+  checks each version against **`sword.sum`**, which holds a hash of the files
+  the compiler reads. A missing line is added; `--locked` refuses to.
+- **`shield get path[@version]`** adds or moves a dependency, `@none` removes
+  it, and a bare path takes the newest stable tag. **`shield vendor`** copies
+  everything into `vendor/` for building without a network.
+- Fetching never runs a package's code: a Sword package has no build script.
+- **`import name "path"`** gives an imported package another name.
+
+### Language
+
+- **`lock read`** lets any number of readers in at once and no writer; inside it
+  the name is an immutable pointer. A writer waiting keeps new readers out.
+- **`if lock`** takes a guard only when it is free, and runs `else` when it is
+  not. Both work for either kind of lock.
+- **`if mut x := opt`** and **`for mut x := opt`** bind the unwrapped value as
+  writable.
+- **`extern blocking func`** declares a C function that may block: each call
+  runs on the io pool while the task is put down, so it does not hold a
+  scheduler thread, and the errno it leaves comes back with the answer. It costs
+  about 5 µs a call, so it is for calls that wait, not ones that compute.
+- Writing a closure is answered with "Sword has no closures" and what to write
+  instead, rather than a parse error about function types.
+
+### Tools
+
+- **`shield new`** starts a module: a program, or a library with `--lib`, with
+  a test and `git init`.
+- **`shield doc`** prints what a package exports, or one type or method, from
+  the comments above the declarations.
+- **`shield --split`** compiles each package to an object of its own and keeps
+  it in `~/.sword/build`, so only what changed goes through LLVM. Rebuilding a
+  small HTTP server after editing only its own package took 86 ms instead of
+  235 here. It is not the default: inlining stops at the edge of a package, and
+  a hot loop around a small call into the standard library can run several
+  times slower. Objects unused for thirty days go by themselves; **`shield
+  clean`** removes them all.
+
 ## 0.2.4 — Fold
 
 *2026-10-21.* A patch to Fold for programs that talk to C: C's types by their
