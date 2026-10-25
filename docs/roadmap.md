@@ -85,7 +85,8 @@ never lets LLVM see into the runtime. Temper is about that:
   since a wrong one is undefined behaviour;
 - a faster calling convention for functions nothing outside the program calls,
   and link-time optimisation with the runtime's hot paths;
-- smaller binaries;
+- smaller binaries: no TLS library in a program that does not import
+  `std/tls`, and nothing in the binary that nothing calls;
 - `shield checks`, which lists every bounds check that is still there, line by
   line, so the ones that cost something in a loop can be looked at.
 
@@ -102,11 +103,14 @@ checked like any other
 writing method of `mem.Allocator` or `fmt.Sink` on a value that is not `mut`
 stop compiling, and the message says what to add.
 
-## 0.5 Polish — smaller machines
+## 0.5 Polish — more machines
 
-Sword assumes a 64-bit computer with an operating system. Polish takes that
-apart:
+Sword assumes a 64-bit computer running a Unix. Polish takes that apart:
 
+- Windows, on x86-64 and 64-bit ARM, tested on every change next to Linux and
+  macOS. The runtime waits for the network through I/O completion ports there,
+  the way it uses kqueue and epoll elsewhere, and a program written for one
+  compiles for the others unchanged;
 - embedded Linux on 64-bit ARM, tested on real boards;
 - `--target` for 32-bit and 16-bit machines, with layouts worked out for the
   target's pointer size instead of assumed;
@@ -114,7 +118,8 @@ apart:
   need one is inferred, the way `det` is, and using one on a bare-metal target
   is an error that says which call reached the system;
 - a runtime for microcontrollers: tasks with small fixed stacks, cooperative,
-  and interrupts.
+  and interrupts. A program that never starts a task carries no scheduler at
+  all.
 
 A microcontroller is programmed by reading and writing registers at fixed
 addresses and by answering interrupts, so Polish brings the language for that
