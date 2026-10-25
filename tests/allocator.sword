@@ -8,8 +8,8 @@ extern func malloc(n u64) ?[*]u8
 extern func free(p [*]u8)
 
 interface Allocator {
-    alloc(n u64, align u64) ?[*]u8
-    release(p [*]u8, n u64)
+    mut alloc(n u64, align u64) ?[*]u8
+    mut release(p [*]u8, n u64)
 }
 
 // Bumps a pointer through a buffer it does not own. Freeing an individual

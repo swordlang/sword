@@ -7,8 +7,8 @@ import "std/mem"
 // same code serves a growable buffer, a socket, or a fixed block of stack.
 // std/bytes.Buffer satisfies this without knowing about it.
 interface Sink {
-    WriteByte(c u8) !void
-    Write(p []u8) !void
+    mut WriteByte(c u8) !void
+    mut Write(p []u8) !void
 }
 
 // The tags an `any` carries. These belong to the language; the names are here

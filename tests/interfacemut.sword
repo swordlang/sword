@@ -1,0 +1,78 @@
+// expect: 7
+// An interface says which of its methods write through the value they are
+// called on, and which parameters they write. Those need a `mut` value; the
+// rest can be called on one lent read-only. A method that writes less than its
+// interface allows still satisfies it.
+
+interface Counter {
+    mut Bump(by i64)
+    mut Fill(mut into []i64)
+    Get() i64
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump(by i64) {
+    c.n += by
+}
+
+// Writes nothing through its receiver, though the interface would let it.
+func (c *Count) Fill(mut into []i64) {
+    into[0] = c.n
+}
+
+func (c *Count) Get() i64 {
+    return c.n
+}
+
+func bump(mut c Counter, by i64) {
+    c.Bump(by)
+}
+
+func show(c Counter) i64 {
+    return c.Get()
+}
+
+// Nothing can write through an interface with no `mut` method, so a copy of
+// one kept in a struct lends nothing read-only when the struct is handed out
+// `mut` — even to a callee behind an interface, which could write anything
+// the struct reaches. This is std/http handing a handler its response.
+interface Reader {
+    Get() i64
+}
+
+struct Holder {
+    from Reader
+    seen i64
+}
+
+interface Looker {
+    Look(mut h *Holder)
+}
+
+struct Eye {
+    times i64
+}
+
+func (e *Eye) Look(mut h *Holder) {
+    h.seen = h.from.Get()
+}
+
+func keep(r Reader, l Looker) i64 {
+    mut h := Holder{from: r, seen: 0}
+    l.Look(&h)
+    return h.seen
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    eye := Eye{times: 0}
+    bump(&k, 2)
+    mut c Counter = &k
+    c.Bump(3)
+    mut out := [1]i64{0}
+    c.Fill(out[..])
+    return int(show(&k) + out[0] - 5 + keep(&k, &eye) - 5 + 2)
+}

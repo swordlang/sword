@@ -32,6 +32,9 @@ struct Field {
   Type *type = nullptr;
   int64_t offset = 0;
   int index = 0; // position after layout, which is what the backend indexes by
+  // An interface method declared `mut`: it writes through the value it is
+  // called on, so only a mutable one may call it.
+  bool writes = false;
 };
 
 struct Type {

@@ -170,7 +170,7 @@ StructDecl  = [ "extern" ] "struct" identifier [ TypeParams ]
 FieldGroup  = identifier { "," identifier } Type .
 
 InterfaceDecl = "interface" identifier "{" { ";" } { MethodSpec { ";" } } "}" .
-MethodSpec  = identifier Params [ Type ] .
+MethodSpec  = [ "mut" ] identifier Params [ Type ] .
 
 EnumDecl    = "enum" identifier [ Type ] "{" { ";" } { EnumMember [ "," ] { ";" } } "}" .
 EnumMember  = identifier [ "=" Expr ] .
@@ -185,6 +185,10 @@ parameters in C's own bare `...`, and may name the library it comes from in
 quotes. `weak` makes it a value that may be missing at run time. `blocking`
 sends each call to the io pool, putting the task down rather than the thread,
 and leaves the function callable only by name. `det` is a claim the checker verifies, not a hint.
+
+An interface method has no receiver to write `mut` on, so `mut` goes ahead of
+its name instead: it says the method writes through the value it is called on,
+the way `(mut c *T)` does for a method of a struct.
 
 `type Name = T` is another name for `T`, the same type in every respect: values
 pass between the two without a conversion. An alias takes no type parameters,

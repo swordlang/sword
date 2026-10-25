@@ -1,0 +1,24 @@
+// expect-error: every iteration would write 'c' through 'Bump'
+// A call through an interface writes what its interface says, which every
+// iteration would do at once.
+
+interface Counter {
+    mut Bump()
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump() {
+    c.n += 1
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    mut c Counter = &k
+    parallel for i in 0..8 {
+        c.Bump()
+    }
+    return int(k.n)
+}

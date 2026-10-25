@@ -1,0 +1,25 @@
+// expect-error: cannot call a mutating method on immutable binding 'c'
+// `mut Bump` writes through whatever the interface points at, so a value lent
+// read-only cannot call it, the same as a struct's `mut` method.
+
+interface Counter {
+    mut Bump()
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump() {
+    c.n += 1
+}
+
+func poke(c Counter) {
+    c.Bump()
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    poke(&k)
+    return int(k.n)
+}
