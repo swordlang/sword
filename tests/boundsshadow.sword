@@ -1,0 +1,14 @@
+// expect: 134
+// The loop walks `s`, but the `s` indexed inside is another, shorter one under
+// the same name: that index is not proven, and stays checked.
+
+func main() int {
+    xs := [4]u64{1, 2, 3, 4}
+    s := xs[..]
+    mut acc u64 = 0
+    for i in 0..s.len {
+        s := xs[0..1]
+        acc += s[i]
+    }
+    return int(acc)
+}

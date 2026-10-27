@@ -1,0 +1,47 @@
+// expect: 76
+// Indexing the slice a loop walks, `for i in 0..xs.len` with `xs` immutable,
+// is proven in range and compiles without a check. The answer must not change.
+
+func sum(xs []u64) u64 {
+    mut acc u64 = 0
+    for i in 0..xs.len {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func psum(xs []u64) u64 {
+    mut acc u64 = 0
+    parallel for i in 0..xs.len reduce(+: acc) {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func tail(xs []u64) u64 {
+    mut acc u64 = 0
+    parallel for i in 2..xs.len reduce(+: acc) {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func spaces(s string) u64 {
+    mut n u64 = 0
+    for i in 0..s.len {
+        if s[i] == 32 {
+            n += 1
+        }
+    }
+    return n
+}
+
+func main() int {
+    mut data := [8]u64{}
+    for i in 0..data.len {
+        data[i] = i + 1
+    }
+    xs := data[..]
+    // 36 + 36 + 33 + 2 - 31
+    return int(sum(xs) + psum(xs) + tail(xs) + spaces("a b c") - 31)
+}

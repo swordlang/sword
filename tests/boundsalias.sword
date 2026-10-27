@@ -1,0 +1,25 @@
+// expect: 134
+// `g` is immutable, but `h` is the same struct and may change the slice under
+// it, so a field reached through a pointer is never taken as proven.
+
+struct Grid {
+    cells []i64
+    w     u64
+}
+
+func f(g *Grid, mut h *Grid) i64 {
+    mut acc i64 = 0
+    for i in 0..g.cells.len {
+        if i == 1 {
+            h.cells = h.cells[0..1]
+        }
+        acc += g.cells[i]
+    }
+    return acc
+}
+
+func main() int {
+    mut xs := [4]i64{1, 2, 3, 4}
+    mut grid := Grid{cells: xs[..], w: 4}
+    return int(f(&grid, &grid))
+}

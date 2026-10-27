@@ -1,0 +1,17 @@
+// expect: 134
+// The loop is bounded by one slice and indexes another, shorter one: only the
+// slice a loop walks is proven, so this is checked in a parallel loop too.
+
+func pick(xs []u64, ys []u64) u64 {
+    mut acc u64 = 0
+    parallel for i in 0..xs.len reduce(+: acc) {
+        acc += ys[i]
+    }
+    return acc
+}
+
+func main() int {
+    a := [8]u64{1, 1, 1, 1, 1, 1, 1, 1}
+    b := [2]u64{1, 1}
+    return int(pick(a[..], b[..]))
+}
