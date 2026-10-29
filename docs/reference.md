@@ -179,7 +179,7 @@ here does.
 ## Statements
 
 ```sword
-if cond { } else if cond { } else { }
+if cond { } else if cond { } else { }   // `else` may also start the next line
 if x := optional { } else { }
 if mut x := optional { }          // a copy that can be written
 
