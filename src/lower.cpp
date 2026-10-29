@@ -936,6 +936,8 @@ struct Lowerer {
   }
 
   int checked_arith(IrOp op, int a, int b, Type *type, Pos pos) {
+    if (op == IR_SHL || op == IR_SHR) return shift(op, a, b, type, pos);
+    if (op == IR_DIV || op == IR_MOD) divisor_check(a, b, type, pos);
     int value = binop(op, a, b, type);
     if (!mode_checks(mode)) return value;
     if (op != IR_ADD && op != IR_SUB && op != IR_MUL) return value;
@@ -959,6 +961,48 @@ struct Lowerer {
     guard(ok.dst, "panic: integer overflow at line " +
                       std::to_string(pos.line) + "\n");
     return value;
+  }
+
+  // LLVM makes a shift by the type's width or more poison, so it is never
+  // emitted. Checked, it panics; unchecked, the count is taken modulo the
+  // width, which is what the hardware does anyway and so costs nothing.
+  int shift(IrOp op, int a, int b, Type *type, Pos pos) {
+    if (mode_checks(mode)) {
+      int ok = binop(IR_LT, b, constant(type->bits, type), types.bool_ty);
+      if (type->is_signed)
+        ok = binop(IR_AND, ok,
+                   binop(IR_GE, b, constant(0, type), types.bool_ty),
+                   types.bool_ty);
+      guard(ok, "panic: shift out of range at line " +
+                    std::to_string(pos.line) + "\n");
+    } else {
+      b = binop(IR_AND, b, constant(type->bits - 1, type), type);
+    }
+    return binop(op, a, b, type);
+  }
+
+  // Dividing by zero, and the most negative value by -1, are undefined in LLVM
+  // and trap on some machines but not others. Checked in every mode: next to a
+  // division the comparison costs next to nothing, and there is no answer that
+  // would be right to give instead.
+  void divisor_check(int a, int b, Type *type, Pos pos) {
+    guard(binop(IR_NE, b, constant(0, type), types.bool_ty),
+          "panic: division by zero at line " + std::to_string(pos.line) +
+              "\n");
+    if (!type->is_signed) return;
+    int64_t lowest =
+        type->bits == 64 ? INT64_MIN : -(int64_t(1) << (type->bits - 1));
+    int overflows = binop(
+        IR_AND, binop(IR_EQ, a, constant(lowest, type), types.bool_ty),
+        binop(IR_EQ, b, constant(-1, type), types.bool_ty), types.bool_ty);
+    IrInst ok{};
+    ok.op = IR_NOT;
+    ok.dst = new_value(types.bool_ty);
+    ok.a = overflows;
+    ok.type = types.bool_ty;
+    emit(ok);
+    guard(ok.dst, "panic: integer overflow at line " +
+                      std::to_string(pos.line) + "\n");
   }
 
   // Indices and slice bounds must reach the width a slice length uses before

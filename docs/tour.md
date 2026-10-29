@@ -1528,7 +1528,9 @@ shield program.sword --mode=small    # no checks, optimised for size
 ```
 
 `+%`, `-%` and `*%` wrap on overflow and are never checked, in any mode. That
-is how you ask for wrapping on purpose, in a hash or a PRNG.
+is how you ask for wrapping on purpose, in a hash or a PRNG. Dividing by zero is
+the exception the other way: it panics in every mode, because there is no answer
+to give instead.
 
 The difference shows up in the generated code: a summing loop stays scalar in
 `safe`, because the bounds check blocks it, and vectorises in `fast`. Same

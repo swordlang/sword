@@ -1,0 +1,12 @@
+// expect: 134
+// A negative shift count is out of range too.
+
+func sh(x i32, n i32) i32 {
+    return x >> n
+}
+
+func main() int {
+    mut n i32 = 0
+    n -= 1
+    return int(sh(64, n))
+}

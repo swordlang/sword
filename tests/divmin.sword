@@ -1,0 +1,14 @@
+// expect: 134
+// The most negative i32 divided by -1 is 2147483648, which an i32 cannot hold.
+
+func div(a i32, b i32) i32 {
+    return a / b
+}
+
+func main() int {
+    mut lowest i32 = -2147483647
+    lowest -= 1
+    mut neg i32 = 0
+    neg -= 1
+    return int(div(lowest, neg) & 127)
+}
