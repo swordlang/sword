@@ -45,6 +45,9 @@ struct Checker {
   int loop_depth = 0;
   std::vector<Node *> open_scopes;
   std::vector<int> scope_loop_base;
+  // The loop depth inside each `parallel for` being checked: a `break` at
+  // exactly that depth would stop one piece of the range, not the loop.
+  std::vector<int> parallel_bodies;
 
   // What a scope's tasks reach into, and how. Two accesses to the same memory
   // are a race unless both only read, or they are pieces of one partition.
@@ -3594,7 +3597,9 @@ struct Checker {
         }
       }
       loop_depth++;
+      if (n->is_parallel) parallel_bodies.push_back(loop_depth);
       check_stmt(n->body);
+      if (n->is_parallel) parallel_bodies.pop_back();
       loop_depth--;
       if (n->is_parallel) {
         check_parallel_body(n);
@@ -3610,6 +3615,10 @@ struct Checker {
       if (loop_depth == 0) {
         error(n->pos, "'%s' outside of a loop",
               n->kind == ND_BREAK ? "break" : "continue");
+      } else if (n->kind == ND_BREAK && !parallel_bodies.empty() &&
+                 loop_depth == parallel_bodies.back()) {
+        error(n->pos, "a 'parallel for' has no order to break out of; "
+                      "'continue' skips one index");
       } else if (!scope_loop_base.empty() &&
                  loop_depth <= scope_loop_base.back()) {
         leaving_scope(n, n->kind == ND_BREAK ? "break" : "continue");

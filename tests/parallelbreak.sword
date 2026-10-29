@@ -1,0 +1,14 @@
+// expect-error: a 'parallel for' has no order to break out of
+// The iterations of a parallel loop have no order, so a break would stop
+// whichever piece of the range it ran in and depend on where the range was cut.
+
+func main() int {
+    mut acc f64 = 0.0
+    parallel for i in 0..100000 reduce(+: acc) {
+        if i % 1000 == 500 {
+            break
+        }
+        acc += 1.0
+    }
+    return int(acc)
+}
