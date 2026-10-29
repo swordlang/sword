@@ -1,0 +1,14 @@
+// expect-error: expected an expression, found else
+// Only an `if` continues onto a line that starts with `else`; after any other
+// statement it is an `else` with nothing to belong to.
+
+func main() int {
+    mut n := 0
+    for i in 0..3 {
+        n += i
+    }
+    else {
+        n = 1
+    }
+    return n
+}

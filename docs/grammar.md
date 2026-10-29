@@ -54,6 +54,19 @@ total := first +
 The end of the file counts as a newline. In the grammar, `";"` stands for
 either.
 
+`else` is the one place a `;` does not end anything. No statement starts with
+`else`, so when one follows the `}` of an `if` on the next line, it continues
+that `if`:
+
+```sword
+if ready {
+    start()
+}
+else {
+    wait()
+}
+```
+
 ### Identifiers and keywords
 
 ```
@@ -246,7 +259,7 @@ AssignOp    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
             | "&=" | "|=" | "^=" | "<<=" | ">>=" .
 
 IfStmt      = "if" ( [ [ "mut" ] identifier ":=" ] Expr Block | LockStmt )
-              [ "else" ( IfStmt | Block ) ] .
+              [ [ ";" ] "else" ( IfStmt | Block ) ] .
 
 ForStmt     = "for" [ "mut" ] identifier ":=" Expr Block
             | "for" [ ForHead ] [ Reduction ] Block .
