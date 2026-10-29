@@ -98,6 +98,9 @@ struct IrModule {
   // simulated scheduler may switch tasks, which is where two tasks' order over
   // an atomic can be explored. Off, the code is exactly what it always was.
   bool sim_points = false;
+  // Off in --mode=small: the tables are there for a debugger or a profiler
+  // walking the stack, and a program built small has asked to do without.
+  bool unwind_tables = true;
 
   int intern(const std::string &text) {
     for (size_t i = 0; i < strings.size(); i++)
