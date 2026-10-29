@@ -845,7 +845,7 @@ struct Lowerer {
 
     // Each piece is a part of the range the parent worked out from `xs.len`
     // before cutting it, so the same proof holds in every one.
-    Symbol *slice = walked_slice(loop);
+    Symbol *slice = walked_slice(loop, true);
     if (slice) walked.push_back({loop->sym, slice});
     loops.push_back({step_bb, exit_bb, scopes.size()});
     cur = body_bb;
@@ -991,16 +991,18 @@ struct Lowerer {
   // The slice `for i in a..xs.len` walks, when every `xs[i]` in its body is in
   // range by construction. The loop variable cannot be assigned, and nothing
   // can change the header of an immutable binding: assigning it is refused and
-  // `&xs` lends it read-only. A slice reached through a pointer or a field is
-  // not one of these, because the same memory can be lent `mut` under another
-  // name in the same call and shortened mid-loop.
-  Symbol *walked_slice(Node *loop) {
+  // `&xs` lends it read-only. In a `parallel for` a `mut` slice holds too: the
+  // race checker lets the body write only `xs[i]`, never `xs` itself, and no
+  // other task of the scope can reach it while the loop runs. A slice reached
+  // through a pointer or a field is never one of these, because the same memory
+  // can be lent `mut` under another name in the same call and shortened mid-loop.
+  Symbol *walked_slice(Node *loop, bool parallel) {
     Node *hi = loop->rhs;
     if (!hi || hi->kind != ND_FIELD || hi->name != "len") return nullptr;
     Node *base = hi->lhs;
     if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
     Symbol *s = base->sym;
-    if (s->is_mut || s->is_func || !s->type) return nullptr;
+    if ((s->is_mut && !parallel) || s->is_func || !s->type) return nullptr;
     if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
     return s;
   }
@@ -1883,7 +1885,7 @@ struct Lowerer {
     cond_branch(binop(IR_LT, load(slot, type), limit, types.bool_ty), body_bb,
                 exit_bb);
 
-    Symbol *slice = walked_slice(n);
+    Symbol *slice = walked_slice(n, false);
     if (slice) walked.push_back({n->sym, slice});
     loops.push_back({step_bb, exit_bb, scopes.size()});
     cur = body_bb;
