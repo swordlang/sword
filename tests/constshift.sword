@@ -1,0 +1,6 @@
+// expect-error: this constant shifts by 64, outside 0..63
+const Big = 1 << 64
+
+func main() int {
+    return 0
+}

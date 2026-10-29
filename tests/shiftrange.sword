@@ -1,0 +1,13 @@
+// expect: 134
+// A shift by the width of the type or more has no answer; with checks on it
+// panics rather than giving whatever the optimizer makes of it.
+
+func sh(x u64, n u64) u64 {
+    return x << n
+}
+
+func main() int {
+    mut n u64 = 60
+    n += 10
+    return int(sh(1, n) & 255)
+}

@@ -238,6 +238,15 @@ wrapping forms below.
 `+%` `-%` `*%` and `+%=` `-%=` `*%=` wrap on overflow and are never checked, in
 any build mode.
 
+`x << n` and `x >> n` with `n` at least the width of `x`'s type, or negative,
+panic in a mode with checks. In `fast` and `small` the count is taken modulo the
+width, so `x << 70` on a `u64` is `x << 6`: what the processor does anyway, at no
+cost. A constant shifted outside `0..63` does not compile.
+
+Dividing by zero, with `/` or `%`, panics in every mode, and so does dividing
+the most negative value of a signed type by `-1`, whose answer does not fit. No
+other result would be right, and next to a division the check costs little.
+
 `[*]T` supports `p + n` and `p - n`. `*T` and `[]T` do not.
 
 ## Function values
@@ -2227,6 +2236,9 @@ simulator does not simulate yet. See [Simulation](testing.md#simulation).
 | `safe` | yes | full |
 | `fast` | no | full |
 | `small` | no | for size |
+
+Shift checks go with bounds and overflow checks. A division is checked in every
+mode.
 
 ## Environment
 

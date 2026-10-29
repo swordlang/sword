@@ -628,6 +628,16 @@ struct Checker {
       error(e->pos, "this constant divides by zero");
       return nullptr;
     }
+    if ((e->op == TK_SLASH || e->op == TK_PERCENT) && !floating &&
+        li == INT64_MIN && ri == -1) {
+      error(e->pos, "this constant overflows");
+      return nullptr;
+    }
+    if ((e->op == TK_SHL || e->op == TK_SHR) && (ri < 0 || ri > 63)) {
+      error(e->pos, "this constant shifts by %lld, outside 0..63",
+            (long long)ri);
+      return nullptr;
+    }
 
     if (floating) {
       double result;
@@ -656,7 +666,7 @@ struct Checker {
     case TK_AMP: result = li & ri; break;
     case TK_PIPE: result = li | ri; break;
     case TK_CARET: result = li ^ ri; break;
-    case TK_SHL: result = li << ri; break;
+    case TK_SHL: result = (int64_t)((uint64_t)li << ri); break;
     case TK_SHR: result = li >> ri; break;
     default:
       error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));

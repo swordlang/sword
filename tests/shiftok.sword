@@ -1,0 +1,21 @@
+// expect: 42
+// Every count from 0 to the width minus one is in range, for each width and
+// both signs.
+
+func main() int {
+    mut ok := 0
+    mut b u8 = 1
+    mut n u8 = 7
+    if b << n == 128 { ok += 10 }
+    mut w i32 = -2147483647
+    w -= 1
+    mut m i32 = 31
+    if w >> m == -1 { ok += 10 }
+    mut z u64 = 5
+    mut zero u64 = 0
+    if z << zero == 5 { ok += 10 }
+    mut h u16 = 65535
+    mut k u16 = 15
+    if h >> k == 1 { ok += 12 }
+    return ok
+}
