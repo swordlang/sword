@@ -1,0 +1,38 @@
+# Tells swordlang.com that what it is built from has changed, so the site is
+# rebuilt within a minute instead of at its next hourly check. The site is
+# made from the documentation, the changelog, the version and the editor
+# grammar, at main for the release and at develop for /next/.
+#
+# Sending the event takes a token allowed to write to swordlang/website,
+# kept as the secret WEBSITE_DISPATCH_TOKEN. Without it this does nothing and
+# the hourly check still brings the site up to date.
+name: Site
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "docs/**"
+      - README.md
+      - CHANGELOG.md
+      - src/version.h
+      - "editors/vscode/syntaxes/**"
+      - .github/workflows/site.yml
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask swordlang.com to rebuild
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::No WEBSITE_DISPATCH_TOKEN: the site will pick this up at its hourly check."
+            exit 0
+          fi
+          gh api repos/swordlang/website/dispatches -f event_type=docs
