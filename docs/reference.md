@@ -194,7 +194,7 @@ for x := optional { }              // while it holds something; `for mut x` too
 
 switch subject { case a, b: ... default: ... }
 
-parallel for i in a..b { }
+parallel for i in a..b { }         // no break; continue skips one index
 parallel for i in a..b reduce(+: acc) { }
 
 scope { spawn f(args) ... }

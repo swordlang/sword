@@ -381,6 +381,9 @@ parallel for i in 0..n {
 That is the neighbour bug, and it is the kind of thing that shows up in
 production as a heisenbug three months later.
 
+There is no `break` either. The iterations have no order, so there is no point
+after which the rest would be skipped; `continue` skips the one index it is in.
+
 ### Reductions
 
 Accumulating into one variable is the exception that needs help:
