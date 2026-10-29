@@ -412,6 +412,14 @@ The body does the per-element combining; the clause only says how the pieces'
 copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
 applies to floats.
 
+A float sum is the one place where the order of the additions changes the
+answer, so the language fixes it: each piece adds into sixteen separate sums
+and folds them at the end, in an order the
+[reference](reference.md#reductions) spells out. That is the order a vector
+unit wants, which is why the same loop runs four to eleven times faster on one
+core than adding one element after another (Apple M4, f64 and f32), and it is
+the same order on any machine and any number of threads.
+
 ### A reduction of your own
 
 The clause also takes the name of a function, which is what makes the rest of

@@ -741,6 +741,15 @@ adding in a different order is a different number: the same program answers the
 same bits on one thread and on sixteen. How many tasks run those pieces is
 still up to the scheduler — it is the cut that is fixed, not the schedule.
 
+A float `+` fixes the order inside each piece as well, as one a vector unit can
+follow. The piece keeps sixteen sums, all starting at zero, and its k-th
+element, counting from the start of the piece, is added into sum `k % 16`;
+within the body, the accumulator is the sum the current element goes into. At
+the end the sums are folded by halves — sum `j` adds sum `j + 8` for each `j`
+below 8, then `j + 4`, `j + 2` and `j + 1` — and sum 0 is the piece's answer.
+Sixteen is the language's number, not the machine's: a wider or a narrower
+vector unit gives the same bits.
+
 It is not the same number a sequential loop would reach, since the pieces are
 summed separately before being combined. Reproducible, not sequential.
 
