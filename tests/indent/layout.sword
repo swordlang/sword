@@ -38,6 +38,12 @@ func (mut s *Server) handle(name string, port i32, limit u64,
         } else {
             s.n += 2
         }
+        if verbose {
+            s.n += 3
+        }
+        else {
+            s.n += 4
+        }
     case Shape.Square:
         s.n = 1
     }

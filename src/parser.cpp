@@ -725,7 +725,7 @@ struct Parser {
       if (!n) return nullptr;
       n->pos = at;
       n->is_try = true;
-      if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+      if (match_else()) n->els = kind() == TK_IF ? if_stmt() : block();
       return n;
     }
     Node *n = make(ND_IF, advance().pos);
@@ -741,8 +741,16 @@ struct Parser {
     n->cond = header_expr();
     if (!n->cond) return nullptr;
     n->body = block();
-    if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+    if (match_else()) n->els = kind() == TK_IF ? if_stmt() : block();
     return n;
+  }
+
+  // `}` at the end of a line ends a statement, so an `else` on the next line
+  // finds the `if` already closed. No statement starts with `else`, so that
+  // newline cannot have meant anything but this.
+  bool match_else() {
+    if (kind() == TK_TERM && kind(1) == TK_ELSE) advance();
+    return match(TK_ELSE);
   }
 
   // `for {}`, `for cond {}` and `for i in a..b {}` all land here.

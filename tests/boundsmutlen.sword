@@ -1,0 +1,17 @@
+// expect-error: every iteration would write 'out'
+// A `parallel for` over `out` drops the check on `out[i]` because its body
+// cannot change `out` itself; this is one of the ways it would.
+
+func shrink(mut s *[]u64) {
+    s.len = 0
+}
+
+func main() int {
+    mut data := [8]u64{}
+    mut out := data[..]
+    parallel for i in 0..out.len {
+        out.len = 1
+        out[i] = 1
+    }
+    return int(out[0])
+}
