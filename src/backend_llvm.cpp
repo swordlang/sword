@@ -560,7 +560,7 @@ struct Emitter {
     const char *linkage = split ? (f.is_local ? "define internal" : "define hidden")
                                 : (f.is_internal ? "define internal" : "define");
     signature(f, linkage, true);
-    fputs(" {\n", out);
+    fputs(" #0 {\n", out);
     for (const IrBlock &bb : f.blocks) {
       fprintf(out, "bb%d:\n", bb.id);
       for (const IrInst &in : bb.insts) inst(in);
@@ -586,7 +586,7 @@ struct Emitter {
   // itself. The runtime takes a thunk and an argument block, so the answer
   // comes back through a slot on the real stack.
   void main_task(const IrFunc &f) {
-    fputs("define internal zeroext i16 @sword_main.task(ptr %args) {\nbb0:\n",
+    fputs("define internal zeroext i16 @sword_main.task(ptr %args) #0 {\nbb0:\n",
           out);
     if (f.ret->is_error_union) {
       fputs("  %slot = load ptr, ptr %args, align 8\n"
@@ -625,11 +625,11 @@ struct Emitter {
   void entry_wrapper(const IrFunc &f) {
     main_task(f);
     if (wants_args()) {
-      fputs("define i32 @main(i32 %argc, ptr %argv) {\nbb0:\n"
+      fputs("define i32 @main(i32 %argc, ptr %argv) #0 {\nbb0:\n"
             "  call void @sword_os_set_args(i32 %argc, ptr %argv)\n",
             out);
     } else {
-      fputs("define i32 @main() {\nbb0:\n", out);
+      fputs("define i32 @main() #0 {\nbb0:\n", out);
     }
     if (f.ret->is_error_union) {
       // A fallible main reports the error code as its exit status, and its
@@ -696,7 +696,7 @@ struct Emitter {
       fputs("declare i64 @write(i32, ptr, i64)\n", out);
     if (!declared.count("abort"))
       fputs("declare void @abort()\n", out);
-    fputs("\ndefine internal void @sword_panic(ptr %msg, i64 %len) noreturn {\n"
+    fputs("\ndefine internal void @sword_panic(ptr %msg, i64 %len) noreturn #0 {\n"
           "bb0:\n"
           "  %w = call i64 @write(i32 2, ptr %msg, i64 %len)\n"
           "  call void @abort()\n"
@@ -861,6 +861,12 @@ struct Emitter {
     if (uses_memset)
       fputs("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n", out);
     for (const std::string &decl : intrinsics) fprintf(out, "%s\n", decl.c_str());
+
+    // Nothing in Sword unwinds: a panic aborts and the runtime throws nothing,
+    // so no function needs a landing pad. The tables a debugger or a profiler
+    // walks the stack with are kept unless the program asked to be small.
+    fprintf(out, "\nattributes #0 = { nounwind%s }\n",
+            mod.unwind_tables ? " uwtable(sync)" : "");
   }
 };
 
