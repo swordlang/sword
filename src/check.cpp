@@ -2463,7 +2463,6 @@ struct Checker {
     }
     apply_type(n->rhs, types.usize_ty);
     settle(n->rhs);
-    n->lhs->type = base;
     return n->type = elem;
   }
 
@@ -2495,7 +2494,6 @@ struct Checker {
       apply_type(bound, types.usize_ty);
       settle(bound);
     }
-    n->lhs->type = base;
     return n->type = base->kind == TY_STRING ? types.string_ty
                                              : types.slice(elem);
   }
