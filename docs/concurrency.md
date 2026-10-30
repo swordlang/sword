@@ -352,6 +352,12 @@ scope {
 `src` is read by every task, which is allowed. `part` is written by exactly
 one.
 
+A piece is its task's for one turn of the loop that cut it. A loop around the
+`chunks` loop walks the slice again, a loop inside it hands the same piece out
+again, and two spawns in one turn give it to two tasks; each is refused like
+slicing by hand, with a note that points at the `chunks` loop. A spawn in each
+branch of an `if` is fine, since only one of them starts.
+
 ## `parallel for`
 
 For the common case of "do this to every element", there is a loop that spreads

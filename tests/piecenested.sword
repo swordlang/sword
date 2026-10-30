@@ -1,0 +1,25 @@
+// expect-error: every turn of this loop hands the same memory to a new task
+// Two nested chunks loops: the inner one walks its slice again on every turn of
+// the outer one, so each inner piece goes to more than one task, and the outer
+// piece goes to every task of the inner loop.
+
+func fill(mut xs []i64, mut ys []i64) {
+    for i in 0..ys.len {
+        ys[i] += 1
+    }
+}
+
+func main() int {
+    mut a := [8]i64{}
+    mut b := [8]i64{}
+    mut xs := a[..]
+    mut ys := b[..]
+    scope {
+        for off, part in xs.chunks(4) {
+            for soff, spart in ys.chunks(4) {
+                spawn fill(part, spart)
+            }
+        }
+    }
+    return int(b[0])
+}

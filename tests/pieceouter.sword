@@ -1,0 +1,22 @@
+// expect-error: every turn of this loop hands the same memory to a new task
+// A loop around the chunks loop walks the slice again, handing every piece out
+// once per turn.
+
+func fill(mut xs []i64) {
+    for i in 0..xs.len {
+        xs[i] += 1
+    }
+}
+
+func main() int {
+    mut a := [8]i64{}
+    mut xs := a[..]
+    scope {
+        for r in 0..2 {
+            for off, part in xs.chunks(4) {
+                spawn fill(part)
+            }
+        }
+    }
+    return int(a[0])
+}

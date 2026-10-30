@@ -1,0 +1,31 @@
+// expect: 36
+// Inside a scope the parent may read a local of its own and then write it:
+// its uses run one after another and race only with its tasks.
+
+func sum(xs []u64, mut total *u64) {
+    for i in 0..xs.len {
+        *total += xs[i]
+    }
+}
+
+func main() int {
+    mut data := [8]u64{1, 2, 3, 4, 5, 6, 7, 8}
+    xs := data[..]
+    mut totals := [3]u64{}
+    mut out := totals[..]
+    scope {
+        mut end u64 = 10
+        if end > 3 {
+            end = 3
+        }
+        for off, part in out.chunks(1) {
+            mut start := off * end
+            mut stop := start + end
+            if stop > xs.len {
+                stop = xs.len
+            }
+            spawn sum(xs[start..stop], &part[0])
+        }
+    }
+    return int(totals[0] + totals[1] + totals[2])
+}

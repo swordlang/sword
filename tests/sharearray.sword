@@ -1,0 +1,16 @@
+// expect-error: walk it with 'for part in totals[..].chunks(n)'
+// An array lent to every task of a loop can be cut: the note slices it first.
+
+func bump(mut a *[4]u64) {
+    a[0] += 1
+}
+
+func main() int {
+    mut totals := [4]u64{}
+    scope {
+        for task in 0..8 {
+            spawn bump(&totals)
+        }
+    }
+    return int(totals[0])
+}
