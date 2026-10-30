@@ -136,10 +136,40 @@ too, rather than leaving every register to a function written in C:
 - placing code and data in a named section, and constants that are whole arrays
   and structs, kept in flash instead of copied into RAM.
 
-## 0.6 — software that must not fail
+## 0.6 — graphics processors
+
+A GPU runs thousands of threads over one space of indices, has memory the CPU
+cannot read, and allocates nothing while a kernel runs. Those are nearly Sword's
+rules already — nothing allocated behind your back, no closures, data that
+arrives through slices you pass — so 0.6 makes the GPU part of the language,
+rather than a library that loads kernels written in another one:
+
+- `gpu for i in 0..n { ... }`, the sibling of `parallel for`: the body runs once
+  per index on the device, and the race checker holds it to the same rule, each
+  index writing only its own element. `reduce(+: total)` works the same way;
+- a reduction on the GPU follows an order the language fixes, the way a float
+  sum in a `parallel for` already does, so a `det` function gives the same bits
+  on the GPU as on the CPU, whatever the card. A floating-point atomic, whose
+  order the hardware picks, is outside `det`;
+- memory on the device is a `gpu.Buffer[T]`, never a slice. A slice can be read
+  anywhere and memory on the card cannot, so a buffer is filled and read back by
+  explicit calls and indexed only in code that runs on the GPU;
+- `kernel func`, for what `gpu for` hides — blocks, memory shared within a block,
+  barriers — with the race checker extended to the threads of a block;
+- waiting for the GPU parks the task, the way waiting for the network does, so a
+  server goes on answering while its kernels run;
+- `f16` and `bf16`, on the CPU as well as on the GPU;
+- a machine without the GPU a program asks for is an error the program handles:
+  `gpu.Open()` returns `!gpu.Device`. Nothing runs on the CPU behind its back,
+  since that would hide the very difference the program was written for.
+
+The first backend is NVIDIA's, through the PTX backend LLVM already has, which
+covers servers and embedded boards such as Jetson.
+
+## 0.7 — software that must not fail
 
 What the compiler already refuses makes Sword a reasonable fit for software where
-a failure costs more than a restart. 0.6 adds the guarantees that kind of work
+a failure costs more than a restart. 0.7 adds the guarantees that kind of work
 asks for:
 
 - a mode where nothing allocates once the program has started;
@@ -158,7 +188,10 @@ asks for:
 
 Certification itself is a process, not a compiler, and stays out of scope.
 
-## 0.7 — types that say more
+0.7 also brings the second GPU backend, Vulkan and SPIR-V, which reaches AMD
+and Intel cards and the GPUs inside embedded chips.
+
+## 0.8 — types that say more
 
 - Tagged unions with an exhaustive `switch` over them: a message that is one of
   several shapes, a state machine, a syntax tree. A function may also be written
@@ -191,7 +224,7 @@ Certification itself is a process, not a compiler, and stays out of scope.
 - A growable container in the standard library that never moves what it holds,
   so a pointer to an element stays good as it grows.
 
-## 0.8 — compile time, and the rest of C
+## 0.9 — compile time, and the rest of C
 
 - Evaluating `const X = f(...)` at compile time when `f` is `det`: a CRC table or
   a sine table worked out once, by the compiler, and kept in flash. `det` already
@@ -200,7 +233,7 @@ Certification itself is a process, not a compiler, and stays out of scope.
   types, bindings generated from a header with `shield bind`, and functions
   written in Sword that C can call.
 
-## 0.9 — tools, and closing the language
+## 0.10 — tools, and closing the language
 
 - Debug information, and a backtrace when a program panics.
 - `shield size` and `shield stack`: how much flash and how much stack each
@@ -212,12 +245,12 @@ Certification itself is a process, not a compiler, and stays out of scope.
 - Simulated networking for `shield test -sim`.
 - `std/term`, and a terminal UI framework built on it as a package of its own.
 
-0.9 is the last version that changes the language before 1.0.
+0.10 is the last version that changes the language before 1.0.
 
 ## 1.0 Edge — Sword in Sword
 
-The compiler is written in C++ today. After 0.9 it is rewritten in Sword, in a
-series of versions — 0.10, 0.11 and on — that change the compiler and not the
+The compiler is written in C++ today. After 0.10 it is rewritten in Sword, in a
+series of versions — 0.11, 0.12 and on — that change the compiler and not the
 language. Each stage is checked against the C++ one on everything it can print —
 the syntax tree, Sword's own IR, the LLVM IR — before the next is started.
 
