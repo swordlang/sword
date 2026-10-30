@@ -1,0 +1,18 @@
+// expect: 134
+// expect-panic: panic: integer overflow at line 9
+// The sum overflows: the bound gives up, and the checked pass panics on the
+// line of the addition.
+
+func sum(xs []u64) u64 {
+    mut acc u64 = 0
+    for i in 0..xs.len {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func main() int {
+    top u64 = 1
+    xs := [3]u64{top << 63, top << 63, 1}
+    return int(sum(xs[..]))
+}
