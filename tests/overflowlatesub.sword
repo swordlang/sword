@@ -1,0 +1,16 @@
+// expect: 134
+// expect-panic: panic: integer overflow at line 8
+// Taking away more than an unsigned accumulator holds.
+
+func takeaway(start u64, xs []u64) u64 {
+    mut acc := start
+    for i in 0..xs.len {
+        acc -= xs[i]
+    }
+    return acc
+}
+
+func main() int {
+    xs := [3]u64{3, 3, 3}
+    return int(takeaway(5, xs[..]))
+}

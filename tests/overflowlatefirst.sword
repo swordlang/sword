@@ -1,0 +1,21 @@
+// expect: 134
+// expect-panic: panic: integer overflow at line 13
+// Both accumulators overflow; the panic names the one that overflowed first in
+// the order the loop runs, though it comes later in the source.
+
+func twice(xs []u8) u8 {
+    mut a u8 = 0
+    mut b u8 = 0
+    for i in 0..xs.len {
+        // a reaches 300 at the third element, b 400 at the second.
+        v := xs[i]
+        a += v
+        b += v +% v
+    }
+    return a +% b
+}
+
+func main() int {
+    xs := [4]u8{100, 100, 100, 100}
+    return int(twice(xs[..]))
+}

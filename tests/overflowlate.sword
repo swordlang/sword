@@ -1,0 +1,132 @@
+// expect: 0
+// A loop that only accumulates adds without a check and looks at a bound once
+// at the end; when the bound cannot rule an overflow out, it runs again with
+// every check. Each of these either passes the bound or runs again and must
+// find no overflow, giving the same answer either way.
+
+func sum(xs []u64) u64 {
+    mut acc u64 = 0
+    for i in 0..xs.len {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func wrapped(xs []u64) u64 {
+    mut acc u64 = 0
+    for i in 0..xs.len {
+        acc +%= xs[i]
+    }
+    return acc
+}
+
+func signed(xs []i64) i64 {
+    mut acc i64 = 0
+    for x in xs {
+        acc += x
+    }
+    return acc
+}
+
+func takeaway(start u64, xs []u64) u64 {
+    mut acc := start
+    for i in 0..xs.len {
+        acc -= xs[i]
+    }
+    return acc
+}
+
+func narrow(xs []i8) i8 {
+    mut acc i8 = 0
+    for x in xs {
+        acc += x
+    }
+    return acc
+}
+
+func bytes(s string) u8 {
+    mut acc u8 = 0
+    for c in s {
+        acc += c
+    }
+    return acc
+}
+
+// Two accumulators, a local, a branch and a continue; one term reads an
+// accumulator.
+func split(xs []u64) u64 {
+    mut evens u64 = 0
+    mut odds u64 = 0
+    for i in 0..xs.len {
+        v := xs[i]
+        if (v & 1) == 0 {
+            evens += v
+            continue
+        }
+        odds += v +% (evens & 1)
+    }
+    return evens * 1000 + odds
+}
+
+func psum(xs []i64) i64 {
+    mut acc i64 = 0
+    parallel for i in 0..xs.len reduce(+: acc) {
+        acc += xs[i]
+    }
+    return acc
+}
+
+func main() int {
+    mut data := [8]u64{}
+    for i in 0..data.len {
+        data[i] = i + 1
+    }
+    if sum(data[..]) != 36 {
+        return 1
+    }
+
+    // 2^63 + 1 + 2 + 3: the bound gives up, the checked pass finds no overflow.
+    top u64 = 1
+    mut big := [4]u64{top << 63, 1, 2, 3}
+    if sum(big[..]) != wrapped(big[..]) || sum(big[..]) != (top << 63) + 6 {
+        return 2
+    }
+
+    // The total fits and so does every running total, though the bound does not.
+    most i64 = 9223372036854775807
+    near := [4]i64{most - 1, 1, -1, -5}
+    if signed(near[..]) != most - 6 {
+        return 3
+    }
+
+    small := [3]u64{10, 20, 30}
+    if takeaway(100, small[..]) != 40 {
+        return 4
+    }
+    halves := [2]u64{top << 62, 1}
+    if takeaway(top << 63, halves[..]) != (top << 62) - 1 {
+        return 5
+    }
+
+    edges := [4]i8{127, -1, 1, -127}
+    if narrow(edges[..]) != 0 {
+        return 6
+    }
+    if bytes("ab") != 195 {
+        return 7
+    }
+
+    if split(data[..]) != 20016 {
+        return 8
+    }
+
+    mut mixed := [64]i64{}
+    for i in 0..mixed.len {
+        mixed[i] = i64(i) - 40
+    }
+    // 0 + 1 + ... + 63 - 64 * 40
+    if psum(mixed[..]) != 2016 - 2560 {
+        return 9
+    }
+    return 0
+}

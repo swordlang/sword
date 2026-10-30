@@ -1,0 +1,17 @@
+// expect: 134
+// expect-panic: panic: integer overflow at line 9
+// The total fits, but the running total passes the largest i64 on the way:
+// that is still an overflow.
+
+func sum(xs []i64) i64 {
+    mut acc i64 = 0
+    for x in xs {
+        acc += x
+    }
+    return acc
+}
+
+func main() int {
+    xs := [3]i64{9223372036854775807, 1, -1}
+    return int(sum(xs[..]))
+}
