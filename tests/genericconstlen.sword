@@ -1,0 +1,23 @@
+// expect: 10
+// A package constant names an array length in a generic struct's field, in a
+// generic method's parameter and in a generic function's parameter, the same
+// way it does anywhere else.
+
+const Size = 4
+
+struct R[T] {
+    items [Size]T
+}
+
+func (r *R[T]) First(other [Size]T) T {
+    return other[0]
+}
+
+func last[T](xs [Size]T) T {
+    return xs[Size - 1]
+}
+
+func main() int {
+    r := R[i64]{items: [Size]i64{1, 2, 3, 4}}
+    return int(r.items[3] + r.First(r.items) + last(r.items) + i64(r.items.len) - 3)
+}

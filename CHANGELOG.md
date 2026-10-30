@@ -4,6 +4,36 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.3.1 — Quench
+
+*2026-10-30.* A patch to Quench: the race checker closes a hole in partitions
+and stops refusing the parent's own uses, and two smaller mistakes are fixed.
+
+### What changes for existing programs
+
+One kind of program that compiled stops compiling, against what a patch
+promises, because each of them is a data race the race checker was meant to
+refuse. A piece of a `chunks` partition belongs to its task for one turn of the
+loop that cut it; the checker took it to belong to it for good. Now refused:
+nested `chunks` loops that spawn with a piece of each, a loop around the
+`chunks` loop or inside it, two spawns given one piece in a turn, and the parent
+writing a piece beside its task (#135). A spawn in each branch of an `if` and
+the parent reading `part.len` are still fine. Everything else that compiled
+still does.
+
+### Fixes
+
+- Inside a `scope`, the parent reading a local of its own and then writing it
+  was refused as a race. Its own uses run one after another and race only with
+  its tasks (#136).
+- Lending one counter or struct to every task of a loop came with a note to
+  walk it with `chunks`, which only a slice has. The note now says `atomic[T]`
+  for an integer or a bool, `shared[T]` with `lock` for anything else, and
+  `a[..].chunks(n)` for an array (#137).
+- A package constant as an array length in a generic struct's field, a generic
+  method's parameter or a generic function's parameter was "not an integer
+  constant" (#138).
+
 ## 0.3.0 — Quench
 
 *2026-10-24.* Quenching sets the steel: this release lets a program be built

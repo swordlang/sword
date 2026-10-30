@@ -1,0 +1,20 @@
+// expect-error: this writes 'a', through 'part', while it is already written concurrently
+// Two tasks in one turn of a chunks loop are given the same piece.
+
+func fill(mut xs []i64) {
+    for i in 0..xs.len {
+        xs[i] += 1
+    }
+}
+
+func main() int {
+    mut a := [8]i64{}
+    mut xs := a[..]
+    scope {
+        for off, part in xs.chunks(4) {
+            spawn fill(part)
+            spawn fill(part)
+        }
+    }
+    return int(a[0])
+}

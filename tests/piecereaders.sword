@@ -1,0 +1,47 @@
+// expect: 6
+// A piece of a partition may go to any number of tasks that only read it, to
+// one task per turn of the chunks loop that writes it, and to one in each
+// branch of an if; the parent may read its length.
+
+func fill(mut xs []i64) {
+    for i in 0..xs.len {
+        xs[i] += 1
+    }
+}
+
+func look(xs []i64) {
+}
+
+func count(xs []i64, mut out *i64) {
+    *out = i64(xs.len)
+}
+
+func main() int {
+    mut a := [8]i64{}
+    mut xs := a[..]
+    mut seen := [4]i64{}
+    mut out := seen[..]
+    scope {
+        for off, part in xs.chunks(4) {
+            if part.len == 4 {
+                spawn fill(part)
+            } else {
+                spawn fill(part)
+            }
+        }
+    }
+    ys := a[..]
+    scope {
+        for off, part in out.chunks(2) {
+            spawn count(ys[off..off + 4], &part[0])
+        }
+    }
+    scope {
+        for off, part in ys.chunks(4) {
+            spawn look(part)
+            spawn look(part)
+        }
+    }
+    // 1 + 1 + 4 + 4 - 4
+    return int(a[0] + a[7] + seen[0] + seen[2] - 4)
+}
