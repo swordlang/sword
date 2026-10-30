@@ -1137,6 +1137,9 @@ The format language is small on purpose:
 | | |
 |---|---|
 | `{}` | the next argument, formatted by what it is |
+| `{b}` | an integer in binary |
+| `{q}` | an integer in quaternary |
+| `{o}` | an integer in octal |
 | `{x}` | an integer in hexadecimal |
 | `{.N}` | a float with N decimal places |
 | `{{` `}}` | a literal brace |

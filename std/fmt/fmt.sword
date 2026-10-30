@@ -77,7 +77,12 @@ func BaseConverter(mut out Sink, v u64, base Base, width u64) !void {
     mut n := v 
     mut used u64 = 0
     for n > 0 {
-        digits[used] = digitZero + u8(n & base.Mask)
+        d := u8(n & base.Mask)
+        if d < 10 {
+            digits[used] = digitZero + d
+        } else {
+            digits[used] = 87 + d
+        }
         used += 1
         n = n >> base.Inc;
     }
@@ -575,9 +580,9 @@ func Quote(mut out Sink, s string) !void {
         } else if c == 9 {
             try Str(out, "\\t")
         } else if c < 32 {
-            mut base := Base {
-                Mask: 1,
-                Inc: 1
+            base := Base {
+                Mask: 15,
+                Inc: 4
             }
             try Str(out, "\\u00")
             try BaseConverter(out, u64(c), base, 2)
@@ -601,9 +606,9 @@ func Value(mut out Sink, v any) !void {
     case KindFloat:
         try Float(out, v.Real)
     case KindPointer:
-        mut base := Base {
-            Mask: 1,
-            Inc: 1
+        base := Base {
+            Mask: 15,
+            Inc: 4
         }
         try Str(out, "0x")
         try BaseConverter(out, u64(v.Int), base, 1)
@@ -613,7 +618,8 @@ func Value(mut out Sink, v any) !void {
 }
 
 // `{}` takes the next argument. `{b}` prints an integer in bin, 
-// `{q}` prints an integer in quaternary,`{q}`, prints an integer in hex,  `{.N}` a float
+// `{q}` prints an integer in quaternary, `{o}` prints an integer in octa,
+// `{x}`, prints an integer in hex,  `{.N}` a float
 // with N places. `{{` and `}}` are literal braces.
 //
 // There are no type letters because there is nothing for them to do: the
