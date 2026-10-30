@@ -22,3 +22,14 @@ they lean on something.
   integer.
 - [Decoding UTF-8](decoding-utf8.md): by hand, with every way bytes can fail to be
   UTF-8.
+
+## Concurrency
+
+- [A parallel sum](parallel-sum.md): tasks over a partition by hand, then a
+  `parallel for` whose answer does not depend on the threads.
+- [A worker pool](worker-pool.md): a pipeline of channels, and where the second
+  channel gets closed.
+- [Waiting with a deadline](select-deadline.md): `select` on an answer and a
+  timer, and why nothing is cancelled.
+- [Counters: atomic and shared](counters.md): the same totals kept both ways,
+  and what each can promise.
