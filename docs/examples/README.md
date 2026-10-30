@@ -48,9 +48,16 @@ they lean on something.
 
 ## Programs
 
+- [Reading a file](reading-files.md): all at once into an arena, then a piece at a
+  time through a small buffer.
 - [A command-line tool](grep.md): a small grep, with flags and the exit
   statuses scripts expect.
 - [An HTTP JSON API](json-api.md): two routes, an arena per request, and the
   program as its own client.
 - [Fetching JSON](http-client.md): a document over HTTPS, read with `std/json`.
 - [A chat server](chat-server.md): a task per connection and one shared room.
+
+## Testing
+
+- [A test that finds a race](simulation.md): a test that always passes, and
+  `shield test -sim` finding the order of events that breaks it.
