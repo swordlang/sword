@@ -45,3 +45,12 @@ they lean on something.
   timer, and why nothing is cancelled.
 - [Counters: atomic and shared](counters.md): the same totals kept both ways,
   and what each can promise.
+
+## Programs
+
+- [A command-line tool](grep.md): a small grep, with flags and the exit
+  statuses scripts expect.
+- [An HTTP JSON API](json-api.md): two routes, an arena per request, and the
+  program as its own client.
+- [Fetching JSON](http-client.md): a document over HTTPS, read with `std/json`.
+- [A chat server](chat-server.md): a task per connection and one shared room.
