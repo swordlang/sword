@@ -2548,6 +2548,22 @@ struct Checker {
       return nullptr;
     }
 
+    // `else nil`: what the literal leaves out of an optional field it can
+    // reach is written as `name: nil`, and checked as if it had been.
+    if (n->fills_nil) {
+      std::unordered_set<std::string> named;
+      for (Node *init : n->kids) named.insert(init->name);
+      for (const Field &field : type->fields) {
+        if (named.count(field.name) || !is_optional(field.type) ||
+            !field_reachable(type, field.name))
+          continue;
+        Node *init = ast.make(ND_FIELD_INIT, n->pos);
+        init->name = field.name;
+        init->rhs = ast.make(ND_NIL_LIT, n->pos);
+        n->kids.push_back(init);
+      }
+    }
+
     std::unordered_set<std::string> seen;
     for (Node *init : n->kids) {
       const Field *field = find_field(type, init->name);
@@ -2580,6 +2596,15 @@ struct Checker {
       if (seen.count(field.name)) continue;
       error(n->pos, "field '%s' of %s is not initialized",
             field.name.c_str(), n->name.c_str());
+      bool optional_only = !n->fills_nil;
+      for (const Field &other : type->fields)
+        if (!seen.count(other.name) && !is_optional(other.type))
+          optional_only = false;
+      if (optional_only && n->kids.empty())
+        note(n->pos, "write '%s{nil}' to leave every field empty",
+             n->name.c_str());
+      else if (optional_only)
+        note(n->pos, "write 'else nil' to leave the optional fields empty");
       return nullptr;
     }
     return n->type = type;

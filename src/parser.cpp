@@ -246,7 +246,33 @@ struct Parser {
     int saved = no_struct_lit;
     no_struct_lit = 0;
     skip_terms();
+    // `T{nil}` names no field and leaves every optional one empty.
+    if (match(TK_NIL)) {
+      no_struct_lit = saved;
+      n->fills_nil = true;
+      match(TK_COMMA);
+      skip_terms();
+      return expect(TK_RBRACE, "after 'nil', which ends a struct literal")
+                 ? n
+                 : nullptr;
+    }
     while (kind() != TK_RBRACE && kind() != TK_EOF) {
+      // `else nil` leaves every optional field not named empty; it comes
+      // last, after the fields the literal does name.
+      if (match(TK_ELSE)) {
+        no_struct_lit = saved;
+        if (n->kids.empty()) {
+          fail("with no field named, write '%s{nil}'", n->name.c_str());
+          return nullptr;
+        }
+        if (!expect(TK_NIL, "after 'else' in a struct literal")) return nullptr;
+        n->fills_nil = true;
+        match(TK_COMMA);
+        skip_terms();
+        return expect(TK_RBRACE, "after 'else nil', which ends a struct literal")
+                   ? n
+                   : nullptr;
+      }
       Node *init = make(ND_FIELD_INIT, peek().pos);
       if (kind() != TK_IDENT) {
         fail("expected a field name");
