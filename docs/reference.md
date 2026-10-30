@@ -806,7 +806,14 @@ optional orelse fallback
 optional orelse return error.Name
 optional == nil                // present or not
 optional != nil
+T{name: value, else nil}       // every optional field not named is nil
+T{nil}                         // no field named: every field is nil
 ```
+
+A struct literal names every field. `else nil`, last in the literal, gives
+every optional field it leaves out the value `nil`; a field of any other type
+still has to be named. A literal that names no field writes `T{nil}`, which
+compiles only when every field of `T` is optional.
 
 Comparing against `nil` is the only comparison an optional has: two of them
 would mean comparing payloads, and an absent one has none.

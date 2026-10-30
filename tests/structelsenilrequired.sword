@@ -1,0 +1,12 @@
+// expect-error: field 'name' of Mixed is not initialized
+// 'nil' fills only optional fields; the others still have to be named.
+
+struct Mixed {
+    name string
+    banana ?[]u8
+}
+
+func main() int {
+    m := Mixed{nil}
+    return 0
+}

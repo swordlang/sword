@@ -4,6 +4,25 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.3.2 — Quench
+
+*2026-10-30.* A patch to Quench that adds one form: a struct literal can leave
+its optional fields empty without naming each one.
+
+### What changes for existing programs
+
+Nothing that compiled stops compiling or behaves differently. A new form in a
+patch goes past what semantic versioning allows; it ships here because it only
+adds what was refused before.
+
+### Added
+
+- A struct literal ending in `else nil` gives every optional field it does not
+  name the value `nil`: `Request{path: "/", else nil}`. A literal that names no
+  field is written `T{nil}`. A field that is not optional still has to be
+  named, so adding one to a struct still stops every literal that forgot it.
+- A literal missing only optional fields gets a note saying how to write it.
+
 ## 0.3.1 — Quench
 
 *2026-10-30.* A patch to Quench: the race checker closes a hole in partitions
