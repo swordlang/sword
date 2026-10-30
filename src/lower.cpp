@@ -774,6 +774,86 @@ struct Lowerer {
     cur = done;
   }
 
+  // A floating-point sum is part of the language's definition, order included,
+  // so the order chosen is one a vector unit can follow: `lanes` partial sums,
+  // the j-th taking the piece's elements j, j+lanes, j+2*lanes..., folded at
+  // the end by halves. The body is lowered once per lane, each copy adding into
+  // its own sum, which is what lets LLVM put them side by side in one register
+  // without reassociating anything. What is left over when the piece is not a
+  // multiple of `lanes` carries on the same assignment, one element at a time.
+  void lane_loop(Node *loop, int slot, Type *index, int limit, int lanes,
+                 int accumulator) {
+    Type *type = loop->reduce_sym->type;
+    Type *word = types.usize_ty;
+    int sums = alloca_slot(types.array(type, lanes));
+    auto lane = [&](int j) { return gep_index(sums, constant(j, word), type); };
+    for (int j = 0; j < lanes; j++)
+      store(float_constant(loop->fval, type), lane(j), type);
+
+    int main_cond = new_block();
+    int rest_cond = new_block();
+    int exit_bb = new_block();
+    branch(main_cond);
+
+    cur = main_cond;
+    int left = binop(IR_SUB, limit, load(slot, index), index);
+    int main_body = new_block();
+    cond_branch(binop(IR_GE, left, constant(lanes, index), types.bool_ty),
+                main_body, rest_cond);
+    cur = main_body;
+    for (int j = 0; j < lanes; j++) {
+      loop->reduce_sym->slot = lane(j);
+      int after = new_block();
+      loops.push_back({after, exit_bb, scopes.size()});
+      stmt(loop->body);
+      branch(after);
+      loops.pop_back();
+      cur = after;
+      store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+            index);
+    }
+    branch(main_cond);
+
+    cur = rest_cond;
+    int at = alloca_slot(word);
+    store(constant(0, word), at, word);
+    int rest_head = new_block();
+    branch(rest_head);
+    cur = rest_head;
+    int rest_body = new_block();
+    int rest_step = new_block();
+    cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty),
+                rest_body, exit_bb);
+    cur = rest_body;
+    int where = gep_index(sums, load(at, word), type);
+    int tmp = alloca_slot(type);
+    store(load(where, type), tmp, type);
+    loop->reduce_sym->slot = tmp;
+    loops.push_back({rest_step, exit_bb, scopes.size()});
+    stmt(loop->body);
+    branch(rest_step);
+    loops.pop_back();
+    cur = rest_step;
+    store(load(tmp, type), where, type);
+    store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+          index);
+    store(binop(IR_ADD, load(at, word), constant(1, word), word), at, word);
+    branch(rest_head);
+
+    cur = exit_bb;
+    for (int w = lanes / 2; w >= 1; w /= 2)
+      for (int j = 0; j < w; j++)
+        store(binop(IR_ADD, load(lane(j), type), load(lane(j + w), type), type),
+              lane(j), type);
+    store(load(lane(0), type), accumulator, type);
+    loop->reduce_sym->slot = accumulator;
+  }
+
+  // Fixed by the language rather than by the machine, or the same sum would
+  // give different bits on a wider vector unit. Sixteen fills an AVX-512
+  // register of f32, and measured fastest for f64 as well.
+  static constexpr int kFloatLanes = 16;
+
   void emit_chunk(const Chunk &c, IrFunc &out) {
     Node *loop = c.loop;
     fn = &out;
@@ -833,33 +913,39 @@ struct Lowerer {
     store(narrow(lo, index), slot, index);
     int limit = narrow(hi, index);
 
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
-
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty), body_bb,
-                exit_bb);
-
     // Each piece is a part of the range the parent worked out from `xs.len`
     // before cutting it, so the same proof holds in every one.
     Symbol *slice = walked_slice(loop, true);
     if (slice) walked.push_back({loop->sym, slice});
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    cur = body_bb;
-    stmt(loop->body);
-    branch(step_bb);
-    loops.pop_back();
+
+    if (loop->reduce_kind == RMW_FADD) {
+      lane_loop(loop, slot, index, limit, kFloatLanes, accumulator);
+    } else {
+      int cond_bb = new_block();
+      int body_bb = new_block();
+      int step_bb = new_block();
+      int exit_bb = new_block();
+
+      branch(cond_bb);
+      cur = cond_bb;
+      cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty),
+                  body_bb, exit_bb);
+
+      loops.push_back({step_bb, exit_bb, scopes.size()});
+      cur = body_bb;
+      stmt(loop->body);
+      branch(step_bb);
+      loops.pop_back();
+
+      cur = step_bb;
+      store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+            index);
+      branch(cond_bb);
+
+      cur = exit_bb;
+    }
     if (slice) walked.pop_back();
 
-    cur = step_bb;
-    store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
-          index);
-    branch(cond_bb);
-
-    cur = exit_bb;
     if (accumulator >= 0) {
       Type *type = loop->reduce_sym->type;
       // The answer for this piece of the range goes in the slot that belongs

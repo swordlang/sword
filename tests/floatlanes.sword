@@ -1,0 +1,104 @@
+// expect: 7
+// A float sum's order is part of the language: the range is cut into 64
+// pieces of ceil(n/64), each piece adds its element k into the (k % 16)-th of
+// sixteen sums, folds them by halves, and the pieces are added in cut order.
+// The same sum written out sequentially must give the same bits, and they must
+// differ from a plain left-to-right chain, or this would prove nothing.
+
+func term(i int) f64 {
+    small := 1.0 / f64(i + 1)
+    if i % 3 == 0 {
+        return 1.0e8 + small
+    }
+    if i % 3 == 1 {
+        return small - 1.0e8
+    }
+    return small
+}
+
+func term32(i int) f32 {
+    small := f32(1.0) / f32(i + 1)
+    if i % 3 == 0 {
+        return f32(1.0e3) + small
+    }
+    if i % 3 == 1 {
+        return small - f32(1.0e3)
+    }
+    return small
+}
+
+func fold64(sums [16]f64) f64 {
+    mut lanes := sums
+    mut w := 8
+    for w >= 1 {
+        for j in 0..w {
+            lanes[j] = lanes[j] + lanes[j + w]
+        }
+        w = w / 2
+    }
+    return lanes[0]
+}
+
+func fold32(sums [16]f32) f32 {
+    mut lanes := sums
+    mut w := 8
+    for w >= 1 {
+        for j in 0..w {
+            lanes[j] = lanes[j] + lanes[j + w]
+        }
+        w = w / 2
+    }
+    return lanes[0]
+}
+
+func main() int {
+    n := 6437
+    chunk := (n + 63) / 64
+
+    mut par f64 = 0.0
+    parallel for i in 0..n reduce(+: par) {
+        par += term(i)
+    }
+    mut par32 f32 = 0.0
+    parallel for i in 0..n reduce(+: par32) {
+        par32 += term32(i)
+    }
+
+    mut want f64 = 0.0
+    mut want32 f32 = 0.0
+    mut lo := 0
+    for lo < n {
+        mut hi := lo + chunk
+        if hi > n {
+            hi = n
+        }
+        mut lanes := [16]f64{}
+        mut lanes32 := [16]f32{}
+        for k in 0..hi - lo {
+            lanes[k % 16] += term(lo + k)
+            lanes32[k % 16] += term32(lo + k)
+        }
+        want += fold64(lanes)
+        want32 += fold32(lanes32)
+        lo = hi
+    }
+
+    mut chain f64 = 0.0
+    mut chain32 f32 = 0.0
+    for i in 0..n {
+        chain += term(i)
+        chain32 += term32(i)
+    }
+
+    mut result := 0
+    if par == want {
+        result += 1
+    }
+    if par32 == want32 {
+        result += 2
+    }
+    if chain != want && chain32 != want32 {
+        result += 4
+    }
+    return result
+}
