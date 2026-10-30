@@ -6,6 +6,18 @@ checked on every change to the language. Read [the tour](../tour.md) first; thes
 pages use what it teaches without explaining it again, and link to it where
 they lean on something.
 
+## Algorithms and data structures
+
+- [Merge sort](merge-sort.md): generic, with its scratch space handed in, then
+  the halves sorted by two tasks.
+- [A hash map from scratch](hash-map.md): open addressing, growing, every byte
+  from an allocator.
+- [Shortest paths](shortest-path.md): a binary heap by hand, and Dijkstra's
+  algorithm over it.
+- [A ring buffer](ring-buffer.md): fixed capacity, storage inside the value,
+  nothing allocated.
+- [Counting words](word-count.md): standard input into a map, sorted by count.
+
 ## Low level
 
 - [Your own allocator](allocator.md): a bump allocator over a buffer, and one that
