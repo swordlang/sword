@@ -67,22 +67,19 @@ func Bool(mut out Sink, v bool) !void {
     try Str(out, "false")
 }
 
-func Hex(mut out Sink, v u64, width u64) !void {
-    mut digits := [16]u8{}
-    mut n := v
+struct Base {
+    Mask u64
+    Inc u64
+}
+
+func BaseConverter(mut out Sink, v u64, base Base, width u64) !void {
+    mut digits := [64]u8{}
+    mut n := v 
     mut used u64 = 0
-    for {
-        d := u8(n & 15)
-        if d < 10 {
-            digits[used] = digitZero + d
-        } else {
-            digits[used] = 87 + d
-        }
+    for n > 0 {
+        digits[used] = digitZero + u8(n & base.Mask)
         used += 1
-        n >>= 4
-        if n == 0 {
-            break
-        }
+        n = n >> base.Inc;
     }
     mut pad := width
     for used < pad {
@@ -578,8 +575,12 @@ func Quote(mut out Sink, s string) !void {
         } else if c == 9 {
             try Str(out, "\\t")
         } else if c < 32 {
+            mut base := Base {
+                Mask: 1,
+                Inc: 1
+            }
             try Str(out, "\\u00")
-            try Hex(out, u64(c), 2)
+            try BaseConverter(out, u64(c), base, 2)
         } else {
             try out.WriteByte(c)
         }
@@ -600,14 +601,19 @@ func Value(mut out Sink, v any) !void {
     case KindFloat:
         try Float(out, v.Real)
     case KindPointer:
+        mut base := Base {
+            Mask: 1,
+            Inc: 1
+        }
         try Str(out, "0x")
-        try Hex(out, u64(v.Int), 1)
+        try BaseConverter(out, u64(v.Int), base, 1)
     default:
         try Str(out, "<none>")
     }
 }
 
-// `{}` takes the next argument. `{x}` prints an integer in hex, `{.N}` a float
+// `{}` takes the next argument. `{b}` prints an integer in bin, 
+// `{q}` prints an integer in quaternary,`{q}`, prints an integer in hex,  `{.N}` a float
 // with N places. `{{` and `}}` are literal braces.
 //
 // There are no type letters because there is nothing for them to do: the
@@ -663,8 +669,28 @@ func formatOne(mut out Sink, arg any, spec string) !void {
         try Value(out, arg)
         return
     }
-    if spec.len == 1 && spec[0] == 120 {
-        try Hex(out, u64(arg.Int), 1)
+    if spec.len == 1 {
+        mut base := Base {
+            Mask: 0,
+            Inc: 0
+        }
+        switch spec[0] {
+        case 98:  // b ascii character for binary
+            base.Mask = 1
+            base.Inc = 1
+        case 113: // q ascii character for quaternary
+            base.Mask = 3
+            base.Inc = 2
+        case 111: // o ascii character for octal
+            base.Mask = 7
+            base.Inc = 3
+        case 120: // x ascii character for hexadecimal
+            base.Mask = 15
+            base.Inc = 4
+        default:
+        }
+
+        try BaseConverter(out, u64(arg.Int), base, 1)
         return
     }
     if spec[0] == 46 {
