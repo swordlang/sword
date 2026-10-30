@@ -1150,7 +1150,7 @@ rather than by pointer, so the whole tree is a single allocation.
 func Parse(input []u8, mut a mem.Allocator) !Document
 
 func (d *Document) Root() u64
-func (d *Document) Kind(at u64) u8         // Null Bool Number Str Array Object
+func (d *Document) Kind(at u64) Kind       // Null Bool Number Str Array Object
 func (d *Document) Text(at u64) string
 func (d *Document) Number(at u64) f64
 func (d *Document) Truth(at u64) bool
