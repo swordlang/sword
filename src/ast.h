@@ -131,6 +131,9 @@ struct Node {
   // long time, made on the io pool so a scheduler thread is not the one held.
   bool is_blocking = false;
   int form = 0;    // return/call/for: which shape the checker settled on
+  // ND_STRUCT_LIT: ends in `else nil`, so every optional field it does not
+  // name starts out empty.
+  bool fills_nil = false;
   int reduce_kind = 0;    // which fold a parallel loop combines its pieces with
   // `reduce(f: acc)`: the function that combines two partial answers. The
   // compiler knows five operators; anything else is this, and it only has to
@@ -213,6 +216,7 @@ struct Ast {
     copy->is_c_variadic = src->is_c_variadic;
     copy->is_det = src->is_det;
     copy->is_blocking = src->is_blocking;
+    copy->fills_nil = src->fills_nil;
     copy->lhs = clone(src->lhs);
     copy->rhs = clone(src->rhs);
     copy->cond = clone(src->cond);
