@@ -1113,11 +1113,16 @@ func Str(mut out Sink, s string) !void
 func U64(mut out Sink, v u64) !void
 func I64(mut out Sink, v i64) !void
 func Bool(mut out Sink, v bool) !void
-func Hex(mut out Sink, v u64, width u64) !void
 func F64(mut out Sink, v f64, decimals u64) !void
 func Float(mut out Sink, v f64) !void     // the shortest text that reads back
 func Pad(mut out Sink, s string, width u64) !void
 func Quote(mut out Sink, s string) !void  // JSON string, escaped
+
+struct Base {
+    Mask u64
+    Inc u64
+}
+func BaseConverter(mut out Sink, v u64, base Base, width u64) !void 
 ```
 The digits are exact: every double is m·2^e, its decimal expansion ends, and
 `F64` prints that expansion to the places asked for, rounded once with a tie
