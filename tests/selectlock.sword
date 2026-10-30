@@ -1,0 +1,46 @@
+// expect: 42
+// Many selects on the same two channels while many senders fill both: every
+// select keeps waiting for the channels' locks while it is still on their
+// watcher lists, which is when a change on the other channel woke it out of
+// the lock's queue with its node still queued.
+
+import "std/mem"
+
+func send(c chan[u64], count u64) !void {
+    for i in 0..count {
+        try c <- 1
+    }
+}
+
+func pick(a chan[u64], b chan[u64], count u64, mut got *atomic[u64]) !void {
+    for i in 0..count {
+        select {
+        case v := <-a:
+            got.Add(v orelse 0)
+        case v := <-b:
+            got.Add(v orelse 0)
+        }
+    }
+}
+
+func main() !int {
+    mut backing := [65536]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut a := try chan[u64](&arena, 4)
+    mut b := try chan[u64](&arena, 4)
+    mut got := atomic[u64](0)
+    each := u64(4000)
+    scope {
+        for s in 0..8 {
+            spawn send(a, each)
+            spawn send(b, each)
+        }
+        for p in 0..16 {
+            spawn pick(a, b, each, &got)
+        }
+    }
+    if got.Load() != 16 * each {
+        return 1
+    }
+    return 42
+}
