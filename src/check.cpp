@@ -854,6 +854,34 @@ struct Checker {
     return true;
   }
 
+  // What to write instead when one memory goes to every turn's task: pieces
+  // for something that can be cut, and otherwise a type that says it is
+  // shared.
+  void sharing_note(Symbol *root) {
+    const char *name = root->name.c_str();
+    const Type *t = root->type;
+    while (t && (t->kind == TY_PTR || t->kind == TY_RAWPTR)) t = t->elem;
+    if (!t) return;
+    if (t->kind == TY_SLICE)
+      note(root->pos,
+           "walk it with 'for part in %s.chunks(n)' to give each task a piece "
+           "of its own",
+           name);
+    else if (t->kind == TY_ARRAY)
+      note(root->pos,
+           "walk it with 'for part in %s[..].chunks(n)' to give each task a "
+           "piece of its own",
+           name);
+    else if (t->kind == TY_INT || t->kind == TY_BOOL)
+      note(root->pos, "to let every task change it, make it 'atomic[%s]'",
+           type_str(t).c_str());
+    else
+      note(root->pos,
+           "to let every task change it, make it 'shared[%s]' and reach it "
+           "with 'lock'",
+           type_str(t).c_str());
+  }
+
   void record_use(const Access &use) {
     if (!use.root) return; // memory with no name behind it: nothing to compare
 
@@ -868,10 +896,7 @@ struct Checker {
              "other",
              use.chunk->name.c_str());
       else
-        note(use.root->pos,
-             "walk it with 'for part in %s.chunks(n)' to give each task a "
-             "piece of its own",
-             use.root->name.c_str());
+        sharing_note(use.root);
       return;
     }
 

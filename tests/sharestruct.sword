@@ -1,0 +1,20 @@
+// expect-error: to let every task change it, make it 'shared[Stats]' and reach it with 'lock'
+// A struct lent to every task of a loop: the note points at shared[T].
+
+struct Stats {
+    hits u64
+}
+
+func bump(mut s *Stats) {
+    s.hits += 1
+}
+
+func main() int {
+    mut stats := Stats{hits: 0}
+    scope {
+        for task in 0..8 {
+            spawn bump(&stats)
+        }
+    }
+    return int(stats.hits)
+}

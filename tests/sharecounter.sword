@@ -1,0 +1,17 @@
+// expect-error: to let every task change it, make it 'atomic[u64]'
+// A counter lent to every task of a loop cannot be cut into pieces; the note
+// points at the type that lets them all add to it.
+
+func bump(mut n *u64) {
+    *n += 1
+}
+
+func main() int {
+    mut count u64 = 0
+    scope {
+        for task in 0..8 {
+            spawn bump(&count)
+        }
+    }
+    return int(count)
+}
