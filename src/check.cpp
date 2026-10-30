@@ -1108,6 +1108,7 @@ struct Checker {
     // it has to be resolved with that package's names in view, not the
     // caller's.
     Checker sub(prog, *owner, types);
+    sub.see_package();
     sub.bindings = bind;
 
     for (size_t i = 0; i < args.size(); i++) {
@@ -1166,6 +1167,7 @@ struct Checker {
     types.note_instance(type);
 
     Checker sub(prog, *owner, types);
+    sub.see_package();
     sub.bindings = bind;
 
     std::vector<Field> fields;
@@ -1190,6 +1192,7 @@ struct Checker {
       copy->kids.insert(copy->kids.begin(), copy->lhs);
 
       Checker sub(prog, *owner, types);
+      sub.see_package();
       sub.bindings = bind;
       std::vector<Type *> params;
       for (Node *p : copy->kids) {
@@ -4090,11 +4093,17 @@ struct Checker {
     return error_count() == 0;
   }
 
+  // A checker made to resolve something another package declared starts with
+  // nothing in scope: a constant named in an array length would not be found.
+  void see_package() {
+    push_scope();
+    for (auto &entry : pkg.globals) scopes.back()[entry.first] = entry.second;
+  }
+
   // An instantiation is checked later, with its type parameters bound and the
   // declaring package's names back in scope.
   bool run_instance(const Program::Instance &job) {
-    push_scope();
-    for (auto &entry : pkg.globals) scopes.back()[entry.first] = entry.second;
+    see_package();
 
     size_t depth = bindings.size();
     for (auto &entry : job.bind) bindings.push_back(entry);
