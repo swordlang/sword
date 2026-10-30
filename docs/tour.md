@@ -1532,9 +1532,12 @@ is how you ask for wrapping on purpose, in a hash or a PRNG. Dividing by zero is
 the exception the other way: it panics in every mode, because there is no answer
 to give instead.
 
-The difference shows up in the generated code: a summing loop stays scalar in
-`safe`, because the bounds check blocks it, and vectorises in `fast`. Same
-source, no annotations.
+The difference is smaller than it sounds. `for i in 0..xs.len { total += xs[i] }`
+vectorises in `safe` as it does in `fast`: the index is in range by
+construction, so it has no bounds check, and when a loop does nothing but add,
+the overflow check runs once after the end instead of on every addition. An
+overflow still panics, naming the same line. Where the compiler cannot prove an
+index in range, the check stays in the loop.
 
 ## Looking inside
 

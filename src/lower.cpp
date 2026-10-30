@@ -75,6 +75,15 @@ struct Lowerer {
   // The loops being lowered that walk `0..xs.len` over a slice that cannot
   // change, as (loop variable, slice): `xs[i]` inside one needs no check.
   std::vector<std::pair<Symbol *, Symbol *>> walked;
+  // Set while the first pass of a loop that settles its overflow checks at
+  // the end is lowered (see `checked_loop`).
+  struct Accumulator {
+    Symbol *sym;
+    int ups = 0, downs = 0; // how many `+=` and `-=` in the body write it
+    int start = -1;         // its value before the loop
+    int up = -1, down = -1; // slots: every term added or taken away, OR'ed
+  };
+  std::vector<Accumulator> *deferring = nullptr;
   // The package being lowered. Thunks are numbered within it, so a package's
   // code reads the same whatever else the program holds, which is what lets
   // its object be reused by a split build.
@@ -946,28 +955,14 @@ struct Lowerer {
     if (loop->reduce_kind == RMW_FADD) {
       lane_loop(loop, slot, index, limit, kFloatLanes, accumulator);
     } else {
-      int cond_bb = new_block();
-      int body_bb = new_block();
-      int step_bb = new_block();
-      int exit_bb = new_block();
-
-      branch(cond_bb);
-      cur = cond_bb;
-      cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty),
-                  body_bb, exit_bb);
-
-      loops.push_back({step_bb, exit_bb, scopes.size()});
-      cur = body_bb;
-      stmt(loop->body);
-      branch(step_bb);
-      loops.pop_back();
-
-      cur = step_bb;
-      store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
-            index);
-      branch(cond_bb);
-
-      cur = exit_bb;
+      checked_loop(
+          loop->body, [&] { store(narrow(lo, index), slot, index); },
+          [&] { return binop(IR_LT, load(slot, index), limit, types.bool_ty); },
+          [] {},
+          [&] {
+            store(binop(IR_ADD, load(slot, index), constant(1, index), index),
+                  slot, index);
+          });
     }
     if (slice) walked.pop_back();
 
@@ -1052,7 +1047,14 @@ struct Lowerer {
     int value = binop(op, a, b, type);
     if (!mode_checks(mode)) return value;
     if (op != IR_ADD && op != IR_SUB && op != IR_MUL) return value;
+    guard(negate(overflowed(op, a, b, type)),
+          "panic: integer overflow at line " + std::to_string(pos.line) +
+              "\n");
+    return value;
+  }
 
+  // Whether `a op b` falls outside `type`.
+  int overflowed(IrOp op, int a, int b, Type *type) {
     IrInst test{};
     test.op = IR_OVF;
     test.dst = new_value(types.bool_ty);
@@ -1061,17 +1063,17 @@ struct Lowerer {
     test.imm = op;
     test.type = type;
     emit(test);
+    return test.dst;
+  }
 
-    IrInst ok{};
-    ok.op = IR_NOT;
-    ok.dst = new_value(types.bool_ty);
-    ok.a = test.dst;
-    ok.type = types.bool_ty;
-    emit(ok);
-
-    guard(ok.dst, "panic: integer overflow at line " +
-                      std::to_string(pos.line) + "\n");
-    return value;
+  int negate(int flag) {
+    IrInst in{};
+    in.op = IR_NOT;
+    in.dst = new_value(types.bool_ty);
+    in.a = flag;
+    in.type = types.bool_ty;
+    emit(in);
+    return in.dst;
   }
 
   // LLVM makes a shift by the type's width or more poison, so it is never
@@ -1176,6 +1178,296 @@ struct Lowerer {
     int ok = binop(IR_LT, index, len, types.bool_ty);
     guard(ok, "panic: index out of bounds at line " +
                   std::to_string(pos.line) + "\n");
+  }
+
+  // --- overflow checks settled at the end of a loop -------------------------
+
+  // A branch to a panic after every `acc += xs[i]` keeps LLVM from splitting
+  // the sum across vector lanes, and so does remembering the overflow bit
+  // instead, since each bit depends on the running total. What a loop that
+  // does nothing but accumulate can do instead is add without checking while
+  // OR-ing every term into a bound, and look once at the end: if as many terms
+  // as were added, each as large as the bound, cannot carry the starting value
+  // out of range, no addition overflowed. Otherwise the loop runs again from
+  // the start with every check in place, which panics at the same iteration
+  // and line, or finds the bound was only pessimistic and answers the same.
+  //
+  // The first pass must be invisible: until something overflows it does
+  // exactly what the checked loop does, and after that whatever it computes is
+  // thrown away. So its body writes nothing but the accumulators and its own
+  // locals, and nothing in it can fail, call out or read an address that could
+  // depend on a value gone wrong.
+
+  // The accumulators of a body that qualifies, or nothing.
+  std::vector<Accumulator> deferrable(Node *body) {
+    std::set<Symbol *> own;
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_VAR) own.insert(n->sym);
+    });
+    std::vector<Accumulator> found;
+    if (!settles_late(body, own, found)) found.clear();
+    return found;
+  }
+
+  bool settles_late(Node *n, const std::set<Symbol *> &own,
+                    std::vector<Accumulator> &found) {
+    switch (n->kind) {
+    case ND_BLOCK:
+      for (Node *st : n->kids)
+        if (!settles_late(st, own, found)) return false;
+      return true;
+    case ND_CONTINUE:
+      return true;
+    case ND_IF:
+      return n->name.empty() && cannot_fail(n->cond) &&
+             settles_late(n->body, own, found) &&
+             (!n->els || settles_late(n->els, own, found));
+    case ND_VAR:
+      return n->rhs && is_scalar(n->type) && cannot_fail(n->rhs);
+    case ND_ASSIGN: {
+      if (n->lhs->kind != ND_IDENT || !cannot_fail(n->rhs)) return false;
+      Symbol *s = n->lhs->sym;
+      if (own.count(s))
+        return n->op == TK_ASSIGN || n->op == TK_ADD_WRAP_ASSIGN ||
+               n->op == TK_SUB_WRAP_ASSIGN || n->op == TK_AND_ASSIGN ||
+               n->op == TK_OR_ASSIGN || n->op == TK_XOR_ASSIGN;
+      if (n->op != TK_ADD_ASSIGN && n->op != TK_SUB_ASSIGN) return false;
+      if (!s->is_mut || s->is_func || !is_integer(s->type)) return false;
+      Accumulator *acc = nullptr;
+      for (Accumulator &a : found)
+        if (a.sym == s) acc = &a;
+      if (!acc) {
+        found.push_back(Accumulator{s});
+        acc = &found.back();
+      }
+      (n->op == TK_ADD_ASSIGN ? acc->ups : acc->downs)++;
+      return true;
+    }
+    default:
+      return false;
+    }
+  }
+
+  static bool is_scalar(const Type *t) {
+    return t->kind == TY_INT || t->kind == TY_FLOAT || t->kind == TY_BOOL;
+  }
+
+  // Defined for any operands, so it gives no panic, trap or undefined value
+  // however wrong they are.
+  bool cannot_fail(Node *n) {
+    switch (n->kind) {
+    case ND_INT_LIT: case ND_FLOAT_LIT: case ND_BOOL_LIT:
+      return true;
+    case ND_IDENT:
+      return !n->sym->is_func && is_scalar(n->type);
+    case ND_FIELD:
+      return is_scalar(n->type) && reads_in_place(n->lhs);
+    case ND_INDEX:
+      return is_scalar(n->type) && proven_in_range(n);
+    case ND_CONVERT: {
+      Type *from = n->kids[0]->type;
+      bool numbers = (from->kind == TY_INT || from->kind == TY_FLOAT) &&
+                     (n->type->kind == TY_INT || n->type->kind == TY_FLOAT);
+      // A float out of an integer's range converts to poison.
+      bool to_int = from->kind == TY_FLOAT && n->type->kind == TY_INT;
+      return numbers && !to_int && cannot_fail(n->kids[0]);
+    }
+    case ND_UNARY:
+      return (n->op == TK_BANG || n->op == TK_TILDE || n->op == TK_MINUS) &&
+             is_scalar(n->type) && cannot_fail(n->lhs);
+    case ND_BINARY: {
+      Type *t = n->lhs->type;
+      if (n->form == 1 || !is_scalar(t) || !cannot_fail(n->lhs) ||
+          !cannot_fail(n->rhs))
+        return false;
+      switch (n->op) {
+      case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
+      case TK_ANDAND: case TK_OROR:
+        return true;
+      case TK_PLUS_WRAP: case TK_MINUS_WRAP: case TK_STAR_WRAP:
+      case TK_AMP: case TK_PIPE: case TK_CARET:
+        return t->kind == TY_INT;
+      case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
+        return t->kind == TY_FLOAT;
+      default:
+        return false;
+      }
+    }
+    default:
+      return false;
+    }
+  }
+
+  // A field reached from a name through fields, never through an index or a
+  // call: nothing on the way can fail, and no address on it is computed.
+  bool reads_in_place(Node *n) {
+    if (n->kind == ND_IDENT) return !n->sym->is_func;
+    return n->kind == ND_FIELD && reads_in_place(n->lhs);
+  }
+
+  // The loop every counted form comes down to. `more` yields whether another
+  // iteration runs, `enter` begins one (a `for x in xs` copies the element in),
+  // `advance` moves to the next.
+  template <class More, class Enter, class Advance>
+  void counted_loop(Node *body, More more, Enter enter, Advance advance) {
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(more(), body_bb, exit_bb);
+
+    cur = body_bb;
+    enter();
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    stmt(body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    advance();
+    branch(cond_bb);
+
+    cur = exit_bb;
+  }
+
+  // A counted loop whose index has just been set to its first value;
+  // `restart` sets it there again.
+  template <class Restart, class More, class Enter, class Advance>
+  void checked_loop(Node *body, Restart restart, More more, Enter enter,
+                    Advance advance) {
+    // Debug builds keep the panic where it happens, for a debugger to stop
+    // at; there is no vectorizer there to gain anything.
+    std::vector<Accumulator> accs;
+    if (mode == MODE_SAFE) accs = deferrable(body);
+    if (accs.empty()) {
+      counted_loop(body, more, enter, advance);
+      return;
+    }
+
+    Type *word = types.usize_ty;
+    for (Accumulator &a : accs) {
+      Type *type = a.sym->type;
+      a.start = load(a.sym->slot, type);
+      a.up = alloca_slot(type);
+      store(constant(0, type), a.up, type);
+      if (!type->is_signed && a.downs) {
+        a.down = alloca_slot(type);
+        store(constant(0, type), a.down, type);
+      }
+    }
+    int count = alloca_slot(word);
+    store(constant(0, word), count, word);
+
+    deferring = &accs;
+    counted_loop(
+        body, more,
+        [&] {
+          store(binop(IR_ADD, load(count, word), constant(1, word), word),
+                count, word);
+          enter();
+        },
+        advance);
+    deferring = nullptr;
+
+    int n = load(count, word);
+    int ok = constant(1, types.bool_ty);
+    for (const Accumulator &a : accs)
+      ok = binop(IR_AND, ok, stays_in_range(a, n), types.bool_ty);
+    int again = new_block();
+    int done = new_block();
+    cond_branch(ok, done, again);
+
+    cur = again;
+    for (const Accumulator &a : accs) store(a.start, a.sym->slot, a.sym->type);
+    restart();
+    counted_loop(body, more, enter, advance);
+    branch(done);
+
+    cur = done;
+  }
+
+  // The unchecked form of an accumulation, while `deferring`; false otherwise.
+  bool deferred_accumulate(Node *n, int at, Type *type) {
+    if (!deferring || n->lhs->kind != ND_IDENT) return false;
+    if (n->op != TK_ADD_ASSIGN && n->op != TK_SUB_ASSIGN) return false;
+    Accumulator *acc = nullptr;
+    for (Accumulator &a : *deferring)
+      if (a.sym == n->lhs->sym) acc = &a;
+    if (!acc) return false;
+
+    int value = expr(n->rhs);
+    int current = load(at, type);
+    IrOp op = n->op == TK_ADD_ASSIGN ? IR_ADD : IR_SUB;
+    store(binop(op, current, value, type), at, type);
+
+    // A signed term's size, one short for a negative: x ^ (x >> (bits-1)).
+    int bound = acc->up;
+    if (type->is_signed)
+      value = binop(IR_XOR, value,
+                    binop(IR_SHR, value, constant(type->bits - 1, type), type),
+                    type);
+    else if (op == IR_SUB)
+      bound = acc->down;
+    store(binop(IR_OR, load(bound, type), value, type), bound, type);
+    return true;
+  }
+
+  // Whether `n` iterations, each moving the accumulator by no more than its
+  // bound once per `+=` or `-=`, keep every value it can pass through inside
+  // its type. Worked in 64-bit unsigned words, where every distance between
+  // two values of the type fits.
+  int stays_in_range(const Accumulator &a, int n) {
+    Type *type = a.sym->type;
+    Type *word = types.usize_ty;
+    auto widen = [&](int v) {
+      if (type->bits == 64) return v;
+      IrInst in{};
+      in.op = IR_CAST;
+      in.dst = new_value(word);
+      in.a = v;
+      in.type = word;
+      emit(in);
+      return in.dst;
+    };
+    int ok = constant(1, types.bool_ty);
+    // How far `times` terms of at most `bound` each can carry it.
+    auto reach = [&](int bound, int times) {
+      int per = bound;
+      if (times > 1) {
+        int k = constant(times, word);
+        ok = binop(IR_AND, ok, negate(overflowed(IR_MUL, bound, k, word)),
+                   types.bool_ty);
+        per = binop(IR_MUL, bound, k, word);
+      }
+      ok = binop(IR_AND, ok, negate(overflowed(IR_MUL, n, per, word)),
+                 types.bool_ty);
+      return binop(IR_MUL, n, per, word);
+    };
+    auto within = [&](int distance, int room) {
+      ok = binop(IR_AND, ok, binop(IR_LE, distance, room, types.bool_ty),
+                 types.bool_ty);
+    };
+
+    int start = widen(a.start);
+    int bits = type->bits;
+    if (type->is_signed) {
+      int64_t most = bits == 64 ? INT64_MAX : (int64_t(1) << (bits - 1)) - 1;
+      int bound = binop(IR_ADD, widen(load(a.up, type)), constant(1, word),
+                        word);
+      int far = reach(bound, a.ups + a.downs);
+      within(far, binop(IR_SUB, constant(most, word), start, word));
+      within(far, binop(IR_SUB, start, constant(-most - 1, word), word));
+    } else {
+      int64_t most = bits == 64 ? -1 : (int64_t(1) << bits) - 1;
+      if (a.ups)
+        within(reach(widen(load(a.up, type)), a.ups),
+               binop(IR_SUB, constant(most, word), start, word));
+      if (a.downs) within(reach(widen(load(a.down, type)), a.downs), start);
+    }
+    return ok;
   }
 
   // --- places ------------------------------------------------------------
@@ -2027,33 +2319,21 @@ struct Lowerer {
     int slot = alloca_slot(type);
     n->sym->slot = slot;
 
-    store(expr(n->lhs), slot, type);
+    int first = expr(n->lhs);
+    store(first, slot, type);
     int limit = expr(n->rhs);
-
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
-
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(slot, type), limit, types.bool_ty), body_bb,
-                exit_bb);
 
     Symbol *slice = walked_slice(n, false);
     if (slice) walked.push_back({n->sym, slice});
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    cur = body_bb;
-    stmt(n->body);
-    branch(step_bb);
-    loops.pop_back();
+    checked_loop(
+        n->body, [&] { store(first, slot, type); },
+        [&] { return binop(IR_LT, load(slot, type), limit, types.bool_ty); },
+        [] {},
+        [&] {
+          store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot,
+                type);
+        });
     if (slice) walked.pop_back();
-
-    cur = step_bb;
-    store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot, type);
-    branch(cond_bb);
-
-    cur = exit_bb;
   }
 
   // Walks a slice in fixed-size pieces, the last one short. Each iteration
@@ -2075,32 +2355,18 @@ struct Lowerer {
     n->sym->slot = slot;
     if (n->index_sym) n->index_sym->slot = index;
 
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
-
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(index, word), len, types.bool_ty), body_bb,
-                exit_bb);
-
-    cur = body_bb;
-    int at = gep_index(data, load(index, word), elem);
-    if (is_aggregate(elem)) copy(slot, at, elem);
-    else store(load(at, elem), slot, elem);
-
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    stmt(n->body);
-    branch(step_bb);
-    loops.pop_back();
-
-    cur = step_bb;
-    store(binop(IR_ADD, load(index, word), constant(1, word), word), index,
-          word);
-    branch(cond_bb);
-
-    cur = exit_bb;
+    checked_loop(
+        n->body, [&] { store(constant(0, word), index, word); },
+        [&] { return binop(IR_LT, load(index, word), len, types.bool_ty); },
+        [&] {
+          int at = gep_index(data, load(index, word), elem);
+          if (is_aggregate(elem)) copy(slot, at, elem);
+          else store(load(at, elem), slot, elem);
+        },
+        [&] {
+          store(binop(IR_ADD, load(index, word), constant(1, word), word),
+                index, word);
+        });
   }
 
   void walk_loop(Node *n) {
@@ -2364,6 +2630,7 @@ struct Lowerer {
       assign_into(at, n->rhs, type);
       return;
     }
+    if (deferred_accumulate(n, at, type)) return;
     TokKind arith = assign_arith(n->op);
     int value = expr(n->rhs);
     int current = load(at, type);
