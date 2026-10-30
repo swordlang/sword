@@ -849,6 +849,16 @@ struct Lowerer {
     loop->reduce_sym->slot = accumulator;
   }
 
+  static bool holds_still(Type *t) {
+    switch (t->kind) {
+    case TY_BOOL: case TY_INT: case TY_FLOAT: case TY_PTR:
+    case TY_SLICE: case TY_STRING:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   // Fixed by the language rather than by the machine, or the same sum would
   // give different bits on a wider vector unit. Sixteen fills an AVX-512
   // register of f32, and measured fastest for f64 as well.
@@ -884,6 +894,21 @@ struct Lowerer {
       Symbol *sym = c.captured[i];
       saved.push_back(sym->slot);
       sym->slot = load(gep_field(envp, c.env, (int)i), types.ptr(sym->type));
+    }
+
+    // What the body reaches only to read is copied in once. The race checker
+    // refuses an assignment to it here and any task that writes it alongside,
+    // so it holds still for the whole loop — but LLVM sees a store to `out[i]`
+    // that might land on `out` itself, loads the slice again every iteration,
+    // and gives up on vectorizing. A copy no one else can see is a register.
+    // Only values whose writes go elsewhere: an array or a struct is written in
+    // place, and an atomic is the place.
+    for (Symbol *sym : c.captured) {
+      if (sym == loop->reduce_sym || !holds_still(sym->type)) continue;
+      int own = alloca_slot(sym->type);
+      if (is_aggregate(sym->type)) copy(own, sym->slot, sym->type);
+      else store(load(sym->slot, sym->type), own, sym->type);
+      sym->slot = own;
     }
 
     // Each worker sums into its own copy and folds it in once at the end, so
