@@ -1039,8 +1039,20 @@ bool park_behind(Guard *g, Fiber *f, bool writer, bool woken) {
     *end = &node;
     f->state.store(FIBER_PARKING, std::memory_order_release);
   }
-  leave(f, false);
-  return true;
+  // Only an unlock takes the node off the queue, but it is not the only thing
+  // that can wake this task: a `select` is still on its channels' watcher lists
+  // while it locks them one by one, and a change on any of those wakes it here.
+  // Returning then left the node queued in a frame that was about to be reused,
+  // and the next unlock walked into it. That wake is not lost by parking again:
+  // the select finds itself running, not parking, and sweeps once more.
+  for (;;) {
+    leave(f, false);
+    std::lock_guard<std::mutex> held(b.lock);
+    bool queued = false;
+    for (LockWaiter *w = b.head; w && !queued; w = w->next) queued = w == &node;
+    if (!queued) return true;
+    f->state.store(FIBER_PARKING, std::memory_order_release);
+  }
 }
 
 // The guard came free, at least for somebody: wake the first task queued on it,
@@ -1079,14 +1091,22 @@ void unpark(Guard *g) {
       }
     int32_t clear = (queued ? 0 : kParked) | (writer ? 0 : kWriterWaits);
     if (clear) __atomic_fetch_and(&g->held, ~clear, __ATOMIC_RELAXED);
+    // A node lives on its task's stack, and a task woken by something else may
+    // be running already, waiting only for this lock to see it was dequeued.
+    // So every node is read here, and only the tasks that are truly parked —
+    // which cannot run until they are made runnable — stay on the list.
+    LockWaiter **keep = &woken;
+    for (LockWaiter *w = woken; w; w = w->next)
+      if (w->f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
+          FIBER_PARKED) {
+        *keep = w;
+        keep = &w->next;
+      }
+    *keep = nullptr;
   }
-  // A node lives on its task's stack, so read it before the task can run.
   while (woken) {
     LockWaiter *next = woken->next;
-    Fiber *f = woken->f;
-    if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) ==
-        FIBER_PARKED)
-      make_runnable(f);
+    make_runnable(woken->f);
     woken = next;
   }
 }
