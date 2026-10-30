@@ -81,6 +81,8 @@ never lets LLVM see into the runtime. Temper is about that:
 
 - drop the bounds checks the language already proves, such as `xs[i]` inside
   `for i in 0..xs.len` over a slice that cannot change;
+- settle the overflow checks of a loop that does nothing but add once, after
+  it, instead of on every addition, with the same panic on the same line;
 - `noalias` where the race checker has proved two pieces disjoint — only there,
   since a wrong one is undefined behaviour;
 - a faster calling convention for functions nothing outside the program calls,
