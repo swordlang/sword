@@ -256,13 +256,47 @@ and Intel cards and the GPUs inside embedded chips.
 - Evaluating `const X = f(...)` at compile time when `f` is `det`: a CRC table or
   a sine table worked out once, by the compiler, and kept in flash. `det` already
   rules out everything compile time cannot do, so this needs no new keyword.
+- `assert` at the level of a package, worked out by the compiler the same way:
+  `assert sizeof[Header]() == 16, "the header is 16 bytes on the wire"` stops
+  the build when it is false, which is what pins the layout of a wire format or
+  a hardware register.
+- Files in the binary: `const page = embed("static/index.html")` is a read-only
+  `[]u8` kept in the executable, in flash on a microcontroller, and
+  `embed("static/")` is a table from names to bytes. A server becomes one file
+  to copy, and a board keeps its fonts and tables out of RAM. The path is
+  relative to the source file and cannot leave the module, so a package embeds
+  only what is its own.
 - The rest of C: structs passed by value, unions, `packed` and `align` on C
   types, bindings generated from a header with `shield bind`, and functions
   written in Sword that C can call.
+- C inside a package. Every `.c` file in a package's directory is compiled by
+  the same clang the compiler already runs, with flags from a `cflags` line in
+  `sword.mod`, so a package can carry SQLite as source with no build script and
+  no `make`. A package that does reaches C, and says so with the rest of what it
+  reaches.
+- `shield build --lib`, a static and a shared library with a C header for the
+  functions C can call, so that a program in Python, Go or Rust can use Sword
+  through the door they all have, and Sword can come into an existing project a
+  piece at a time. The runtime goes with it and starts on the first call, so
+  tasks and scopes work inside the library.
 
 ## 0.10 — tools, and closing the language
 
 - Debug information, and a backtrace when a program panics.
+- `shield fmt`: one format and no options, the one the editors already indent
+  to, so every Sword program looks like every other. The language server
+  formats on save, and `shield fmt -check` fails a build that is not formatted.
+- Coverage, `shield test -cover`: the lines and branches no test ran and, with
+  `-sim`, which orderings between tasks the seeds have visited.
+- `shield profile`, which samples where the time goes and adds it up by task
+  and by scope, named after the function that started each task — on a server
+  the question is which request is slow, and a pool thread does not answer it.
+  It also writes pprof, for the tools that read it.
+- Reproducible builds: the same source and the same compiler give the same
+  binary, byte for byte, on any machine — no date, no absolute path and no file
+  order in what comes out. CI builds every change twice, in two places, and
+  compares. With the packages of 0.7 saying what they reach, it can be shown
+  that what runs in production came from the source that was reviewed.
 - `shield size` and `shield stack`: how much flash and how much stack each
   function costs, which is the first thing asked about a firmware image.
 - Interrupts in simulation. `shield test -sim` already chooses the order tasks
@@ -295,6 +329,11 @@ the syntax tree, Sword's own IR, the LLVM IR — before the next is started.
 Edge is the version whose compiler builds itself, twice, and gets the same binary
 both times: a language that has stopped changing, and a compiler written in it.
 The C++ compiler stays as the seed for building it on a new machine.
+
+The [reference](reference.md) stops describing the language and becomes its
+definition, with a suite of conformance tests beside it — programs and the
+output or the error each one must give — that any compiler of Sword has to
+pass. The compiler written in Sword is the first one judged by it.
 
 ## Having a say
 
