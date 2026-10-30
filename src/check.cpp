@@ -51,8 +51,28 @@ struct Checker {
     // The parent's own uses inside the scope run one after another; they race
     // only with its tasks.
     bool by_parent = false;
+    // A spawn directly inside the partition loop that made its piece, with no
+    // other loop of the scope around it: each turn reaches a different piece.
+    bool own_piece = false;
+    // The `if` and `switch` branches the spawn sits in, outermost first.
+    std::vector<std::pair<Node *, int>> arms;
     Pos at;
   };
+  std::vector<std::pair<Node *, int>> arms;
+
+  void check_arm(Node *owner, int which, Node *body) {
+    arms.push_back({owner, which});
+    check_stmt(body);
+    arms.pop_back();
+  }
+
+  // Two branches of one `if` or `switch` never both run in the same turn.
+  static bool apart(const Access &a, const Access &b) {
+    for (const auto &x : a.arms)
+      for (const auto &y : b.arms)
+        if (x.first == y.first && x.second != y.second) return true;
+    return false;
+  }
   std::vector<std::vector<Access>> scope_uses;
 
   // The `lock` blocks that are open, innermost last, and the lock depth each
@@ -817,7 +837,7 @@ struct Checker {
     std::vector<Access> uses;
     for (Symbol *r : roots) {
       use.root = r;
-      use.via = r != root ? root : nullptr;
+      use.via = use.chunk ? use.chunk : r != root ? root : nullptr;
       uses.push_back(use);
     }
     return uses;
@@ -828,23 +848,30 @@ struct Checker {
     if (a.is_synced || b.is_synced) return false;
     if (!a.writes && !b.writes) return false;
     if (a.by_parent && b.by_parent) return false;
-    // Two pieces of the same partition never overlap.
-    if (a.chunk && a.chunk == b.chunk) return false;
+    // A piece is one memory within a turn of its partition loop, so two tasks
+    // given it then overlap, unless only one of them can be started.
+    if (a.chunk && a.chunk == b.chunk && apart(a, b)) return false;
     return true;
   }
 
   void record_use(const Access &use) {
     if (!use.root) return; // memory with no name behind it: nothing to compare
 
-    if (use.repeated && clashes(use, use)) {
+    if (use.repeated && !use.own_piece && clashes(use, use)) {
       error(use.at,
             "every turn of this loop hands the same memory to a new task, so "
             "the tasks would overlap in '%s'",
             use.root->name.c_str());
-      note(use.root->pos,
-           "walk it with 'for part in %s.chunks(n)' to give each task a piece "
-           "of its own",
-           use.root->name.c_str());
+      if (use.chunk)
+        note(use.chunk->pos,
+             "'%s' is a piece of its own on each turn of this loop, and of no "
+             "other",
+             use.chunk->name.c_str());
+      else
+        note(use.root->pos,
+             "walk it with 'for part in %s.chunks(n)' to give each task a "
+             "piece of its own",
+             use.root->name.c_str());
       return;
     }
 
@@ -859,7 +886,8 @@ struct Checker {
         error(use.at, "this %s '%s'%s while it is already %s concurrently",
               mine, use.root->name.c_str(), through.c_str(), theirs);
         note(other.at, "the other use is here");
-        if (use.root->type && use.root->type->kind == TY_SLICE)
+        if (!use.chunk && use.root->type &&
+            use.root->type->kind == TY_SLICE)
           note(use.root->pos,
                "to give tasks separate pieces, walk it with "
                "'for part in %s.chunks(n)'",
@@ -999,8 +1027,14 @@ struct Checker {
   // tasks it started, because the join is at the closing brace.
   void check_parent_uses(Node *body) {
     std::set<Node *> written;
+    // `part.len` reads the parent's own copy of the piece's header, not the
+    // memory its task writes.
+    std::set<Node *> header;
     walk(body, [&](Node *n) {
       if (n->kind == ND_ASSIGN) written.insert(n->lhs);
+      if (n->kind == ND_FIELD && n->name == "len" && n->lhs &&
+          n->lhs->kind == ND_IDENT && n->lhs->sym && n->lhs->sym->chunk_of)
+        header.insert(n->lhs);
     });
     auto parent = [&](Node *place, bool writes) {
       for (Access use : access_of(place, writes)) {
@@ -1012,7 +1046,7 @@ struct Checker {
       if (n->kind == ND_ASSIGN)
         parent(n->lhs, true);
       else if (n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
-               !written.count(n))
+               !written.count(n) && !header.count(n))
         parent(n, false);
     });
   }
@@ -3057,6 +3091,9 @@ struct Checker {
       Node *decl = callee->decl ? callee->decl->kids[i] : nullptr;
       for (Access use : access_of(n->lhs->kids[i], decl && decl->is_mut)) {
         use.repeated = in_loop;
+        use.own_piece = use.chunk && use.chunk->chunk_depth == loop_depth &&
+                        loop_depth == scope_loop_base.back() + 1;
+        use.arms = arms;
         record_use(use);
       }
     }
@@ -3083,6 +3120,7 @@ struct Checker {
     Node *fallback = nullptr;
     std::vector<Node *> values;
     std::unordered_set<int64_t> matched;
+    int which = 0;
     for (Node *arm : n->kids) {
       if (arm->kids.empty()) {
         if (fallback) {
@@ -3108,7 +3146,7 @@ struct Checker {
         if (value->kind == ND_INT_LIT) matched.insert((int64_t)value->ival);
       }
       push_scope();
-      check_stmt(arm->body);
+      check_arm(n, which++, arm->body);
       pop_scope();
     }
 
@@ -3232,6 +3270,7 @@ struct Checker {
     Symbol *root = place_root(base);
     n->sym = declare(n->name, type, root && root->is_mut, n->pos);
     n->sym->chunk_of = root;
+    n->sym->chunk_depth = loop_depth + 1;
     if (!n->name2.empty())
       n->index_sym = declare(n->name2, types.usize_ty, false, n->pos);
     return true;
@@ -3473,14 +3512,14 @@ struct Checker {
         n->sym = declare(n->name, const_cast<Type *>(opt_payload(t)),
                          n->is_mut, n->pos);
         alias(n->sym, n->cond, true);
-        check_stmt(n->body);
+        check_arm(n, 0, n->body);
         pop_scope();
-        check_stmt(n->els);
+        check_arm(n, 1, n->els);
         break;
       }
       check_condition(n->cond, "if");
-      check_stmt(n->body);
-      check_stmt(n->els);
+      check_arm(n, 0, n->body);
+      check_arm(n, 1, n->els);
       break;
 
     case ND_FOR:

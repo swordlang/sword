@@ -165,7 +165,7 @@ struct Symbol {
   Node *const_value = nullptr;
   // For a partition variable: the slice it was carved out of. Two pieces of
   // the same partition never overlap, which is what lets them cross into
-  // different tasks.
+  // different tasks — one per turn of the loop that walks it.
   Symbol *chunk_of = nullptr;
   Pos pos;
   int slot = -1;         // IR value holding this local's address
@@ -174,6 +174,9 @@ struct Symbol {
   // whose memory it reaches, so the race checker sees one memory under two
   // names. Empty when the binding's memory is its own.
   std::vector<Symbol *> aliases;
+  // For a partition variable: how many loops enclose the body of the loop
+  // that made it.
+  int chunk_depth = 0;
 };
 
 // Owns the nodes and the symbols they point at, so both outlive the passes
