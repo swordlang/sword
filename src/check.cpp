@@ -48,6 +48,9 @@ struct Checker {
     // Reaching an atomic or a shared is safe however many tasks do it: the
     // one goes through single instructions, the other through a mutex.
     bool is_synced = false;
+    // The parent's own uses inside the scope run one after another; they race
+    // only with its tasks.
+    bool by_parent = false;
     Pos at;
   };
   std::vector<std::vector<Access>> scope_uses;
@@ -824,6 +827,7 @@ struct Checker {
     if (!a.root || a.root != b.root) return false;
     if (a.is_synced || b.is_synced) return false;
     if (!a.writes && !b.writes) return false;
+    if (a.by_parent && b.by_parent) return false;
     // Two pieces of the same partition never overlap.
     if (a.chunk && a.chunk == b.chunk) return false;
     return true;
@@ -998,13 +1002,18 @@ struct Checker {
     walk(body, [&](Node *n) {
       if (n->kind == ND_ASSIGN) written.insert(n->lhs);
     });
-    walk(body, [&](Node *n) {
-      if (n->kind == ND_ASSIGN) {
-        for (const Access &use : access_of(n->lhs, true)) record_use(use);
-      } else if (n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
-                 !written.count(n)) {
-        for (const Access &use : access_of(n, false)) record_use(use);
+    auto parent = [&](Node *place, bool writes) {
+      for (Access use : access_of(place, writes)) {
+        use.by_parent = true;
+        record_use(use);
       }
+    };
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN)
+        parent(n->lhs, true);
+      else if (n->kind == ND_IDENT && n->sym && !n->sym->is_func &&
+               !written.count(n))
+        parent(n, false);
     });
   }
 
