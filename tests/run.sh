@@ -2,6 +2,7 @@
 # Each test declares its expectation in a leading comment:
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
+#   // expect-panic: <line>         stderr must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
 #   // output-varies: <why>         prints something that depends on the clock
 #                                   or the pool, so tests/threads.sh compares
@@ -25,6 +26,7 @@ for src in "$root"/tests/*.sword; do
     want_exit=$(sed -n 's|^// expect: *||p' "$src" | head -1)
     want_error=$(sed -n 's|^// expect-error: *||p' "$src" | head -1)
     want_output=$(sed -n 's|^// expect-output: *||p' "$src" | head -1)
+    want_panic=$(sed -n 's|^// expect-panic: *||p' "$src" | head -1)
 
     if [ -n "$want_error" ]; then
         out=$("$shield" "$src" -o "$tmp/prog" 2>&1)
@@ -48,13 +50,16 @@ for src in "$root"/tests/*.sword; do
     fi
 
     # A network test that hangs must not stall the whole run.
-    output=$(perl -e 'alarm 30; exec @ARGV' "$tmp/prog" 2>/dev/null)
+    output=$(perl -e 'alarm 30; exec @ARGV' "$tmp/prog" 2>"$tmp/stderr")
     got=$?
     if [ "$got" != "$want_exit" ]; then
         echo "FAIL $name: exit $got, want $want_exit"
         fail=$((fail + 1))
     elif [ -n "$want_output" ] && ! printf '%s\n' "$output" | grep -qF "$want_output"; then
         echo "FAIL $name: output '$output', want '$want_output'"
+        fail=$((fail + 1))
+    elif [ -n "$want_panic" ] && ! grep -qF "$want_panic" "$tmp/stderr"; then
+        echo "FAIL $name: stderr '$(cat "$tmp/stderr")', want '$want_panic'"
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
