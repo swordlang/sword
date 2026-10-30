@@ -1578,6 +1578,7 @@ of it.
 
 ## Where to go next
 
-[Concurrency](concurrency.md) is the rest of the story, and
+[Sword by example](examples/README.md) puts what you have read to work in
+whole programs. [Concurrency](concurrency.md) is the rest of the story, and
 [Testing](testing.md) is how you keep it honest. The [reference](reference.md)
 is for when you know what you want and need to remember how to spell it.

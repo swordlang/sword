@@ -80,6 +80,8 @@ setup and what the build needs.
   what it costs. Read this before the tour if you are deciding whether to care.
 - **[A tour of Sword](docs/tour.md)** — start here. Every section is a program
   you can run, and they build on each other from hello world to parallel code.
+- **[Sword by example](docs/examples/README.md)** — complete programs, one subject
+  each: an allocator, a bytecode machine, a binary format, calling C.
 - **[Concurrency](docs/concurrency.md)** — how tasks, partitions and the race
   checker fit together, and why they are shaped the way they are.
 - **[HTTP](docs/http.md)** — writing a server and a client with `std/http`.

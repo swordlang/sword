@@ -30,14 +30,20 @@ pass=0
 fail=0
 skip=0
 ran=0
-for page in "$root"/docs/*.md "$root"/README.md "$root"/CONTRIBUTING.md \
-        "$root"/editors/README.md "$root"/editors/vscode/README.md; do
+for page in "$root"/docs/*.md "$root"/docs/examples/*.md "$root"/README.md \
+        "$root"/CONTRIBUTING.md "$root"/editors/README.md \
+        "$root"/editors/vscode/README.md; do
     [ -f "$page" ] || continue
     # One file per block, named for the page and the line the block starts on,
-    # with .out and .exit beside it when the page says what it does.
-    awk -v dir="$out" -v page="$(basename "$page" .md)" '
+    # with .out and .exit beside it when the page says what it does. An example
+    # page keeps its directory in the name, as examples-hexdump, so that it
+    # cannot meet a guide of the same name.
+    name=$(basename "$page" .md)
+    shown=${page#"$root"/}
+    case $page in "$root"/docs/examples/*) name=examples-$name ;; esac
+    awk -v dir="$out" -v page="$name" -v shown="${shown#docs/}" '
         function stray() {
-            print page ".md:" NR ": a prints/exits marker that does not follow a program" > (dir "/stray")
+            print shown ":" NR ": a prints/exits marker that does not follow a program" > (dir "/stray")
         }
         printing {
             if ($0 == "-->") { printing = 0; after = 1; close(outfile); next }
@@ -79,7 +85,7 @@ fi
 for program in "$out"/*.sword; do
     [ -f "$program" ] || continue
     base=${program%.sword}
-    where=$(basename "$base" | sed 's/_\([0-9]*\)$/.md:\1/')
+    where=$(basename "$base" | sed 's/_\([0-9]*\)$/.md:\1/; s/^examples-/examples\//')
     if grep -E '^[[:space:]]*import[[:space:]]+([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)?"' "$program" | grep -vqE '"std/'; then
         if [ -e "$base.out" ] || [ -e "$base.exit" ]; then
             echo "FAIL $where: says what it prints, but imports a package of its own and cannot run"
