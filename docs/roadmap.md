@@ -111,7 +111,14 @@ Sword assumes a 64-bit computer running a Unix. Polish takes that apart:
   macOS. The runtime waits for the network through I/O completion ports there,
   the way it uses kqueue and epoll elsewhere, and a program written for one
   compiles for the others unchanged;
+- on Linux, the runtime waits through `io_uring` instead of epoll and a pool of
+  threads for files; a program does not change, only how long it waits;
 - embedded Linux on 64-bit ARM, tested on real boards;
+- WebAssembly, `wasm32` with WASI, for plugins run in a sandbox, code at the
+  edge of a network and programs in a browser. Tasks there are cooperative on
+  one thread, as on a microcontroller: `scope`, `spawn` and channels work, and a
+  `parallel for` runs its pieces one after another, with the same bits, since
+  the cut never depended on the threads;
 - `--target` for 32-bit and 16-bit machines, with layouts worked out for the
   target's pointer size instead of assumed;
 - a standard library that works without an operating system. Which functions
@@ -136,6 +143,9 @@ too, rather than leaving every register to a function written in C:
 - placing code and data in a named section, and constants that are whole arrays
   and structs, kept in flash instead of copied into RAM.
 
+On the other side of the scale, the HTTP client keeps a pool of connections per
+host instead of one, and can send a body in chunks as the server already does.
+
 ## 0.6 — graphics processors
 
 A GPU runs thousands of threads over one space of indices, has memory the CPU
@@ -159,6 +169,11 @@ rather than a library that loads kernels written in another one:
 - waiting for the GPU parks the task, the way waiting for the network does, so a
   server goes on answering while its kernels run;
 - `f16` and `bf16`, on the CPU as well as on the GPU;
+- `simd[f32, 8]`, a vector whose element and width the program writes, for the
+  CPU as for the GPU. Its operators act element by element, adding up its
+  elements follows an order the language fixes, and a machine with narrower
+  vectors uses several of them with the same bits — so explicit SIMD stays
+  inside `det`, where intrinsics written for one processor do not;
 - a machine without the GPU a program asks for is an error the program handles:
   `gpu.Open()` returns `!gpu.Device`. Nothing runs on the CPU behind its back,
   since that would hide the very difference the program was written for.
@@ -178,6 +193,12 @@ asks for:
 - functions proved not to panic: no bounds check, overflow or `unreachable` on
   any path through them;
 - a stricter subset in the spirit of MISRA, for code that has to follow one;
+- packages that say what they reach. Which functions reach the network, files,
+  other processes, the clock or C is inferred, the way `det` is, and `sword.mod`
+  records it for every dependency. A new version that starts reaching something
+  the one before did not does not build until somebody accepts it, and the
+  message names the function that reached it. A package runs nothing when it is
+  fetched, so what it reaches is what it can do;
 - contracts, `requires` and `ensures`, checked in debug builds and proved where
   the compiler can — and what a `requires` guarantees, the optimizer gets to use,
   so `requires n <= xs.len` takes the checks out of the loop below it;
@@ -217,6 +238,12 @@ and Intel cards and the GPUs inside embedded chips.
   way Ada does it, and the bounds checker can lean on what it knows.
 - Integers with a byte order, `u32be` and `u32le`, for reading a packet or a
   file format without converting by hand.
+- `secret[T]`, a value that may not decide an `if`, be an index, be divided or
+  be printed, and leaves the secret only through `.Reveal()`. A function it
+  passes through is checked without being marked, which is the constant-time
+  discipline cryptographic code needs, done by the compiler instead of by
+  review — on a server holding keys, and on a board an attacker can put an
+  oscilloscope on.
 - Generic methods.
 - `link[Node, u16]`, a link stored as a narrow offset from where it sits instead
   of a full address: a tree of small nodes in half the memory, and a structure
@@ -243,6 +270,17 @@ and Intel cards and the GPUs inside embedded chips.
   between the main program and a handler — the kind of bug that shows up on the
   board once a week — happens again every time it is run with that seed.
 - Simulated networking for `shield test -sim`.
+- Recording a run and replaying it. A program with no data race computes what
+  it computes from what reaches it from outside — the network, the clock — and
+  from the order in which its tasks took locks, values from channels and turns
+  at an atomic. Any program started with `SWORD_RECORD=file` writes those down,
+  and `shield replay file` runs it again the same way, under a debugger if need
+  be: the bug a server shows once a week, on the developer's machine. Left off,
+  it costs a test of one bit where input comes in; what it costs on is measured
+  before it is promised.
+- Fuzzing, `func FuzzX(mut f *testing.F)`, run by `shield test -fuzz`. It varies
+  both the input and the seed that orders the tasks, and a failure is kept as
+  that pair, which fails every time it runs.
 - `std/term`, and a terminal UI framework built on it as a package of its own.
 
 0.10 is the last version that changes the language before 1.0.
