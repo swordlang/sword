@@ -311,12 +311,18 @@ Primary     = int_lit | float_lit | string_lit | "true" | "false" | "nil"
             | "(" Expr ")" .
 
 StructLit   = ( identifier [ TypeArgs ] | identifier "." identifier )
-              "{" { ";" } { FieldInit [ "," ] { ";" } } "}" .
+              "{" { ";" } [ "nil" [ "," ] { ";" } | FieldInits ] "}" .
+FieldInits  = FieldInit [ "," ] { ";" } { FieldInit [ "," ] { ";" } }
+              [ "else" "nil" [ "," ] { ";" } ] .
 FieldInit   = identifier ":" Expr .
 ArrayLit    = ( ArrayType | FuncType ) "{" { ";" } { Expr [ "," ] { ";" } } "}" .
 Conversion  = ( ArrayType | [ "extern" ] FuncType ) "(" Expr ")" .
 ArrayType   = "[" [ "*" | ArrayLength ] "]" Type .
 ```
+
+`else nil` comes last in a struct literal, after the fields it names: every
+optional field it leaves out starts as `nil`. A literal that names no field
+writes `nil` alone, `T{nil}`.
 
 Every binary operator is left-associative, at the five levels Go has, loosest
 first:

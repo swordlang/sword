@@ -1,0 +1,12 @@
+// expect-error: with no field named, write 'Only{nil}'
+// 'else nil' follows the fields a literal names; with none, the literal is
+// written 'Only{nil}'.
+
+struct Only {
+    banana ?[]u8
+}
+
+func main() int {
+    o := Only{else nil}
+    return 0
+}
