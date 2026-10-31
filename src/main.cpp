@@ -236,6 +236,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // read as an archive and not as more LLVM IR.
   std::string cmd = "clang " + quoted("-O" + opt_level) + " -Wno-override-module";
   if (!target.empty()) cmd += " --target=" + quoted(target);
+  for (const std::string &f : dead_strip_compile_flags(target))
+    cmd += " " + quoted(f);
   cmd += " -x ir " + quoted(ll_path);
   if (object_only) {
     cmd += " -c -o " + quoted(out_path);
@@ -251,6 +253,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // what resolves what is still missing: what the runtime was built against,
   // then --link, then the libraries extern declarations named.
   for (const std::string &arg : link) cmd += " " + quoted(arg);
+  for (const std::string &arg : dead_strip_link_flags(target))
+    cmd += " " + quoted(arg);
   cmd += " -o " + quoted(out_path);
   int status = system(cmd.c_str());
   if (status != 0) {
@@ -271,7 +275,7 @@ bool link_objects(const std::vector<std::string> &objects,
   for (const std::string &o : objects) cmd += " " + quoted(o);
   if (!runtime.empty()) cmd += " " + quoted(runtime) + " -pthread";
   for (const std::string &arg : link) cmd += " " + quoted(arg);
-  for (const std::string &arg : split_link_flags(target))
+  for (const std::string &arg : dead_strip_link_flags(target))
     cmd += " " + quoted(arg);
   cmd += " -o " + quoted(out_path);
   if (system(cmd.c_str()) == 0) return true;

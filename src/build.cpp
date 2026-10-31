@@ -117,9 +117,16 @@ bool start(Job &job, const std::vector<std::string> &flags) {
 
 } // namespace
 
-std::vector<std::string> split_link_flags(const std::string &target) {
+std::vector<std::string> dead_strip_link_flags(const std::string &target) {
   if (for_apple(target)) return {"-Wl,-dead_strip"};
   return {"-Wl,--gc-sections"};
+}
+
+// ld64 strips by atom without being asked; elsewhere a section per function
+// is what lets the linker see one.
+std::vector<std::string> dead_strip_compile_flags(const std::string &target) {
+  if (for_apple(target)) return {};
+  return {"-ffunction-sections", "-fdata-sections"};
 }
 
 bool compile_split(const IrModule &mod, const std::string &opt_level,
@@ -127,12 +134,8 @@ bool compile_split(const IrModule &mod, const std::string &opt_level,
                    std::vector<std::string> &objects) {
   std::vector<std::string> flags = {"-O" + opt_level, "-Wno-override-module"};
   if (!target.empty()) flags.push_back("--target=" + target);
-  // ld64 strips by atom without being asked; elsewhere a section per function
-  // is what lets the linker see one.
-  if (!for_apple(target)) {
-    flags.push_back("-ffunction-sections");
-    flags.push_back("-fdata-sections");
-  }
+  for (const std::string &f : dead_strip_compile_flags(target))
+    flags.push_back(f);
   std::string how = clang_version();
   for (const std::string &f : flags) how += f + "\n";
 
