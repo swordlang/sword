@@ -90,7 +90,16 @@ never lets LLVM see into the runtime. Temper is about that:
 - smaller binaries: no TLS library in a program that does not import
   `std/tls`, and nothing in the binary that nothing calls;
 - `shield checks`, which lists every bounds check that is still there, line by
-  line, so the ones that cost something in a loop can be looked at.
+  line, so the ones that cost something in a loop can be looked at;
+- `runtime.SetThreads(n)`, so a program says how many workers it runs on
+  instead of leaving it to whoever sets `SWORD_THREADS`. It holds until the
+  first task starts, which is when the workers are made, and returns an error
+  after that. The variable stays, as the default the function overrides;
+- a runtime that needs no C++ library. On Linux, loading `libstdc++` is half of
+  what it takes a program that does nothing to start, and a binary that needs
+  it does not run on an image without it. The runtime keeps its C++ but stops
+  using that language's standard library, so a program asks for the C library
+  and nothing else.
 
 Every change is measured before and after, and the
 numbers go out together with a comparison against C, C++, Rust and Go: the same
@@ -327,6 +336,17 @@ The compiler is written in C++ today. After 0.10 it is rewritten in Sword, in a
 series of versions — 0.11, 0.12 and on — that change the compiler and not the
 language. Each stage is checked against the C++ one on everything it can print —
 the syntax tree, Sword's own IR, the LLVM IR — before the next is started.
+
+The runtime follows the compiler. It is C++ and a page of assembly today: the
+scheduler, the tasks' stacks, the poller, channels and the pool for calls that
+block, about five thousand lines. Written in Sword, it is compiled with the
+program and inlined into it where that pays, and no program links a C++
+library. First the language has to be able to say what a scheduler says:
+atomics with orderings weaker than sequential consistency, a thread's own
+variables, and a way to write the few structures that several threads change
+by design, such as a work-stealing deque, without switching off the race
+checker for the code around them. How it says each of those is decided when
+the work gets there.
 
 Edge is the version whose compiler builds itself, twice, and gets the same binary
 both times: a language that has stopped changing, and a compiler written in it.
