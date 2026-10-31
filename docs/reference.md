@@ -2258,6 +2258,24 @@ simulator does not simulate yet. See [Simulation](testing.md#simulation).
 Shift checks go with bounds and overflow checks. A division is checked in every
 mode.
 
+`shield checks` lists the bounds checks a program still pays for, one line
+each in the form of a compiler diagnostic, so an editor can go to it:
+
+```
+$ shield checks nbody.sword
+nbody.sword:105:21: py[j]: tested once before the loop at line 103
+nbody.sword:114:11: ay[i]: checked on every turn
+```
+
+An index is proven in range, and never checked, when `for i in a..xs.len`
+walks the slice it indexes and nothing can change that slice: it is immutable,
+or the loop is a `parallel for`, whose body may write `xs[i]` but never `xs`.
+An index is tested once before the loop when the slice is immutable and the
+index is the loop's own or a name no turn changes. The loop then runs without
+the check when the test passes and as written when it fails, so a panic comes
+on the same turn and line either way. `-all` lists the proven ones too. Only
+the program's own package is listed, in the mode given, `safe` by default.
+
 ## Environment
 
 | | |

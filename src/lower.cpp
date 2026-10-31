@@ -1,4 +1,5 @@
 #include "lower.h"
+#include "lexer.h"
 
 #include <functional>
 #include <map>
@@ -1173,6 +1174,48 @@ struct Lowerer {
     return false;
   }
 
+  // For `shield checks`. A body lowered twice — a versioned loop, an overflow
+  // settled late — notes the same node twice, and the first word stands: the
+  // copy of a versioned loop that keeps its checks is the one that does not
+  // count.
+  std::map<Node *, size_t> noted;
+  void note_bounds(Node *n, int how, int loop_line = 0) {
+    if (!mod.list_bounds || !mode_checks(mode)) return;
+    // The function's own unit, not `unit`: a parallel for's body and a task's
+    // thunk are lowered after every package, once `unit` is cleared.
+    if (fn->unit.rfind("main.", 0) != 0 || noted.count(n)) return;
+    noted[n] = mod.bounds.size();
+    mod.bounds.push_back({n->pos.file, n->pos.line, n->pos.col, spelled(n),
+                          how, loop_line, !loops.empty()});
+  }
+
+  // An index or slice the way it reads in the source, short enough for one
+  // line of a listing.
+  std::string spelled(Node *n) {
+    if (!n) return "";
+    switch (n->kind) {
+    case ND_IDENT:
+      return n->name;
+    case ND_INT_LIT:
+      return std::to_string(n->ival);
+    case ND_FIELD:
+      return spelled(n->lhs) + "." + n->name;
+    case ND_INDEX:
+      return spelled(n->lhs) + "[" + spelled(n->rhs) + "]";
+    case ND_SLICE_EXPR:
+      return spelled(n->lhs) + "[" + spelled(n->cond) + ".." +
+             spelled(n->rhs) + "]";
+    case ND_BINARY:
+      return spelled(n->lhs) + " " + tok_name(n->op) + " " + spelled(n->rhs);
+    case ND_UNARY:
+      return std::string(tok_name(n->op)) + spelled(n->lhs);
+    case ND_CALL:
+      return spelled(n->lhs) + "(…)";
+    default:
+      return "…";
+    }
+  }
+
   void bounds_check(int index, int len, Pos pos) {
     if (!mode_checks(mode)) return;
     // Unsigned comparison catches negative indices too: they wrap to huge.
@@ -1546,8 +1589,14 @@ struct Lowerer {
       bool checked = base->kind != TY_RAWPTR;
       int data = data_pointer(n->lhs, checked ? &len : nullptr);
       int index = to_word(expr(n->rhs));
-      if (checked && len >= 0 && !proven_in_range(n))
-        bounds_check(index, len, n->pos);
+      if (checked && len >= 0) {
+        if (!proven_in_range(n)) {
+          note_bounds(n, IrModule::BOUNDS_CHECKED);
+          bounds_check(index, len, n->pos);
+        } else if (!unchecked.count(n)) {
+          note_bounds(n, IrModule::BOUNDS_PROVEN);
+        }
+      }
       return gep_index(data, index, n->type);
     }
 
@@ -1630,6 +1679,9 @@ struct Lowerer {
     int high = n->rhs ? to_word(expr(n->rhs)) : len;
 
     if (mode_checks(mode) && len >= 0) {
+      // `xs[..]` is the whole of it and cannot fail.
+      note_bounds(n, n->cond || n->rhs ? IrModule::BOUNDS_CHECKED
+                                       : IrModule::BOUNDS_PROVEN);
       int ok = binop(IR_LE, low, high, types.bool_ty);
       guard(ok, "panic: slice bounds out of order at line ", n->pos.line);
       ok = binop(IR_LE, high, len, types.bool_ty);
@@ -2354,6 +2406,8 @@ struct Lowerer {
       int join = new_block();
       cond_branch(ok, fast, slow);
       cur = fast;
+      for (Node *h : hoisted)
+        note_bounds(h, IrModule::BOUNDS_BEFORE_LOOP, n->pos.line);
       unchecked.insert(hoisted.begin(), hoisted.end());
       loop();
       for (Node *h : hoisted) unchecked.erase(h);

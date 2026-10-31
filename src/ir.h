@@ -105,6 +105,19 @@ struct IrModule {
   // On in --mode=small. With IR as input, LLVM's size decisions read the
   // function's attribute, not clang's -Oz.
   bool optimize_size = false;
+  // What `shield checks` lists: every index and slice of the program's own
+  // package, and whether its bounds check went, was moved before a loop or
+  // stayed. Nothing is gathered unless asked for.
+  enum { BOUNDS_PROVEN, BOUNDS_BEFORE_LOOP, BOUNDS_CHECKED };
+  struct BoundsSite {
+    int file, line, col;
+    std::string what;
+    int how;
+    int loop_line; // BOUNDS_BEFORE_LOOP: the loop the test is made before
+    bool in_loop;  // BOUNDS_CHECKED: paid on every turn of one
+  };
+  bool list_bounds = false;
+  std::vector<BoundsSite> bounds;
 
   int intern(const std::string &text) {
     for (size_t i = 0; i < strings.size(); i++)
