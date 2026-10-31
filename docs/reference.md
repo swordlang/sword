@@ -1350,8 +1350,10 @@ func (s Exact) Value() f64               // correctly rounded
 ```
 
 The elementary functions give the same bits on every machine: they use only
-IEEE `+ - * /`, which every processor rounds alike, and the compiler never fuses
-a multiply into an add. Each is within one unit in the last place of the true
+IEEE `+ - * /` and square root, which every processor rounds alike, and the
+compiler never fuses a multiply into an add. `Sqrt` is the processor's
+instruction, and the square root of a negative number is `NaN()` everywhere,
+which the instruction alone does not promise. Each is within one unit in the last place of the true
 value, and `Sqrt` is correctly rounded. They are det, which the C library's are
 not — a det function cannot call out of the language.
 

@@ -1,0 +1,7 @@
+// expect-error: undefined function 'sqrt'
+// The processor's square root is written only in std/num, where a negative
+// argument is given the same NaN on every machine. Everywhere else it is num.Sqrt.
+
+func main() int {
+    return int(sqrt(4.0))
+}

@@ -2144,6 +2144,28 @@ struct Checker {
     return n->type = types.named("u64");
   }
 
+  // `sqrt(x)` is the processor's square root, which IEEE 754 requires to be
+  // correctly rounded on every machine. Only std/num may write it: which NaN a
+  // negative argument gives is the machine's choice, and num.Sqrt is where
+  // that is settled before the instruction runs.
+  Type *check_sqrt(Node *n) {
+    if (n->kids.size() != 1) {
+      error(n->pos, "'sqrt' takes one f64");
+      return nullptr;
+    }
+    Type *f64 = types.named("f64");
+    Type *arg = check_expr(n->kids[0]);
+    if (!arg) return nullptr;
+    if (arg->untyped && assignable(arg, f64)) apply_type(n->kids[0], f64);
+    else if (!type_eq(arg, f64)) {
+      error(n->kids[0]->pos, "'sqrt' takes an f64, got %s",
+            type_str(arg).c_str());
+      return nullptr;
+    }
+    n->form = CALL_SQRT;
+    return n->type = f64;
+  }
+
   Type *check_nameof(Node *n) {
     if (n->kids.size() != 1) {
       error(n->pos, "'nameof' takes one enum value");
@@ -2354,6 +2376,8 @@ struct Checker {
     }
     if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
     if (n->lhs->name == "hashof" && !lookup("hashof")) return check_hashof(n);
+    if (n->lhs->name == "sqrt" && !lookup("sqrt") && pkg.is_num)
+      return check_sqrt(n);
     // `close(ch)`, the third of the three things a channel needs a word for.
     if (n->lhs->name == "close" && !lookup("close") && n->kids.size() == 1) {
       Type *what = check_expr(n->kids[0]);
@@ -2998,7 +3022,7 @@ struct Checker {
   // How a call reaches its target, kept in `form`.
   enum CallForm {
     CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT,
-    CALL_SHARED, CALL_HASH
+    CALL_SHARED, CALL_HASH, CALL_SQRT
   };
 
   // Whether a place lives in this function's frame. The walk stops at the first
