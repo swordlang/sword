@@ -1014,7 +1014,7 @@ struct Lowerer {
   // --- safety checks -----------------------------------------------------
 
   // Splits the current block: when `ok` is false, report and abort.
-  void guard(int ok, const std::string &message) {
+  void guard(int ok, const std::string &message, int line) {
     int fail_bb = new_block();
     int next_bb = new_block();
     cond_branch(ok, next_bb, fail_bb);
@@ -1031,7 +1031,8 @@ struct Lowerer {
     call.op = IR_CALL;
     call.callee = "sword_panic";
     call.type = types.void_ty;
-    call.args = {data.dst, constant((int64_t)message.size(), types.usize_ty)};
+    call.args = {data.dst, constant((int64_t)message.size(), types.usize_ty),
+                 constant((int64_t)line, types.usize_ty)};
     emit(call);
 
     IrInst stop{};
@@ -1048,8 +1049,7 @@ struct Lowerer {
     if (!mode_checks(mode)) return value;
     if (op != IR_ADD && op != IR_SUB && op != IR_MUL) return value;
     guard(negate(overflowed(op, a, b, type)),
-          "panic: integer overflow at line " + std::to_string(pos.line) +
-              "\n");
+          "panic: integer overflow at line ", pos.line);
     return value;
   }
 
@@ -1086,8 +1086,7 @@ struct Lowerer {
         ok = binop(IR_AND, ok,
                    binop(IR_GE, b, constant(0, type), types.bool_ty),
                    types.bool_ty);
-      guard(ok, "panic: shift out of range at line " +
-                    std::to_string(pos.line) + "\n");
+      guard(ok, "panic: shift out of range at line ", pos.line);
     } else {
       b = binop(IR_AND, b, constant(type->bits - 1, type), type);
     }
@@ -1100,8 +1099,7 @@ struct Lowerer {
   // would be right to give instead.
   void divisor_check(int a, int b, Type *type, Pos pos) {
     guard(binop(IR_NE, b, constant(0, type), types.bool_ty),
-          "panic: division by zero at line " + std::to_string(pos.line) +
-              "\n");
+          "panic: division by zero at line ", pos.line);
     if (!type->is_signed) return;
     int64_t lowest =
         type->bits == 64 ? INT64_MIN : -(int64_t(1) << (type->bits - 1));
@@ -1114,8 +1112,7 @@ struct Lowerer {
     ok.a = overflows;
     ok.type = types.bool_ty;
     emit(ok);
-    guard(ok.dst, "panic: integer overflow at line " +
-                      std::to_string(pos.line) + "\n");
+    guard(ok.dst, "panic: integer overflow at line ", pos.line);
   }
 
   // Indices and slice bounds must reach the width a slice length uses before
@@ -1176,8 +1173,7 @@ struct Lowerer {
     if (!mode_checks(mode)) return;
     // Unsigned comparison catches negative indices too: they wrap to huge.
     int ok = binop(IR_LT, index, len, types.bool_ty);
-    guard(ok, "panic: index out of bounds at line " +
-                  std::to_string(pos.line) + "\n");
+    guard(ok, "panic: index out of bounds at line ", pos.line);
   }
 
   // --- overflow checks settled at the end of a loop -------------------------
@@ -1631,11 +1627,9 @@ struct Lowerer {
 
     if (mode_checks(mode) && len >= 0) {
       int ok = binop(IR_LE, low, high, types.bool_ty);
-      guard(ok, "panic: slice bounds out of order at line " +
-                    std::to_string(n->pos.line) + "\n");
+      guard(ok, "panic: slice bounds out of order at line ", n->pos.line);
       ok = binop(IR_LE, high, len, types.bool_ty);
-      guard(ok, "panic: slice bounds out of range at line " +
-                    std::to_string(n->pos.line) + "\n");
+      guard(ok, "panic: slice bounds out of range at line ", n->pos.line);
     }
 
     int slot = alloca_slot(n->type);
@@ -2386,8 +2380,7 @@ struct Lowerer {
     // Checked once per loop, not per iteration: a zero-sized piece would
     // never advance the offset.
     guard(binop(IR_NE, size, constant(0, word), types.bool_ty),
-          "panic: chunks(0) would never advance, at line " +
-              std::to_string(n->pos.line) + "\n");
+          "panic: chunks(0) would never advance, at line ", n->pos.line);
 
     int offset = alloca_slot(word);
     store(constant(0, word), offset, word);
