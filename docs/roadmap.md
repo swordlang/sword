@@ -90,7 +90,11 @@ never lets LLVM see into the runtime. Temper is about that:
 - smaller binaries: no TLS library in a program that does not import
   `std/tls`, and nothing in the binary that nothing calls;
 - `shield checks`, which lists every bounds check that is still there, line by
-  line, so the ones that cost something in a loop can be looked at.
+  line, so the ones that cost something in a loop can be looked at;
+- `runtime.SetThreads(n)`, so a program says how many workers it runs on
+  instead of leaving it to whoever sets `SWORD_THREADS`. It holds until the
+  first task starts, which is when the workers are made, and returns an error
+  after that. The variable stays, as the default the function overrides.
 
 Every change is measured before and after, and the
 numbers go out together with a comparison against C, C++, Rust and Go: the same
