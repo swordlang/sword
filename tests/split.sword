@@ -1,0 +1,81 @@
+// expect: 0
+// A loop that reads `xs[j - c]` or `xs[j + c]` runs the turns where every
+// index is in range with no checks, and the few at either end as written.
+// The answers must not change, whether the middle is long, short or empty.
+
+// A one-dimensional stencil: the ends are copied, the rest averaged.
+func smooth(xs []u64, mut out []u64) {
+    parallel for k in 0..out.len {
+        if k == 0 || k == xs.len - 1 {
+            out[k] = xs[k]
+        } else {
+            out[k] = xs[k - 1] + xs[k] + xs[k + 1]
+        }
+    }
+}
+
+// Rows of a grid `w` wide, flat: the row above and the row below.
+func rows(xs []u64, w u64) u64 {
+    mut acc u64 = 0
+    for k in w..xs.len - w {
+        acc +%= xs[k - w] +% xs[w + k]
+    }
+    return acc
+}
+
+// An offset as long as the slice leaves no middle at all.
+func far(xs []u64, c u64) u64 {
+    mut acc u64 = 0
+    for k in 0..xs.len {
+        if k + c < xs.len {
+            acc +%= xs[k + c]
+        }
+    }
+    return acc
+}
+
+// `continue` stays inside the part of the loop it was in.
+func odd(xs []u64) u64 {
+    mut acc u64 = 0
+    for k in 1..xs.len {
+        if k % 2 == 0 {
+            continue
+        }
+        acc +%= xs[k - 1]
+    }
+    return acc
+}
+
+// A `break` keeps the loop whole: it is versioned, not split.
+func until(xs []u64, stop u64) u64 {
+    mut acc u64 = 0
+    for k in 1..xs.len {
+        if xs[k - 1] == stop {
+            break
+        }
+        acc +%= xs[k - 1]
+    }
+    return acc
+}
+
+func main() int {
+    a := [6]u64{1, 2, 3, 4, 5, 6}
+    mut b := [6]u64{0, 0, 0, 0, 0, 0}
+    smooth(a[..], b[..])
+    if b[0] != 1 || b[1] != 6 || b[4] != 15 || b[5] != 6 {
+        return 1
+    }
+    if rows(a[..], 2) != 1 + 5 + 2 + 6 {
+        return 2
+    }
+    if far(a[..], 6) != 0 || far(a[..], 9) != 0 || far(a[..], 4) != 11 {
+        return 3
+    }
+    if odd(a[..]) != 1 + 3 + 5 {
+        return 4
+    }
+    if until(a[..], 4) != 6 {
+        return 5
+    }
+    return 0
+}

@@ -541,6 +541,9 @@ int list_checks(const IrModule &mod, Mode mode, bool every) {
     if (s.how == IrModule::BOUNDS_PROVEN) printf("proven in range\n");
     else if (s.how == IrModule::BOUNDS_BEFORE_LOOP)
       printf("tested once before the loop at line %d\n", s.loop_line);
+    else if (s.how == IrModule::BOUNDS_AT_ENDS)
+      printf("checked only on the first and last turns of the loop at line"
+             " %d\n", s.loop_line);
     else if (s.in_loop) printf("checked on every turn\n");
     else printf("checked\n");
   }
