@@ -25,6 +25,9 @@ struct Package {
   // package that implements one.
   bool needs_chan = false;
 
+  // std/num, imported or under test, which alone may write `sqrt`.
+  bool is_num = false;
+
   // Errors this package declares, by name, so a diagnostic can say where one
   // came from.
   std::unordered_map<std::string, int> error_codes;

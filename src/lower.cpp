@@ -1948,6 +1948,15 @@ struct Lowerer {
     if (n->form == 3) return atomic_call(n);
     if (n->form == 5) return shared_call(n);
     if (n->form == 6) return hash_of(n->kids[0]);
+    if (n->form == 7) {
+      IrInst in{};
+      in.op = IR_SQRT;
+      in.dst = new_value(n->type);
+      in.a = expr(n->kids[0]);
+      in.type = n->type;
+      emit(in);
+      return in.dst;
+    }
     IrInst in{};
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;

@@ -19,6 +19,7 @@ enum IrOp {
   IR_AND, IR_OR, IR_XOR, IR_SHL, IR_SHR,
   IR_EQ, IR_NE, IR_LT, IR_LE, IR_GT, IR_GE,
   IR_NEG, IR_NOT, IR_CAST,
+  IR_SQRT, // a = an f64, rounded once as IEEE 754 requires
   // imm picks which of these a read-modify-write performs.
   IR_ATOMIC_RMW,   // a = destination, b = value, yields the previous value
   IR_ATOMIC_LOAD,  // a = source
