@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
+#include <cstdlib>
+#include <cstring>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -204,6 +207,14 @@ struct Loader {
     return "";
   }
 
+  static bool same_directory(const std::string &a, const std::string &b) {
+    char ra[PATH_MAX], rb[PATH_MAX];
+    if (a.empty() || b.empty() || !realpath(a.c_str(), ra) ||
+        !realpath(b.c_str(), rb))
+      return false;
+    return strcmp(ra, rb) == 0;
+  }
+
   static bool identifier(const std::string &name) {
     if (name.empty() || !(isalpha((unsigned char)name[0]) || name[0] == '_'))
       return false;
@@ -371,6 +382,10 @@ struct Loader {
       for (char &c : pkg.prefix)
         if (c == '/') c = '.';
     }
+    // `shield test std/num` loads it as the program's own package, so it is
+    // recognised by where it is as well as by its path.
+    pkg.is_num = import_path == "std/num" ||
+                 (import_path.empty() && same_directory(dir, locate("std/num")));
 
     std::vector<std::string> files;
     if (!sword_files(dir, mode != LOAD_BUILD && import_path.empty(), files) ||

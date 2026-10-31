@@ -421,6 +421,12 @@ struct Emitter {
               val(in.a).c_str());
       break;
 
+    case IR_SQRT:
+      intrinsics.insert("declare double @llvm.sqrt.f64(double)");
+      fprintf(out, "  %s = call double @llvm.sqrt.f64(%s)\n",
+              val(in.dst).c_str(), typed(in.a).c_str());
+      break;
+
     case IR_EQ: case IR_NE: case IR_LT: case IR_LE: case IR_GT: case IR_GE:
       fprintf(out, "  %s = %s %s %s %s, %s\n", val(in.dst).c_str(),
               fn->value_type[in.a]->kind == TY_FLOAT ? "fcmp" : "icmp",
