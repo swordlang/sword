@@ -1009,10 +1009,19 @@ struct LockBucket {
   LockWaiter *head = nullptr;
 };
 
-LockBucket g_lock_buckets[256];
+// A std::mutex on Darwin starts with a signature in it, so 256 buckets laid out
+// as data were 18 KB of every program's file. Zeroed storage costs nothing
+// there; the buckets are built on the first contended lock, the only path that
+// reaches them.
+alignas(LockBucket) unsigned char g_lock_storage[256 * sizeof(LockBucket)];
+std::once_flag g_lock_once;
 
 LockBucket &bucket_of(Guard *g) {
-  return g_lock_buckets[((uintptr_t)g >> 4) % 256];
+  LockBucket *buckets = (LockBucket *)g_lock_storage;
+  std::call_once(g_lock_once, [buckets] {
+    for (int i = 0; i < 256; i++) new (&buckets[i]) LockBucket();
+  });
+  return buckets[((uintptr_t)g >> 4) % 256];
 }
 
 // Parks the running task until an unlock of `g` picks it, unless the guard came
