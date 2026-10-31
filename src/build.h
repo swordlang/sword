@@ -13,9 +13,12 @@ bool compile_split(const IrModule &mod, const std::string &opt_level,
                    const std::string &target, const std::string &scratch,
                    std::vector<std::string> &objects);
 
-// What the linker needs told to drop the functions nothing calls, which a
-// whole-program module left to LLVM.
-std::vector<std::string> split_link_flags(const std::string &target);
+// What the linker needs told to drop the functions nothing calls: the runtime's,
+// which LLVM never sees, and in a split build the program's own too.
+std::vector<std::string> dead_strip_link_flags(const std::string &target);
+
+// What clang needs told for that linker to see one function at a time.
+std::vector<std::string> dead_strip_compile_flags(const std::string &target);
 
 // `shield clean`: everything --split kept. Objects nothing has used for thirty
 // days go by themselves.

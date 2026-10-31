@@ -13,6 +13,7 @@ struct LinkRequest {
   std::string runtime_flags;             // the line written beside the archive
   std::vector<std::string> user;         // --link, in the order given
   bool prefer_static = false;            // --static
+  bool tls = true;                       // the program reaches std/tls
 };
 
 // One argument per element, to be quoted on the way to the shell. False, with

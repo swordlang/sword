@@ -101,6 +101,9 @@ struct IrModule {
   // Off in --mode=small: the tables are there for a debugger or a profiler
   // walking the stack, and a program built small has asked to do without.
   bool unwind_tables = true;
+  // On in --mode=small. With IR as input, LLVM's size decisions read the
+  // function's attribute, not clang's -Oz.
+  bool optimize_size = false;
 
   int intern(const std::string &text) {
     for (size_t i = 0; i < strings.size(); i++)

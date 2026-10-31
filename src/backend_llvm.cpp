@@ -690,15 +690,43 @@ struct Emitter {
   }
 
   // A failed safety check writes its message to stderr and aborts. It is only
-  // emitted when something can reach it.
+  // emitted when something can reach it. The line is appended here, so a
+  // program keeps one copy of each message rather than one per check; the whole
+  // of it still goes out in one write, which another thread's cannot split.
+  // The longest message is under 64 bytes, and a line under 21 digits.
   void panic_helper() {
     if (!declared.count("write"))
       fputs("declare i64 @write(i32, ptr, i64)\n", out);
     if (!declared.count("abort"))
       fputs("declare void @abort()\n", out);
-    fputs("\ndefine internal void @sword_panic(ptr %msg, i64 %len) noreturn #0 {\n"
+    fputs("\ndefine internal void @sword_panic(ptr %msg, i64 %len, i64 %line)"
+          " noreturn #0 {\n"
           "bb0:\n"
-          "  %w = call i64 @write(i32 2, ptr %msg, i64 %len)\n"
+          "  %buf = alloca [96 x i8]\n"
+          "  %digits = alloca [24 x i8]\n"
+          "  call void @llvm.memcpy.p0.p0.i64(ptr %buf, ptr %msg, i64 %len, i1 false)\n"
+          "  br label %bb1\n"
+          "bb1:\n"
+          "  %n = phi i64 [ %line, %bb0 ], [ %q, %bb1 ]\n"
+          "  %at = phi i64 [ 24, %bb0 ], [ %next, %bb1 ]\n"
+          "  %q = udiv i64 %n, 10\n"
+          "  %r = urem i64 %n, 10\n"
+          "  %r8 = trunc i64 %r to i8\n"
+          "  %c = add i8 %r8, 48\n"
+          "  %next = sub i64 %at, 1\n"
+          "  %p = getelementptr i8, ptr %digits, i64 %next\n"
+          "  store i8 %c, ptr %p\n"
+          "  %more = icmp ne i64 %q, 0\n"
+          "  br i1 %more, label %bb1, label %bb2\n"
+          "bb2:\n"
+          "  %count = sub i64 24, %next\n"
+          "  %dst = getelementptr i8, ptr %buf, i64 %len\n"
+          "  call void @llvm.memcpy.p0.p0.i64(ptr %dst, ptr %p, i64 %count, i1 false)\n"
+          "  %end = getelementptr i8, ptr %dst, i64 %count\n"
+          "  store i8 10, ptr %end\n"
+          "  %body = add i64 %len, %count\n"
+          "  %total = add i64 %body, 1\n"
+          "  %w = call i64 @write(i32 2, ptr %buf, i64 %total)\n"
           "  call void @abort()\n"
           "  unreachable\n"
           "}\n\n",
@@ -848,7 +876,7 @@ struct Emitter {
     }
     if (entry) entry_wrapper(*entry);
 
-    bool uses_memcpy = false;
+    bool uses_memcpy = panics;
     bool uses_memset = false;
     for (const IrFunc *f : mine)
       for (const IrBlock &bb : f->blocks)
@@ -865,8 +893,9 @@ struct Emitter {
     // Nothing in Sword unwinds: a panic aborts and the runtime throws nothing,
     // so no function needs a landing pad. The tables a debugger or a profiler
     // walks the stack with are kept unless the program asked to be small.
-    fprintf(out, "\nattributes #0 = { nounwind%s }\n",
-            mod.unwind_tables ? " uwtable(sync)" : "");
+    fprintf(out, "\nattributes #0 = { nounwind%s%s }\n",
+            mod.unwind_tables ? " uwtable(sync)" : "",
+            mod.optimize_size ? " minsize optsize" : "");
   }
 };
 
