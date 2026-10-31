@@ -1,4 +1,4 @@
-// expect-error: write 'Only{nil}' to leave every field empty
+// expect-error: write 'Only{...nil}' to leave every field empty
 // An empty literal of a struct whose fields are all optional is told how to
 // say so.
 

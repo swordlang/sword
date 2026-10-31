@@ -2598,7 +2598,7 @@ struct Checker {
       return nullptr;
     }
 
-    // `else nil`: what the literal leaves out of an optional field it can
+    // `...nil`: what the literal leaves out of an optional field it can
     // reach is written as `name: nil`, and checked as if it had been.
     if (n->fills_nil) {
       std::unordered_set<std::string> named;
@@ -2651,10 +2651,10 @@ struct Checker {
         if (!seen.count(other.name) && !is_optional(other.type))
           optional_only = false;
       if (optional_only && n->kids.empty())
-        note(n->pos, "write '%s{nil}' to leave every field empty",
+        note(n->pos, "write '%s{...nil}' to leave every field empty",
              n->name.c_str());
       else if (optional_only)
-        note(n->pos, "write 'else nil' to leave the optional fields empty");
+        note(n->pos, "write '...nil' to leave the optional fields empty");
       return nullptr;
     }
     return n->type = type;
