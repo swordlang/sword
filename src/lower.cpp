@@ -75,6 +75,9 @@ struct Lowerer {
   // The loops being lowered that walk `0..xs.len` over a slice that cannot
   // change, as (loop variable, slice): `xs[i]` inside one needs no check.
   std::vector<std::pair<Symbol *, Symbol *>> walked;
+  // Indexing in the copy of a loop that runs only once a test before it has
+  // shown every one of these in range for every turn (see `range_loop`).
+  std::set<Node *> unchecked;
   // Set while the first pass of a loop that settles its overflow checks at
   // the end is lowered (see `checked_loop`).
   struct Accumulator {
@@ -1162,6 +1165,7 @@ struct Lowerer {
   }
 
   bool proven_in_range(Node *index) {
+    if (unchecked.count(index)) return true;
     Node *base = index->lhs, *at = index->rhs;
     if (base->kind != ND_IDENT || at->kind != ND_IDENT) return false;
     for (const auto &w : walked)
@@ -2328,15 +2332,102 @@ struct Lowerer {
 
     Symbol *slice = walked_slice(n, false);
     if (slice) walked.push_back({n->sym, slice});
-    checked_loop(
-        n->body, [&] { store(first, slot, type); },
-        [&] { return binop(IR_LT, load(slot, type), limit, types.bool_ty); },
-        [] {},
-        [&] {
-          store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot,
-                type);
-        });
+    auto loop = [&] {
+      checked_loop(
+          n->body, [&] { store(first, slot, type); },
+          [&] { return binop(IR_LT, load(slot, type), limit, types.bool_ty); },
+          [] {},
+          [&] {
+            store(binop(IR_ADD, load(slot, type), constant(1, type), type),
+                  slot, type);
+          });
+    };
+    std::vector<Node *> hoisted = hoistable(n);
+    if (hoisted.empty()) {
+      loop();
+    } else {
+      // Versioning: the test is made once, and the loop as written runs when
+      // it fails, panicking on the same turn and line it always did.
+      int ok = in_range_throughout(n, hoisted, first, limit);
+      int fast = new_block();
+      int slow = new_block();
+      int join = new_block();
+      cond_branch(ok, fast, slow);
+      cur = fast;
+      unchecked.insert(hoisted.begin(), hoisted.end());
+      loop();
+      for (Node *h : hoisted) unchecked.erase(h);
+      branch(join);
+      cur = slow;
+      loop();
+      branch(join);
+      cur = join;
+    }
     if (slice) walked.pop_back();
+  }
+
+  // The indexing in a `for i in a..b` whose bounds can be tested before the
+  // loop starts: an immutable slice or string, which no turn can shorten,
+  // taken at the loop's own index or at an immutable integer from outside it,
+  // which no turn can move. A body with a loop inside is left alone, since
+  // versioning both would lower the innermost body four times, and so is one
+  // with tasks in it, which would be lowered as two.
+  std::vector<Node *> hoistable(Node *loop) {
+    std::vector<Node *> found;
+    if (mode != MODE_SAFE) return found;
+    // Every name a node of the body carries other than by using it, which
+    // takes in whatever the body declares, in any form that declares one.
+    std::set<Symbol *> inner;
+    bool nested = false;
+    walk(loop->body, [&](Node *n) {
+      if (n->kind == ND_FOR || n->kind == ND_SCOPE || n->kind == ND_SPAWN)
+        nested = true;
+      if (n->kind == ND_IDENT) return;
+      for (Symbol *s : {n->sym, n->index_sym, n->reduce_sym})
+        if (s) inner.insert(s);
+    });
+    if (nested) return found;
+    auto fixed = [&](Node *n) {
+      return n->kind == ND_IDENT && n->sym && !n->sym->is_mut &&
+             !n->sym->is_func && !inner.count(n->sym) && n->sym != loop->sym;
+    };
+    walk(loop->body, [&](Node *n) {
+      if (n->kind != ND_INDEX || !fixed(n->lhs)) return;
+      Type *base = n->lhs->sym->type;
+      if (!base || (base->kind != TY_SLICE && base->kind != TY_STRING)) return;
+      Node *at = n->rhs;
+      bool own = at->kind == ND_IDENT && at->sym == loop->sym;
+      if (!own && !(fixed(at) && is_integer(at->sym->type))) return;
+      if (!proven_in_range(n)) found.push_back(n);
+    });
+    return found;
+  }
+
+  // Whether every one of `hoisted` is in range on every turn of `loop`, which
+  // runs its index from `first` up to `limit`.
+  int in_range_throughout(Node *loop, const std::vector<Node *> &hoisted,
+                          int first, int limit) {
+    Type *index = loop->type;
+    Type *flag = types.bool_ty;
+    int empty = binop(IR_GE, first, limit, flag);
+    int ok = constant(1, flag);
+    for (Node *n : hoisted) {
+      int len = -1;
+      data_pointer(n->lhs, &len);
+      int in;
+      if (n->rhs->sym == loop->sym) {
+        // Every turn's index lies in first..limit, so the last is the test.
+        in = binop(IR_LE, to_word(limit), len, flag);
+        if (index->is_signed)
+          in = binop(IR_AND, in,
+                     binop(IR_GE, first, constant(0, index), flag), flag);
+        in = binop(IR_OR, empty, in, flag);
+      } else {
+        in = binop(IR_LT, to_word(expr(n->rhs)), len, flag);
+      }
+      ok = binop(IR_AND, ok, in, flag);
+    }
+    return ok;
   }
 
   // Walks a slice in fixed-size pieces, the last one short. Each iteration

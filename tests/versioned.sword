@@ -1,0 +1,101 @@
+// expect: 0
+// A loop whose indexing can be tested once before it starts runs a copy with
+// no checks when the test passes, and the loop as written when it fails. The
+// answer is the same either way, including when the test fails and yet no
+// turn would have gone out of range.
+
+// Another slice than the one walked, the same length or longer.
+func dot(xs []u64, ys []u64) u64 {
+    mut acc u64 = 0
+    for j in 0..xs.len {
+        acc +%= xs[j] *% ys[j]
+    }
+    return acc
+}
+
+// An index that no turn moves.
+func around(xs []u64, i u64) u64 {
+    mut acc u64 = 0
+    for j in 0..xs.len {
+        acc +%= xs[j] -% xs[i]
+    }
+    return acc
+}
+
+// `k` is past the end, so the test fails, but no turn takes the branch.
+func guarded(xs []u64, k u64) u64 {
+    mut acc u64 = 0
+    for j in 0..xs.len {
+        if j > 100 {
+            acc +%= xs[k]
+        }
+        acc +%= xs[j]
+    }
+    return acc
+}
+
+// No turn at all.
+func none(xs []u64, k u64, n u64) u64 {
+    mut acc u64 = 0
+    for j in n..n {
+        acc +%= xs[k] +% xs[j]
+    }
+    return acc
+}
+
+// A range that starts after zero and ends short of the slice.
+func middle(xs []u64, lo u64, hi u64) u64 {
+    mut acc u64 = 0
+    for j in lo..hi {
+        acc += xs[j]
+    }
+    return acc
+}
+
+// Checked additions over a slice that is not the one walked: once the bounds
+// are tested, the overflow can be settled at the end of the loop as well.
+func total(xs []u64, ys []u8) u8 {
+    mut acc u8 = 0
+    for j in 0..xs.len {
+        acc += ys[j]
+    }
+    return acc
+}
+
+func same(s string, t string) u64 {
+    mut n u64 = 0
+    for i in 0..s.len {
+        if s[i] == t[i] {
+            n += 1
+        }
+    }
+    return n
+}
+
+func main() int {
+    a := [4]u64{1, 2, 3, 4}
+    b := [5]u64{5, 6, 7, 8, 9}
+    small := [4]u8{10, 20, 30, 40}
+    if dot(a[..], b[..]) != 70 {
+        return 1
+    }
+    if around(a[..], 1) != 2 {
+        return 2
+    }
+    if guarded(a[..], 9) != 10 {
+        return 3
+    }
+    if none(a[..], 9, 7) != 0 {
+        return 4
+    }
+    if middle(b[..], 1, 4) != 21 {
+        return 5
+    }
+    if total(a[..], small[..]) != 100 {
+        return 6
+    }
+    if same("sword", "swore!") != 4 {
+        return 7
+    }
+    return 0
+}
