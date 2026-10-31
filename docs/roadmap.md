@@ -94,7 +94,12 @@ never lets LLVM see into the runtime. Temper is about that:
 - `runtime.SetThreads(n)`, so a program says how many workers it runs on
   instead of leaving it to whoever sets `SWORD_THREADS`. It holds until the
   first task starts, which is when the workers are made, and returns an error
-  after that. The variable stays, as the default the function overrides.
+  after that. The variable stays, as the default the function overrides;
+- a runtime that needs no C++ library. On Linux, loading `libstdc++` is half of
+  what it takes a program that does nothing to start, and a binary that needs
+  it does not run on an image without it. The runtime keeps its C++ but stops
+  using that language's standard library, so a program asks for the C library
+  and nothing else.
 
 Every change is measured before and after, and the
 numbers go out together with a comparison against C, C++, Rust and Go: the same
