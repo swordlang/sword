@@ -1,0 +1,18 @@
+// expect-error: 'nil' alone is written 'Only{...nil}'
+// A literal that names no field leaves its optional ones empty the same way
+// as one that names some.
+
+struct Only {
+    banana ?[]u8
+}
+
+func empty(o Only) bool {
+    return o.banana == nil
+}
+
+func main() int {
+    if empty(Only{nil}) {
+        return 1
+    }
+    return 0
+}

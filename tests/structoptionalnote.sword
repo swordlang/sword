@@ -1,4 +1,4 @@
-// expect-error: write 'else nil' to leave the optional fields empty
+// expect-error: write '...nil' to leave the optional fields empty
 // A literal that leaves out only optional fields is told how to say so.
 
 struct Mixed {

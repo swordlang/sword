@@ -1,5 +1,5 @@
-// expect-error: expected '}' after 'nil', which ends a struct literal
-// 'nil' alone names no field, so nothing may follow it.
+// expect-error: expected '}' after '...nil', which ends a struct literal
+// '...nil' comes after every field the literal names.
 
 struct Mixed {
     name string
@@ -7,6 +7,6 @@ struct Mixed {
 }
 
 func main() int {
-    m := Mixed{nil, name: "x"}
+    m := Mixed{name: "x", ...nil, banana: nil}
     return 0
 }

@@ -453,7 +453,7 @@ func main() int {
 
 Every field has to be given a value in a literal. There is no partial
 initialisation, because a half-built struct is a bug waiting for a reader. The
-one shorthand is for fields that may be empty: a literal ending in `else nil`
+one shorthand is for fields that may be empty: a literal ending in `...nil`
 leaves every optional field it does not name as `nil`, and says so where it is
 written.
 
@@ -465,7 +465,7 @@ struct Request {
 }
 
 func main() int {
-    r := Request{path: "/", else nil}
+    r := Request{path: "/", ...nil}
     if r.body == nil && r.timeout == nil {
         return 1
     }
@@ -476,7 +476,7 @@ func main() int {
 
 A field that is not optional still has to be named, so adding one to a struct
 still stops every literal that forgot it from compiling. When every field is
-optional and you name none, the literal is `T{nil}`.
+optional, `T{...nil}` names none of them.
 
 The compiler is free to reorder fields to remove padding:
 
