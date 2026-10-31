@@ -695,6 +695,7 @@ int main(int argc, char **argv) {
   IrModule mod;
   mod.sim_points = sim;
   mod.unwind_tables = mode != MODE_SMALL;
+  mod.optimize_size = mode == MODE_SMALL;
   lower(prog, types, mode, mod);
 
   if (stage == STAGE_IR) {

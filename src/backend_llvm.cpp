@@ -865,8 +865,9 @@ struct Emitter {
     // Nothing in Sword unwinds: a panic aborts and the runtime throws nothing,
     // so no function needs a landing pad. The tables a debugger or a profiler
     // walks the stack with are kept unless the program asked to be small.
-    fprintf(out, "\nattributes #0 = { nounwind%s }\n",
-            mod.unwind_tables ? " uwtable(sync)" : "");
+    fprintf(out, "\nattributes #0 = { nounwind%s%s }\n",
+            mod.unwind_tables ? " uwtable(sync)" : "",
+            mod.optimize_size ? " minsize optsize" : "");
   }
 };
 
