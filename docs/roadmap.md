@@ -332,6 +332,17 @@ series of versions — 0.11, 0.12 and on — that change the compiler and not th
 language. Each stage is checked against the C++ one on everything it can print —
 the syntax tree, Sword's own IR, the LLVM IR — before the next is started.
 
+The runtime follows the compiler. It is C++ and a page of assembly today: the
+scheduler, the tasks' stacks, the poller, channels and the pool for calls that
+block, about five thousand lines. Written in Sword, it is compiled with the
+program and inlined into it where that pays, and no program links a C++
+library. First the language has to be able to say what a scheduler says:
+atomics with orderings weaker than sequential consistency, a thread's own
+variables, and a way to write the few structures that several threads change
+by design, such as a work-stealing deque, without switching off the race
+checker for the code around them. How it says each of those is decided when
+the work gets there.
+
 Edge is the version whose compiler builds itself, twice, and gets the same binary
 both times: a language that has stopped changing, and a compiler written in it.
 The C++ compiler stays as the seed for building it on a new machine.
