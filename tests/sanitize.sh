@@ -71,6 +71,11 @@ for src in "$root"/rt/*.cpp; do
 done
 clang -c "$root/rt/sword_ctx.S" -o "$out/sword_ctx.o" || exit 1
 objs="$objs $out/sword_ctx.o"
+# An archive, as the ordinary build links it: a program that never reaches
+# std/tls takes no TLS object, and --emit-link names no OpenSSL for it.
+rm -f "$out/libsword_rt.a"
+ar rcs "$out/libsword_rt.a" $objs || exit 1
+objs="$out/libsword_rt.a"
 
 # A test that never finishes is reported like any other failure, instead of
 # holding the whole run until something outside kills it.

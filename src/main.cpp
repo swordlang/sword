@@ -666,6 +666,10 @@ int main(int argc, char **argv) {
   request.weak_symbols = prog.weak_symbols;
   std::string runtime = runtime_archive(target);
   if (!runtime.empty()) request.runtime_flags = runtime_link_flags(target);
+  // Only std/tls reaches OpenSSL, through the runtime's sword_tls_ functions.
+  request.tls = false;
+  for (const auto &symbol : prog.c_symbols)
+    if (symbol.first.rfind("sword_tls_", 0) == 0) request.tls = true;
   if (!target.empty() && runtime.empty() && !object_only) {
     fprintf(stderr,
             "shield: there is no runtime for %s; build one with"

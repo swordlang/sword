@@ -195,7 +195,13 @@ bool link_arguments(const LinkRequest &req, std::vector<std::string> &out) {
     else if (a.compare(0, 2, "-L") == 0) plan.add_dir(a.substr(2));
   }
 
-  if (!plan.line(words(req.runtime_flags), "", out)) return false;
+  // A program that never reaches std/tls must start where libssl is missing.
+  // The Makefile writes OpenSSL into the runtime's flags as these two words.
+  std::vector<std::string> runtime;
+  for (const std::string &word : words(req.runtime_flags))
+    if (req.tls || (word != "-lssl" && word != "-lcrypto"))
+      runtime.push_back(word);
+  if (!plan.line(runtime, "", out)) return false;
   // The runtime's own libraries were found where the build found them, and its
   // programs have always started without being told where to look again.
   plan.rpaths.clear();

@@ -89,6 +89,9 @@ $(RT): $(RTOBJ)
 # machine rather than on any file make can date it against — but only written when
 # it changes, so that the TLS object below is rebuilt exactly when the decision
 # does.
+#
+# src/link.cpp leaves out -lssl and -lcrypto for a program that never reaches
+# std/tls, so OpenSSL has to be named by those two words.
 $(RTFLAGS): FORCE
 	@echo '$(TLS_LDFLAGS) $(DLLIB) $(CXXLIB)' > $@
 
