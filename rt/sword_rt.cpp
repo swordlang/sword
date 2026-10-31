@@ -10,6 +10,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <thread>
@@ -1013,15 +1014,23 @@ struct LockBucket {
 // as data were 18 KB of every program's file. Zeroed storage costs nothing
 // there; the buckets are built on the first contended lock, the only path that
 // reaches them.
+//
+// pthread_once, not std::call_once: libstdc++'s hands the function over in two
+// thread-locals, written on every call. `contend` reaches this again after a
+// park, and the compiler read the thread pointer once for the whole function,
+// so a task resumed on another worker wrote the first worker's thread-locals
+// while that worker ran something else.
 alignas(LockBucket) unsigned char g_lock_storage[256 * sizeof(LockBucket)];
-std::once_flag g_lock_once;
+pthread_once_t g_lock_once = PTHREAD_ONCE_INIT;
+
+void build_buckets() {
+  LockBucket *buckets = (LockBucket *)g_lock_storage;
+  for (int i = 0; i < 256; i++) new (&buckets[i]) LockBucket();
+}
 
 LockBucket &bucket_of(Guard *g) {
-  LockBucket *buckets = (LockBucket *)g_lock_storage;
-  std::call_once(g_lock_once, [buckets] {
-    for (int i = 0; i < 256; i++) new (&buckets[i]) LockBucket();
-  });
-  return buckets[((uintptr_t)g >> 4) % 256];
+  pthread_once(&g_lock_once, build_buckets);
+  return ((LockBucket *)g_lock_storage)[((uintptr_t)g >> 4) % 256];
 }
 
 // Parks the running task until an unlock of `g` picks it, unless the guard came
