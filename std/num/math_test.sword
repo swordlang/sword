@@ -265,6 +265,15 @@ func TestSpecialValues(mut t *testing.T) !void {
     try t.Require(IsNaN(Sin(Inf())))
     try t.Require(IsNaN(Cos(-Inf())))
     try t.Require(IsNaN(Sin(NaN())))
+    // The bits, not just a NaN: x86-64 and arm64 make different ones for an
+    // invalid operation, and these must not come from one.
+    t.Equal(bitsOf(Sin(Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Sin(-Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(-Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Log(-1.0)), bitsOf(NaN()))
+    t.Equal(bitsOf(Sin(NaN())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(NaN())), bitsOf(NaN()))
 }
 
 // fdlibm's bit-by-bit square root, which is exact before rounding and rounds

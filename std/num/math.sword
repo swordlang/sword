@@ -506,6 +506,12 @@ det func Sin(x f64) f64 {
         return sinKernel(x, 0.0, false)
     }
     if ix >= 0x7ff00000 {
+        // An infinity has no sine or cosine, and Inf - Inf would answer with
+        // the processor's own NaN, which is not the same one on every machine.
+        // A NaN comes back as itself.
+        if ix == 0x7ff00000 && lowOf(x) == 0 {
+            return NaN()
+        }
         return x - x
     }
     r := quadrant(x)
@@ -527,6 +533,9 @@ det func Cos(x f64) f64 {
         return cosKernel(x, 0.0)
     }
     if ix >= 0x7ff00000 {
+        if ix == 0x7ff00000 && lowOf(x) == 0 {
+            return NaN()
+        }
         return x - x
     }
     r := quadrant(x)
