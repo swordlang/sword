@@ -1,0 +1,20 @@
+// expect: 6
+// Nothing in this program makes a Scale, so no call through one can happen:
+// it takes nothing away from det. A library listed on its own is another
+// matter, and `shield det` says so there.
+
+interface Scale {
+    By(v i64) i64
+}
+
+det func scaled(s Scale, v i64) i64 {
+    return s.By(v)
+}
+
+det func double(v i64) i64 {
+    return v * 2
+}
+
+func main() int {
+    return int(double(3))
+}

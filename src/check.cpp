@@ -4593,16 +4593,18 @@ struct Determinism {
 
   // The first target a call of this shape can reach that is not det, or null
   // when every one of them is. `found` says whether the targets are known at
-  // all: an interface nothing implements in this program is not one of them.
+  // all. An interface nothing in the program implements has no value that
+  // could be called through, so it reaches nothing.
   Symbol *stray_target(Node *call, bool &known) {
     known = true;
     if (call->form == 2) { // through an interface
       std::string iface = interface_of(call);
-      auto at = by_interface.find(iface);
-      if (iface.empty() || at == by_interface.end()) {
+      if (iface.empty()) {
         known = false;
         return nullptr;
       }
+      auto at = by_interface.find(iface);
+      if (at == by_interface.end()) return nullptr;
       for (Symbol *target : at->second) {
         if (!target) {
           known = false;

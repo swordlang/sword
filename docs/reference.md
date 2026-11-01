@@ -159,7 +159,7 @@ arguments to reach the answer:
 | a channel copied, stored or returned | the compiler can no longer follow it |
 | an `extern` call, or one through an `extern func` | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
-| a call through an interface or a function value | unless every target is det |
+| a call through an interface or a function value | unless every target the program has is det |
 | a call to anything that is not det | |
 
 What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
@@ -174,7 +174,8 @@ told when the property is lost, and the message walks the chain from what was
 claimed to the call that lost it. A pointer is opaque to whoever is handed one,
 so an arena doing arithmetic on addresses to align what it hands out does not
 make its callers depend on the layout — only reading an address as a number
-here does.
+here does. An interface nothing in the program implements is never called
+through, so a call through it takes nothing away.
 
 ## Statements
 
