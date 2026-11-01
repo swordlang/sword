@@ -1,0 +1,21 @@
+// expect: 134
+// expect-panic: panic: index out of bounds at line 18
+// The same through a pointer: once the turn has taken its piece's address, a
+// call can shorten the piece while the loop is walking it.
+
+func shorten(mut p *[]u64) {
+    *p = (*p)[0..1]
+}
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    for part in xs.chunks(4) {
+        mut p := &part
+        for k in 0..part.len {
+            shorten(p)
+            part[0] = 1
+            part[k] = 1
+        }
+    }
+}

@@ -10,8 +10,8 @@ extern func free(p [*]u8)
 // Everything that allocates takes one of these, so a signature without it
 // cannot touch the heap.
 interface Allocator {
-    Alloc(n u64, align u64) ?[*]u8
-    Release(mut p [*]u8, n u64)
+    mut Alloc(n u64, align u64) ?[*]u8
+    mut Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64 {

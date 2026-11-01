@@ -1,0 +1,16 @@
+// expect: 134
+// The parallel loop walks `out`, but the `out` indexed inside is another,
+// shorter slice under the same name: that index is not proven, and stays
+// checked.
+
+func main() int {
+    mut data := [4]u64{}
+    mut out := data[..]
+    small := [1]u64{7}
+    mut total u64 = 0
+    parallel for i in 0..out.len reduce(+: total) {
+        out := small[..]
+        total += out[i]
+    }
+    return int(total)
+}

@@ -1,0 +1,37 @@
+// expect: 0
+// What `shield checks` lists, one of each kind; tests/run.sh holds the
+// listing it must give.
+
+func kinds(xs []u64, ys []u64, k u64, mut out []u64) u64 {
+    mut acc u64 = 0
+    for i in 0..xs.len {
+        acc +%= xs[i] +% ys[i] +% xs[k]
+    }
+    parallel for i in 0..out.len {
+        out[i] = ys[i]
+    }
+    mut j u64 = 0
+    for j < xs.len {
+        acc +%= xs[j]
+        j += 1
+    }
+    head := xs[0..2]
+    return acc +% head[1] +% xs[..].len
+}
+
+func main() int {
+    a := [4]u64{1, 2, 3, 4}
+    mut b := [4]u64{0, 0, 0, 0}
+    if kinds(a[..], a[..], 3, b[..]) != 52 {
+        return 1
+    }
+    return 0
+}
+
+func shifted(xs []u64) u64 {
+    mut acc u64 = 0
+    for k in 1..xs.len {
+        acc +%= xs[k - 1]
+    }
+    return acc
+}

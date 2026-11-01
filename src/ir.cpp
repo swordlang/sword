@@ -29,6 +29,7 @@ const char *op_name(IrOp op) {
   case IR_NEG: return "neg";
   case IR_NOT: return "not";
   case IR_CAST: return "cast";
+  case IR_SQRT: return "sqrt";
   case IR_ATOMIC_RMW: return "atomic.rmw";
   case IR_ATOMIC_LOAD: return "atomic.load";
   case IR_ATOMIC_STORE: return "atomic.store";

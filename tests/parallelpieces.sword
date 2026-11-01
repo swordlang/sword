@@ -1,0 +1,88 @@
+// expect: 0
+// expect-output: 498010009 1003 1 same
+// A parallel loop over a partition gives each turn one piece: the same
+// pieces, at the same offsets, as the sequential loop over `xs.chunks(n)`,
+// the last one short. A five-point stencil written by rows gives the bits the
+// sequential loop does.
+
+import "std/io"
+
+func fill(n u64, mut xs []u64) {
+    parallel for off, part in xs.chunks(n) {
+        for j in 0..part.len {
+            part[j] = off * 1000 + part.len
+        }
+    }
+}
+
+func setAll(mut row []f64, v f64) {
+    for j in 0..row.len {
+        row[j] = v
+    }
+}
+
+func stencil(w u64, a []f64, mut b []f64) {
+    parallel for off, row in b.chunks(w) {
+        if off == 0 || off + w >= a.len {
+            setAll(row, 0.0)
+            continue
+        }
+        up := a[off - w..off]
+        mid := a[off..off + w]
+        down := a[off + w..off + 2 * w]
+        row[0] = 0.0
+        row[w - 1] = 0.0
+        for j in 1..w - 1 {
+            row[j] = (up[j] + down[j] + mid[j - 1] + mid[j + 1]) * 0.25
+        }
+    }
+}
+
+func stencilInOrder(w u64, a []f64, mut b []f64) {
+    for off, row in b.chunks(w) {
+        if off == 0 || off + w >= a.len {
+            setAll(row, 0.0)
+            continue
+        }
+        for j in 1..w - 1 {
+            row[j] = (a[off - w + j] + a[off + w + j] + a[off + j - 1] +
+                      a[off + j + 1]) * 0.25
+        }
+        row[0] = 0.0
+        row[w - 1] = 0.0
+    }
+}
+
+func main() !void {
+    mut xs := [1003]u64{}
+    fill(10, xs[..])
+    mut sum u64 = 0
+    for x in xs[..] {
+        sum += x
+    }
+    fill(2000, xs[..])
+    first := xs[500]
+    fill(7, xs[0..0])
+    mut one := [1]u64{}
+    fill(1, one[..])
+
+    mut a := [4096]f64{}
+    for i in 0..a.len {
+        a[i] = f64((i * 7919) % 1000) / 7.0
+    }
+    mut b := [4096]f64{}
+    mut c := [4096]f64{}
+    stencil(64, a[..], b[..])
+    stencilInOrder(64, a[..], c[..])
+    mut same := true
+    for i in 0..b.len {
+        if b[i] != c[i] {
+            same = false
+        }
+    }
+    if same {
+        try io.Printf("{} {} {} same\n", sum, first, one[0])
+    } else {
+        try io.Printf("{} {} {} differ\n", sum, first, one[0])
+    }
+}

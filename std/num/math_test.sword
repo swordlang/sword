@@ -52,6 +52,30 @@ func TestSqrtBits(mut t *testing.T) !void {
     try checkBits(t, "Sqrt", Sqrt, cases[..])
 }
 
+// Every exponent, both signs, subnormals, infinities and NaNs. A negative
+// argument is the one place the two may differ: the instruction leaves the
+// NaN to the machine, and Sqrt answers NaN() before it.
+func TestSqrtAgainstSoftware(mut t *testing.T) !void {
+    mut seed u64 = 0x9E3779B97F4A7C15
+    mut wrong := 0
+    for i in 0..262144 {
+        seed = seed *% 6364136223846793005 +% 1442695040888963407
+        b := seed ^ (seed >> 29)
+        args := [3]u64{b, b & 0x000FFFFFFFFFFFFF, b & 0x7FFFFFFFFFFFFFFF}
+        for x in args {
+            v := fromBits(x)
+            mut want := bitsOf(softSqrt(v))
+            if v < 0.0 {
+                want = bitsOf(NaN())
+            }
+            if bitsOf(Sqrt(v)) != want && wrong < 10 {
+                t.Failf("Sqrt bits {}: got {} want {}", x, bitsOf(Sqrt(v)), want)
+                wrong += 1
+            }
+        }
+    }
+}
+
 func TestExpBits(mut t *testing.T) !void {
     cases := [24]vector{
         vector{x: 4645036390051215444, y: 6944576625891419687},
@@ -223,6 +247,9 @@ func TestSpecialValues(mut t *testing.T) !void {
     t.Equal(Sqrt(0.0), 0.0)
     t.Equal(Sqrt(Inf()), Inf())
     t.Equal(Sqrt(4.0), 2.0)
+    t.Equal(bitsOf(Sqrt(-Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Sqrt(-1.0)), bitsOf(NaN()))
+    t.Equal(bitsOf(Sqrt(-0.0)), u64(0x8000000000000000))
     t.Equal(Log(0.0), -Inf())
     try t.Require(IsNaN(Log(-1.0)))
     t.Equal(Log(1.0), 0.0)
@@ -238,4 +265,119 @@ func TestSpecialValues(mut t *testing.T) !void {
     try t.Require(IsNaN(Sin(Inf())))
     try t.Require(IsNaN(Cos(-Inf())))
     try t.Require(IsNaN(Sin(NaN())))
+    // The bits, not just a NaN: x86-64 and arm64 make different ones for an
+    // invalid operation, and these must not come from one.
+    t.Equal(bitsOf(Sin(Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Sin(-Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(-Inf())), bitsOf(NaN()))
+    t.Equal(bitsOf(Log(-1.0)), bitsOf(NaN()))
+    t.Equal(bitsOf(Sin(NaN())), bitsOf(NaN()))
+    t.Equal(bitsOf(Cos(NaN())), bitsOf(NaN()))
+}
+
+// fdlibm's bit-by-bit square root, which is exact before rounding and rounds
+// once, to nearest: the answer is the double closest to the true root. It was
+// num.Sqrt before the processor's instruction was, and is kept as the reference
+// the instruction is held to.
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunPro, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+func softSqrt(x f64) f64 {
+    mut ix0 := highOf(x)
+    mut ix1 := lowOf(x)
+    if ix0 & 0x7ff00000 == 0x7ff00000 {
+        return x * x + x
+    }
+    if (ix0 & 0x7fffffff) | ix1 == 0 {
+        return x
+    }
+    if ix0 >> 31 == 1 {
+        return NaN()
+    }
+    mut m := i64(ix0 >> 20)
+    if m == 0 {
+        for ix0 == 0 {
+            m -= 21
+            ix0 |= ix1 >> 11
+            ix1 = (ix1 & 0x7FF) << 21
+        }
+        mut i u32 = 0
+        for ix0 & 0x00100000 == 0 {
+            ix0 <<= 1
+            i += 1
+        }
+        m -= i64(i) - 1
+        if i > 0 {
+            ix0 |= ix1 >> (32 - i)
+            ix1 = (ix1 & ((u32(1) << (32 - i)) - 1)) << i
+        }
+    }
+    m -= 1023
+    ix0 = (ix0 & 0x000fffff) | 0x00100000
+    if m & 1 == 1 {
+        ix0 = ix0 + ix0 + (ix1 >> 31)
+        ix1 = ix1 +% ix1
+    }
+    m = (m - (m & 1)) / 2
+
+    ix0 = ix0 + ix0 + (ix1 >> 31)
+    ix1 = ix1 +% ix1
+    mut q u32 = 0
+    mut q1 u32 = 0
+    mut s0 u32 = 0
+    mut s1 u32 = 0
+    mut r u32 = 0x00200000
+    for r != 0 {
+        t := s0 + r
+        if t <= ix0 {
+            s0 = t + r
+            ix0 -= t
+            q += r
+        }
+        ix0 = ix0 + ix0 + (ix1 >> 31)
+        ix1 = ix1 +% ix1
+        r >>= 1
+    }
+    r = 0x80000000
+    for r != 0 {
+        t1 := s1 +% r
+        t := s0
+        if t < ix0 || (t == ix0 && t1 <= ix1) {
+            s1 = t1 +% r
+            if t1 & 0x80000000 != 0 && s1 & 0x80000000 == 0 {
+                s0 += 1
+            }
+            ix0 -= t
+            if ix1 < t1 {
+                ix0 -= 1
+            }
+            ix1 = ix1 -% t1
+            q1 +%= r
+        }
+        ix0 = ix0 +% ix0 +% (ix1 >> 31)
+        ix1 = ix1 +% ix1
+        r >>= 1
+    }
+    // Something left over: round to nearest, ties to even.
+    if ix0 | ix1 != 0 {
+        if q1 == 0xffffffff {
+            q1 = 0
+            q += 1
+        } else {
+            q1 += q1 & 1
+        }
+    }
+    high := i64((q >> 1) + 0x3fe00000) + m * 1048576
+    mut low := q1 >> 1
+    if q & 1 == 1 {
+        low |= 0x80000000
+    }
+    return fromBits(u64(high) << 32 | u64(low))
 }

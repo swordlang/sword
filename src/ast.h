@@ -131,7 +131,7 @@ struct Node {
   // long time, made on the io pool so a scheduler thread is not the one held.
   bool is_blocking = false;
   int form = 0;    // return/call/for: which shape the checker settled on
-  // ND_STRUCT_LIT: ends in `else nil`, so every optional field it does not
+  // ND_STRUCT_LIT: ends in `...nil`, so every optional field it does not
   // name starts out empty.
   bool fills_nil = false;
   int reduce_kind = 0;    // which fold a parallel loop combines its pieces with

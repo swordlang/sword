@@ -53,6 +53,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello
+-->
 
 `// expect-error: <message>` instead says the program must not compile, and with
 what error. A change to the standard library gets a test in the package's own

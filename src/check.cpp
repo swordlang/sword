@@ -15,6 +15,17 @@
 
 namespace {
 
+// The interface method a call through an interface lands in, which is where
+// what it may write is written down.
+const Field *called_method(const Node *call) {
+  const Type *owner =
+      call->lhs && call->lhs->lhs ? call->lhs->lhs->type : nullptr;
+  if (owner && owner->kind == TY_PTR) owner = owner->elem;
+  if (!owner || !owner->is_interface || call->ival >= owner->methods.size())
+    return nullptr;
+  return &owner->methods[call->ival];
+}
+
 struct Checker {
   Program &prog;
   Package &pkg;
@@ -34,6 +45,9 @@ struct Checker {
   int loop_depth = 0;
   std::vector<Node *> open_scopes;
   std::vector<int> scope_loop_base;
+  // The loop depth inside each `parallel for` being checked: a `break` at
+  // exactly that depth would stop one piece of the range, not the loop.
+  std::vector<int> parallel_bodies;
 
   // What a scope's tasks reach into, and how. Two accesses to the same memory
   // are a race unless both only read, or they are pieces of one partition.
@@ -640,6 +654,16 @@ struct Checker {
       error(e->pos, "this constant divides by zero");
       return nullptr;
     }
+    if ((e->op == TK_SLASH || e->op == TK_PERCENT) && !floating &&
+        li == INT64_MIN && ri == -1) {
+      error(e->pos, "this constant overflows");
+      return nullptr;
+    }
+    if ((e->op == TK_SHL || e->op == TK_SHR) && (ri < 0 || ri > 63)) {
+      error(e->pos, "this constant shifts by %lld, outside 0..63",
+            (long long)ri);
+      return nullptr;
+    }
 
     if (floating) {
       double result;
@@ -668,7 +692,7 @@ struct Checker {
     case TK_AMP: result = li & ri; break;
     case TK_PIPE: result = li | ri; break;
     case TK_CARET: result = li ^ ri; break;
-    case TK_SHL: result = li << ri; break;
+    case TK_SHL: result = (int64_t)((uint64_t)li << ri); break;
     case TK_SHR: result = li >> ri; break;
     default:
       error(e->pos, "'%s' is not allowed in a constant", tok_name(e->op));
@@ -952,6 +976,63 @@ struct Checker {
     });
   }
 
+  // A binding declared in a parallel body is the body's own, unless it is a
+  // copy of a slice or a pointer from outside: then writing through it writes
+  // what every iteration shares.
+  static Symbol *outside_alias(Symbol *sym, const std::set<Symbol *> &local) {
+    for (Symbol *r : sym->aliases)
+      if (r != sym && !local.count(r)) return r;
+    return nullptr;
+  }
+
+  // Whether a binding reaches any of the memory named by `roots`, which are
+  // canonical bindings.
+  static bool reaches_any(Symbol *sym, const std::vector<Symbol *> &roots) {
+    std::vector<Symbol *> mine;
+    canonical(sym, mine);
+    for (Symbol *r : mine)
+      if (std::find(roots.begin(), roots.end(), r) != roots.end()) return true;
+    return false;
+  }
+
+  // Every place the body writes, and the call it was written through when it
+  // was not an assignment. A write does not have to look like one. `c.Add(1)`
+  // and `bump(&c)` reach the same memory as `c.n += 1`; only the shape is
+  // different. What the callee may write is in its signature, which is the
+  // same thing `mut` on a parameter means everywhere else.
+  void each_write(Node *body,
+                  const std::function<void(Node *, const char *)> &note) {
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN) {
+        note(n->lhs, nullptr);
+        return;
+      }
+      if (n->kind != ND_CALL) return;
+      Type *sig = n->sym ? n->sym->type : nullptr;
+      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
+        sig = n->lhs->type;
+      const Field *dynamic = n->form == CALL_DYNAMIC ? called_method(n)
+                                                     : nullptr;
+      if (dynamic) sig = dynamic->type;
+      if (!sig) return;
+      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
+                                                        : nullptr;
+      size_t skip = 0;
+      if (dynamic && dynamic->writes) note(n->lhs->lhs, how);
+      if (n->form == CALL_METHOD) {
+        skip = 1;
+        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
+            n->lhs->lhs)
+          note(n->lhs->lhs, how);
+      }
+      for (size_t i = 0; i < n->kids.size(); i++) {
+        size_t at = i + skip;
+        if (at < sig->param_mut.size() && sig->param_mut[at])
+          note(n->kids[i], how);
+      }
+    });
+  }
+
   // Iterations run on different workers at the same time, so whatever the
   // body writes has to be reachable by exactly one of them.
   void check_parallel_body(Node *loop) {
@@ -982,7 +1063,17 @@ struct Checker {
     // written through, when it was not written by an assignment.
     auto note_write = [&](Node *place, const char *how) {
       Symbol *root = share_root(place);
-      if (!root || local.count(root) || root == loop->reduce_sym) return;
+      if (!root || root == loop->reduce_sym) return;
+      if (local.count(root)) {
+        Symbol *outer = outside_alias(root, local);
+        if (outer)
+          error(place->pos,
+                "'%s' is a copy of '%s', so every iteration would write '%s'; "
+                "write '%s[%s]' instead",
+                root->name.c_str(), outer->name.c_str(), outer->name.c_str(),
+                outer->name.c_str(), loop->name.c_str());
+        return;
+      }
       Node *base = place;
       while (base && base->kind != ND_IDENT) base = base->lhs;
       if (!base || !covered.count(base)) {
@@ -1005,47 +1096,88 @@ struct Checker {
       written.insert(root);
     };
 
-    walk(loop->body, [&](Node *n) {
-      if (n->kind == ND_ASSIGN) {
-        note_write(n->lhs, nullptr);
-        return;
-      }
-      // A write does not have to look like one. `c.Add(1)` and `bump(&c)`
-      // reach the same memory as `c.n += 1`, and every iteration would do it;
-      // only the shape is different. What the callee may write is in its
-      // signature, which is the same thing `mut` on a parameter means
-      // everywhere else.
-      if (n->kind != ND_CALL) return;
-      Type *sig = n->sym ? n->sym->type : nullptr;
-      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
-        sig = n->lhs->type;
-      if (!sig) return;
-      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
-                                                        : nullptr;
-      size_t skip = 0;
-      if (n->form == CALL_METHOD) {
-        skip = 1;
-        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
-            n->lhs->lhs)
-          note_write(n->lhs->lhs, how);
-      }
-      for (size_t i = 0; i < n->kids.size(); i++) {
-        size_t at = i + skip;
-        if (at < sig->param_mut.size() && sig->param_mut[at])
-          note_write(n->kids[i], how);
-      }
-    });
+    each_write(loop->body, note_write);
 
     // Once a name is written by the loop, every other mention of it has to be
     // indexed too, or one iteration would read what another is writing.
+    std::vector<Symbol *> memory;
+    for (Symbol *w : written) canonical(w, memory);
     walk(loop->body, [&](Node *n) {
-      if (n->kind != ND_IDENT || !n->sym || !written.count(n->sym)) return;
+      if (n->kind != ND_IDENT || !n->sym || n->sym->is_func) return;
       if (covered.count(n)) return;
-      error(n->pos,
-            "'%s' is written by this loop, so it can only be reached as "
-            "'%s[%s]'",
-            n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
+      if (written.count(n->sym)) {
+        error(n->pos,
+              "'%s' is written by this loop, so it can only be reached as "
+              "'%s[%s]'",
+              n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
+        return;
+      }
+      if (local.count(n->sym) && !outside_alias(n->sym, local)) return;
+      if (reaches_any(n->sym, memory))
+        error(n->pos,
+              "'%s' reaches the memory this loop writes, so it can only be "
+              "reached as '%s[%s]'",
+              n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
     });
+  }
+
+  // A parallel loop over a partition gives each turn one piece. The piece is
+  // all of the slice a turn may write, and the slice itself is out of reach:
+  // by its own name it is every other turn's piece too.
+  void check_parallel_pieces(Node *loop) {
+    std::set<Symbol *> local;
+    local.insert(loop->sym);
+    if (loop->index_sym) local.insert(loop->index_sym);
+    walk(loop->body, [&](Node *n) {
+      if (n->sym && (n->kind == ND_VAR || n->kind == ND_CATCH ||
+                     (n->kind == ND_FOR && !n->name.empty()) ||
+                     (n->kind == ND_IF && !n->name.empty())))
+        local.insert(n->sym);
+      if (n->index_sym) local.insert(n->index_sym);
+    });
+
+    Symbol *whole = loop->sym->chunk_of;
+    const char *piece = loop->name.c_str();
+    auto note_write = [&](Node *place, const char *how) {
+      Symbol *root = share_root(place);
+      if (!root || root == whole) return;
+      if (local.count(root)) {
+        Symbol *outer = outside_alias(root, local);
+        if (!outer) return;
+        root = outer;
+      }
+      std::string through = how ? std::string(" through '") + how + "'" : "";
+      error(place->pos,
+            "every turn would write '%s'%s; a 'parallel for' over pieces may "
+            "only write its own piece, '%s'",
+            root->name.c_str(), through.c_str(), piece);
+    };
+
+    // Naming the slice already says what is wrong; what it then makes the
+    // piece seem to reach would only say it again.
+    bool named = false;
+    std::vector<Symbol *> memory;
+    canonical(whole, memory);
+    walk(loop->body, [&](Node *n) {
+      if (n->kind != ND_IDENT || !n->sym || n->sym->is_func) return;
+      if (n->sym == whole) {
+        error(n->pos,
+              "'%s' is cut into pieces by this loop, so a turn reaches it only "
+              "through its own piece, '%s'",
+              n->sym->name.c_str(), piece);
+        named = true;
+        return;
+      }
+      if (local.count(n->sym) && !outside_alias(n->sym, local)) return;
+      if (reaches_any(n->sym, memory)) {
+        error(n->pos,
+              "'%s' reaches the memory of '%s', which this loop cuts into "
+              "pieces; a turn reaches it only through its own piece, '%s'",
+              n->sym->name.c_str(), whole->name.c_str(), piece);
+        named = true;
+      }
+    });
+    if (!named) each_write(loop->body, note_write);
   }
 
   // Everything the parent itself touches inside the block races with the
@@ -1331,6 +1463,27 @@ struct Checker {
         note(value->pos, "%s.%s is %s, but %s wants %s",
              owner->name.c_str(), want.name.c_str(), type_str(got).c_str(),
              iface->name.c_str(), type_str(want.type).c_str());
+        return false;
+      }
+      // A caller holding the interface checks its call against the
+      // interface's signature, so a method that writes where the interface
+      // does not say it may would write memory nobody lent it. Writing less
+      // than the interface allows is fine.
+      if (got->param_mut[0] && !want.writes) {
+        note(value->pos,
+             "%s.%s writes through its receiver, but %s does not say it may;"
+             " declare it 'mut %s' in the interface",
+             shown_name(owner->name).c_str(), want.name.c_str(),
+             shown_name(iface->name).c_str(), want.name.c_str());
+        return false;
+      }
+      for (size_t i = 0; i < want.type->params.size(); i++) {
+        if (!got->param_mut[i + 1] || want.type->param_mut[i]) continue;
+        note(value->pos,
+             "%s.%s writes through parameter %zu, but %s does not say it may;"
+             " mark that parameter 'mut' in the interface",
+             shown_name(owner->name).c_str(), want.name.c_str(), i + 1,
+             shown_name(iface->name).c_str());
         return false;
       }
       entries.push_back(have->name);
@@ -1788,6 +1941,9 @@ struct Checker {
       for (size_t i = 0; i < owner->methods.size(); i++) {
         const Field &m = owner->methods[i];
         if (m.name != field->name) continue;
+        if (m.writes &&
+            !require_mutable(field->lhs, "call a mutating method on"))
+          return nullptr;
         n->form = 2; // dynamic: the function pointer comes from the vtable
         n->ival = i;
         Symbol probe{field->name, m.type, false,      false, false,
@@ -2092,6 +2248,28 @@ struct Checker {
     return n->type = types.named("u64");
   }
 
+  // `sqrt(x)` is the processor's square root, which IEEE 754 requires to be
+  // correctly rounded on every machine. Only std/num may write it: which NaN a
+  // negative argument gives is the machine's choice, and num.Sqrt is where
+  // that is settled before the instruction runs.
+  Type *check_sqrt(Node *n) {
+    if (n->kids.size() != 1) {
+      error(n->pos, "'sqrt' takes one f64");
+      return nullptr;
+    }
+    Type *f64 = types.named("f64");
+    Type *arg = check_expr(n->kids[0]);
+    if (!arg) return nullptr;
+    if (arg->untyped && assignable(arg, f64)) apply_type(n->kids[0], f64);
+    else if (!type_eq(arg, f64)) {
+      error(n->kids[0]->pos, "'sqrt' takes an f64, got %s",
+            type_str(arg).c_str());
+      return nullptr;
+    }
+    n->form = CALL_SQRT;
+    return n->type = f64;
+  }
+
   Type *check_nameof(Node *n) {
     if (n->kids.size() != 1) {
       error(n->pos, "'nameof' takes one enum value");
@@ -2302,6 +2480,8 @@ struct Checker {
     }
     if (n->lhs->name == "nameof" && !lookup("nameof")) return check_nameof(n);
     if (n->lhs->name == "hashof" && !lookup("hashof")) return check_hashof(n);
+    if (n->lhs->name == "sqrt" && !lookup("sqrt") && pkg.is_num)
+      return check_sqrt(n);
     // `close(ch)`, the third of the three things a channel needs a word for.
     if (n->lhs->name == "close" && !lookup("close") && n->kids.size() == 1) {
       Type *what = check_expr(n->kids[0]);
@@ -2482,7 +2662,6 @@ struct Checker {
     }
     apply_type(n->rhs, types.usize_ty);
     settle(n->rhs);
-    n->lhs->type = base;
     return n->type = elem;
   }
 
@@ -2514,7 +2693,6 @@ struct Checker {
       apply_type(bound, types.usize_ty);
       settle(bound);
     }
-    n->lhs->type = base;
     return n->type = base->kind == TY_STRING ? types.string_ty
                                              : types.slice(elem);
   }
@@ -2548,7 +2726,7 @@ struct Checker {
       return nullptr;
     }
 
-    // `else nil`: what the literal leaves out of an optional field it can
+    // `...nil`: what the literal leaves out of an optional field it can
     // reach is written as `name: nil`, and checked as if it had been.
     if (n->fills_nil) {
       std::unordered_set<std::string> named;
@@ -2601,10 +2779,10 @@ struct Checker {
         if (!seen.count(other.name) && !is_optional(other.type))
           optional_only = false;
       if (optional_only && n->kids.empty())
-        note(n->pos, "write '%s{nil}' to leave every field empty",
+        note(n->pos, "write '%s{...nil}' to leave every field empty",
              n->name.c_str());
       else if (optional_only)
-        note(n->pos, "write 'else nil' to leave the optional fields empty");
+        note(n->pos, "write '...nil' to leave the optional fields empty");
       return nullptr;
     }
     return n->type = type;
@@ -2917,7 +3095,10 @@ struct Checker {
       return;
     }
     if (!require_mutable(n->lhs, "assign to")) return;
-    if (n->op == TK_ASSIGN) alias(place_root(n->lhs), n->rhs, false);
+    // Only a value that carries memory makes the place reach it: `xs[0] =
+    // ys[1]` copies a number out of `ys`, not `ys`.
+    if (n->op == TK_ASSIGN && n->rhs->type && shares_memory(n->rhs->type))
+      alias(place_root(n->lhs), n->rhs, false);
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
                    n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
@@ -2948,7 +3129,7 @@ struct Checker {
   // How a call reaches its target, kept in `form`.
   enum CallForm {
     CALL_DIRECT, CALL_METHOD, CALL_DYNAMIC, CALL_ATOMIC, CALL_INDIRECT,
-    CALL_SHARED, CALL_HASH
+    CALL_SHARED, CALL_HASH, CALL_SQRT
   };
 
   // Whether a place lives in this function's frame. The walk stops at the first
@@ -3600,14 +3781,36 @@ struct Checker {
           pop_scope();
           return;
         }
+        if (n->is_parallel && n->form != FOR_PARTITION) {
+          error(n->pos, "'parallel for' needs a range or a partition, as in "
+                        "'for i in 0..xs.len' or 'for off, part in "
+                        "xs.chunks(n)'");
+          pop_scope();
+          return;
+        }
+        if (n->is_parallel) {
+          open_scopes.push_back(n);
+          scope_loop_base.push_back(loop_depth);
+          scope_lock_base.push_back(held_locks.size());
+        }
         loop_depth++;
+        if (n->is_parallel) parallel_bodies.push_back(loop_depth);
         check_stmt(n->body);
+        if (n->is_parallel) parallel_bodies.pop_back();
         loop_depth--;
+        if (n->is_parallel) {
+          check_parallel_pieces(n);
+          scope_lock_base.pop_back();
+          scope_loop_base.pop_back();
+          open_scopes.pop_back();
+        }
         pop_scope();
         break;
       }
       if (n->is_parallel && !n->is_range) {
-        error(n->pos, "'parallel for' needs a range, as in 'for i in 0..n'");
+        error(n->pos, "'parallel for' needs a range or a partition, as in "
+                      "'for i in 0..xs.len' or 'for off, part in "
+                      "xs.chunks(n)'");
         pop_scope();
         return;
       }
@@ -3646,7 +3849,9 @@ struct Checker {
         }
       }
       loop_depth++;
+      if (n->is_parallel) parallel_bodies.push_back(loop_depth);
       check_stmt(n->body);
+      if (n->is_parallel) parallel_bodies.pop_back();
       loop_depth--;
       if (n->is_parallel) {
         check_parallel_body(n);
@@ -3662,6 +3867,10 @@ struct Checker {
       if (loop_depth == 0) {
         error(n->pos, "'%s' outside of a loop",
               n->kind == ND_BREAK ? "break" : "continue");
+      } else if (n->kind == ND_BREAK && !parallel_bodies.empty() &&
+                 loop_depth == parallel_bodies.back()) {
+        error(n->pos, "a 'parallel for' has no order to break out of; "
+                      "'continue' skips one index");
       } else if (!scope_loop_base.empty() &&
                  loop_depth <= scope_loop_base.back()) {
         leaving_scope(n, n->kind == ND_BREAK ? "break" : "continue");
@@ -3971,13 +4180,15 @@ struct Checker {
           return false;
         }
         std::vector<Type *> params;
+        std::vector<bool> param_mut;
         for (Node *p : m->kids) {
           p->type = resolve(p->type_expr);
           params.push_back(p->type);
+          param_mut.push_back(p->is_mut);
         }
         Type *ret = m->type_expr ? resolve(m->type_expr) : types.void_ty;
         decl->type->methods.push_back(
-            Field{m->name, types.func(params, ret), 0, 0});
+            Field{m->name, types.func(params, ret, param_mut), 0, 0, m->is_mut});
       }
     }
 
@@ -4826,7 +5037,11 @@ struct Copies {
     case TY_ARRAY: case TY_OPT:
       return shares(t->elem, depth + 1);
     case TY_STRUCT:
-      if (t->is_interface) return true;
+      // An interface is reached only through its methods, so a copy of one
+      // with no `mut` method can write nothing, whatever it points at.
+      if (t->is_interface)
+        return std::any_of(t->methods.begin(), t->methods.end(),
+                           [](const Field &m) { return m.writes; });
       for (const Field &f : t->fields)
         if (shares(f.type, depth + 1)) return true;
       return false;
@@ -5011,10 +5226,13 @@ struct Copies {
         skip = 1;
       }
     } else if (n->form == 2) { // through an interface
-      Type *owner = n->lhs && n->lhs->lhs ? n->lhs->lhs->type : nullptr;
-      if (owner && owner->kind == TY_PTR) owner = owner->elem;
-      if (!owner || n->ival >= owner->methods.size()) return nullptr;
-      sig = owner->methods[n->ival].type;
+      const Field *method = called_method(n);
+      if (!method) return nullptr;
+      sig = method->type;
+      // The interface value is a copy; what it points at is not, and a `mut`
+      // method writes there.
+      Node *recv = n->lhs->lhs;
+      args.push_back({recv, false, 0, method->writes, recv->type});
     } else if (n->form == 4) { // through a function value
       sig = n->lhs ? n->lhs->type : nullptr;
     }
@@ -5124,8 +5342,8 @@ struct Copies {
       Node *place = arg.e->kind == ND_UNARY && arg.e->op == TK_AMP
                         ? arg.e->lhs
                         : arg.e;
-      const char *what =
-          arg.receiver_value ? "call a mutating method on" : "pass";
+      bool receiver = arg.receiver_value || (n->form == 2 && arg.e == n->lhs->lhs);
+      const char *what = receiver ? "call a mutating method on" : "pass";
       Reach r;
       if (!reach(place, r)) continue;
       bool pointer = arg.type && arg.type->kind == TY_PTR;

@@ -1,0 +1,12 @@
+// expect: 134
+// The bounds check holds through a pointer to an array as well.
+func at(a *[4]i64, i int) i64 {
+    return a[i]
+}
+
+func main() int {
+    xs := [4]i64{}
+    mut i := 3
+    i += 1
+    return int(at(&xs, i))
+}

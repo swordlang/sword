@@ -35,6 +35,7 @@ func main() !int {
     return int(rows[0] + rows[63])
 }
 ```
+<!-- exits: 6 -->
 
 `spawn` only exists inside `scope`, and the closing brace of the `scope` is the
 join — it waits for every task it started. There is no handle to keep, nothing
@@ -386,6 +387,74 @@ parallel for i in 0..n {
 That is the neighbour bug, and it is the kind of thing that shows up in
 production as a heisenbug three months later.
 
+There is no `break` either. The iterations have no order, so there is no point
+after which the rest would be skipped; `continue` skips the one index it is in.
+
+### Over the pieces of a partition
+
+A grid stored by rows is written a row at a time, and `xs[i]` cannot say that:
+the turn that owns row `r` writes `w` elements, none of them at its own index.
+A `parallel for` over a partition gives each turn its piece instead:
+
+```sword
+import "std/io"
+
+// One step of heat spreading on a grid of w columns: each cell becomes the
+// mean of its four neighbours, and the border stays where it is.
+func step(w u64, a []f64, mut b []f64) {
+    parallel for off, row in b.chunks(w) {
+        if off == 0 || off + w >= a.len {
+            for j in 0..row.len {
+                row[j] = a[off + j]
+            }
+            continue
+        }
+        up := a[off - w..off]
+        mid := a[off..off + w]
+        down := a[off + w..off + 2 * w]
+        row[0] = mid[0]
+        row[w - 1] = mid[w - 1]
+        for j in 1..w - 1 {
+            row[j] = (up[j] + down[j] + mid[j - 1] + mid[j + 1]) * 0.25
+        }
+    }
+}
+
+func main() !void {
+    mut a := [64]f64{}
+    mut b := [64]f64{}
+    for j in 0..8 {
+        a[j] = 100.0
+    }
+    for k in 0..10 {
+        step(8, a[..], b[..])
+        step(8, b[..], a[..])
+    }
+    try io.Printf("{} {}\n", a[9], a[27])
+}
+```
+<!-- prints:
+46.75421719766746 26.123753395404492
+-->
+
+Each turn writes `row`, and only `row`. The rows above and below come from
+`a`, which the loop only reads, so a turn reads its neighbours' cells without
+racing anyone. `b` itself is out of reach in the body: by its own name it is
+every other turn's row too, and the compiler says so.
+
+```sword
+parallel for off, row in b.chunks(w) {
+    row[0] = b[off + w]     // error: 'b' is cut into pieces by this loop, so a turn reaches it only through its own piece, 'row'
+}
+```
+
+The pieces are the ones the sequential `chunks` loop gives, at the same
+offsets, the last one short, and there is no `reduce`: each turn answers in its
+own piece. Slicing the three rows once per turn, as above, is what lets the
+compiler drop the checks in the inner loop: every index there is checked only
+on its first and last turns, which `shield checks` shows. Written as
+`a[off + w + j]` they stay on every turn.
+
 ### Reductions
 
 Accumulating into one variable is the exception that needs help:
@@ -413,6 +482,14 @@ it.
 The body does the per-element combining; the clause only says how the pieces'
 copies are joined. `+`, `&`, `|`, `min` and `max` are available, and `+` also
 applies to floats.
+
+A float sum is the one place where the order of the additions changes the
+answer, so the language fixes it: each piece adds into sixteen separate sums
+and folds them at the end, in an order the
+[reference](reference.md#reductions) spells out. That is the order a vector
+unit wants, which is why the same loop runs four to eleven times faster on one
+core than adding one element after another (Apple M4, f64 and f32), and it is
+the same order on any machine and any number of threads.
 
 ### A reduction of your own
 
@@ -496,9 +573,12 @@ anything pulls in nothing else, and starts no thread of its own.
 
 Each worker has its own deque. The owner pushes and pops at one end, thieves
 take from the other, and the victim rotates so workers do not all converge on
-the same target. `parallel for` cuts the range into several chunks per worker —
-enough slack for stealing to even out an uneven body, without paying task
-overhead per iteration.
+the same target. `parallel for` cuts the range into 64 pieces whatever the
+pool, which is what keeps a floating-point reduction's bits the same on any
+number of threads. The task that reached the loop and one helper for every
+other worker take the next piece from a shared counter until none is left: an
+uneven body evens out, and a short loop pays for few wake-ups. On one worker
+the loop runs in the task that reached it.
 
 A thread waiting on a scope does not idle. It runs whatever work it can find
 until the count reaches zero, which is what makes nested scopes safe from
@@ -753,6 +833,7 @@ func main() !int {
     }
 }
 ```
+<!-- exits: 2 -->
 
 Six tasks writing one map, and it compiles. The exemption the race checker makes
 is the same one it makes for an atomic, and it rests on the same thing: **there
@@ -906,6 +987,7 @@ func fill(jobs chan[u64]) !void {
     close(jobs)
 }
 ```
+<!-- exits: 50 -->
 
 Four consumers on one channel, and every value reaches exactly one of them.
 `for job := <-jobs` runs while there is something there — closing the channel is

@@ -54,6 +54,19 @@ total := first +
 The end of the file counts as a newline. In the grammar, `";"` stands for
 either.
 
+`else` is the one place a `;` does not end anything. No statement starts with
+`else`, so when one follows the `}` of an `if` on the next line, it continues
+that `if`:
+
+```sword
+if ready {
+    start()
+}
+else {
+    wait()
+}
+```
+
 ### Identifiers and keywords
 
 ```
@@ -170,7 +183,7 @@ StructDecl  = [ "extern" ] "struct" identifier [ TypeParams ]
 FieldGroup  = identifier { "," identifier } Type .
 
 InterfaceDecl = "interface" identifier "{" { ";" } { MethodSpec { ";" } } "}" .
-MethodSpec  = identifier Params [ Type ] .
+MethodSpec  = [ "mut" ] identifier Params [ Type ] .
 
 EnumDecl    = "enum" identifier [ Type ] "{" { ";" } { EnumMember [ "," ] { ";" } } "}" .
 EnumMember  = identifier [ "=" Expr ] .
@@ -185,6 +198,10 @@ parameters in C's own bare `...`, and may name the library it comes from in
 quotes. `weak` makes it a value that may be missing at run time. `blocking`
 sends each call to the io pool, putting the task down rather than the thread,
 and leaves the function callable only by name. `det` is a claim the checker verifies, not a hint.
+
+An interface method has no receiver to write `mut` on, so `mut` goes ahead of
+its name instead: it says the method writes through the value it is called on,
+the way `(mut c *T)` does for a method of a struct.
 
 `type Name = T` is another name for `T`, the same type in every respect: values
 pass between the two without a conversion. An alias takes no type parameters,
@@ -242,7 +259,7 @@ AssignOp    = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
             | "&=" | "|=" | "^=" | "<<=" | ">>=" .
 
 IfStmt      = "if" ( [ [ "mut" ] identifier ":=" ] Expr Block | LockStmt )
-              [ "else" ( IfStmt | Block ) ] .
+              [ [ ";" ] "else" ( IfStmt | Block ) ] .
 
 ForStmt     = "for" [ "mut" ] identifier ":=" Expr Block
             | "for" [ ForHead ] [ Reduction ] Block .
@@ -267,8 +284,8 @@ A `return` takes an expression unless the statement ends where the word does.
 `for` has four shapes: forever (`for { }`), while a condition holds
 (`for ok { }`), over a range or a partition (`for i in 0..n { }`,
 `for off, part in xs.chunks(n) { }`), and while an optional holds a value
-(`for job := queue.Next() { }`). `parallel for` is the same loop with its
-iterations spread over the scheduler, and `reduce` names what each piece
+(`for job := queue.Next() { }`). `parallel for` is the loop over a range or a
+partition with its turns spread over the scheduler, and `reduce`, over a range, names what each piece
 accumulates on its own — `reduce(+: total)`, `reduce(min: best)`,
 `reduce(num.Merge: acc)`; `operator` there is any operator token. There is no
 fallthrough between cases, so a case's statements end where the next `case`
@@ -311,18 +328,16 @@ Primary     = int_lit | float_lit | string_lit | "true" | "false" | "nil"
             | "(" Expr ")" .
 
 StructLit   = ( identifier [ TypeArgs ] | identifier "." identifier )
-              "{" { ";" } [ "nil" [ "," ] { ";" } | FieldInits ] "}" .
-FieldInits  = FieldInit [ "," ] { ";" } { FieldInit [ "," ] { ";" } }
-              [ "else" "nil" [ "," ] { ";" } ] .
+              "{" { ";" } { FieldInit [ "," ] { ";" } }
+              [ "..." "nil" [ "," ] { ";" } ] "}" .
 FieldInit   = identifier ":" Expr .
 ArrayLit    = ( ArrayType | FuncType ) "{" { ";" } { Expr [ "," ] { ";" } } "}" .
 Conversion  = ( ArrayType | [ "extern" ] FuncType ) "(" Expr ")" .
 ArrayType   = "[" [ "*" | ArrayLength ] "]" Type .
 ```
 
-`else nil` comes last in a struct literal, after the fields it names: every
-optional field it leaves out starts as `nil`. A literal that names no field
-writes `nil` alone, `T{nil}`.
+`...nil` comes last in a struct literal, after the fields it names or alone:
+every optional field it leaves out starts as `nil`.
 
 Every binary operator is left-associative, at the five levels Go has, loosest
 first:

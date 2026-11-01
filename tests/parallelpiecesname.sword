@@ -1,0 +1,11 @@
+// expect-error: 'xs' is cut into pieces by this loop, so a turn reaches it only through its own piece, 'part'
+// By its own name the slice is every other turn's piece too, so reading it
+// races with them as much as writing it would.
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    parallel for off, part in xs.chunks(2) {
+        part[0] = xs[off + 2]
+    }
+}

@@ -9,10 +9,11 @@ package num
 // from one release of the library to the next. And a det function cannot call
 // them at all, since they are outside the language.
 //
-// These are written with nothing but IEEE addition, subtraction, multiplication
-// and division, which every machine rounds the same way, and the compiler never
-// fuses a multiply into an add behind them. So the bits are the same everywhere,
-// and each function is within one unit in the last place of the true value.
+// These are written with nothing but IEEE addition, subtraction, multiplication,
+// division and square root, which every machine rounds the same way, and the
+// compiler never fuses a multiply into an add behind them. So the bits are the
+// same everywhere, and each function is within one unit in the last place of the
+// true value.
 //
 // The polynomial kernels and the structure of Exp and Log are fdlibm's. The
 // reduction of large arguments for Sin and Cos is exact integer arithmetic on the
@@ -72,99 +73,19 @@ func IsNaN(v f64) bool {
 
 // --- sqrt --------------------------------------------------------------------
 
-// fdlibm's bit-by-bit square root, which is exact before rounding and rounds
-// once, to nearest: the answer is the double closest to the true root.
+// The processor's square root. IEEE 754 requires it to be correctly rounded,
+// so every machine gives the same double for the same argument; what it leaves
+// to the machine is which NaN a negative argument gives, and x86-64 sets the
+// sign bit where arm64 does not, so that case is answered here. The NaN goes
+// in rather than coming out: both machines give back a NaN they are handed,
+// bit for bit, while a choice made after the instruction is folded away by
+// the code generator, for which one NaN is as good as another.
 det func Sqrt(x f64) f64 {
-    mut ix0 := highOf(x)
-    mut ix1 := lowOf(x)
-    if ix0 & 0x7ff00000 == 0x7ff00000 {
-        return x * x + x
+    mut v := x
+    if x < 0.0 {
+        v = NaN()
     }
-    if (ix0 & 0x7fffffff) | ix1 == 0 {
-        return x
-    }
-    if ix0 >> 31 == 1 {
-        return NaN()
-    }
-    mut m := i64(ix0 >> 20)
-    if m == 0 {
-        for ix0 == 0 {
-            m -= 21
-            ix0 |= ix1 >> 11
-            ix1 = (ix1 & 0x7FF) << 21
-        }
-        mut i u32 = 0
-        for ix0 & 0x00100000 == 0 {
-            ix0 <<= 1
-            i += 1
-        }
-        m -= i64(i) - 1
-        if i > 0 {
-            ix0 |= ix1 >> (32 - i)
-            ix1 = (ix1 & ((u32(1) << (32 - i)) - 1)) << i
-        }
-    }
-    m -= 1023
-    ix0 = (ix0 & 0x000fffff) | 0x00100000
-    if m & 1 == 1 {
-        ix0 = ix0 + ix0 + (ix1 >> 31)
-        ix1 = ix1 +% ix1
-    }
-    m = (m - (m & 1)) / 2
-
-    ix0 = ix0 + ix0 + (ix1 >> 31)
-    ix1 = ix1 +% ix1
-    mut q u32 = 0
-    mut q1 u32 = 0
-    mut s0 u32 = 0
-    mut s1 u32 = 0
-    mut r u32 = 0x00200000
-    for r != 0 {
-        t := s0 + r
-        if t <= ix0 {
-            s0 = t + r
-            ix0 -= t
-            q += r
-        }
-        ix0 = ix0 + ix0 + (ix1 >> 31)
-        ix1 = ix1 +% ix1
-        r >>= 1
-    }
-    r = 0x80000000
-    for r != 0 {
-        t1 := s1 +% r
-        t := s0
-        if t < ix0 || (t == ix0 && t1 <= ix1) {
-            s1 = t1 +% r
-            if t1 & 0x80000000 != 0 && s1 & 0x80000000 == 0 {
-                s0 += 1
-            }
-            ix0 -= t
-            if ix1 < t1 {
-                ix0 -= 1
-            }
-            ix1 = ix1 -% t1
-            q1 +%= r
-        }
-        ix0 = ix0 +% ix0 +% (ix1 >> 31)
-        ix1 = ix1 +% ix1
-        r >>= 1
-    }
-    // Something left over: round to nearest, ties to even.
-    if ix0 | ix1 != 0 {
-        if q1 == 0xffffffff {
-            q1 = 0
-            q += 1
-        } else {
-            q1 += q1 & 1
-        }
-    }
-    high := i64((q >> 1) + 0x3fe00000) + m * 1048576
-    mut low := q1 >> 1
-    if q & 1 == 1 {
-        low |= 0x80000000
-    }
-    return fromBits(u64(high) << 32 | u64(low))
+    return sqrt(v)
 }
 
 // --- exp ---------------------------------------------------------------------
@@ -585,6 +506,12 @@ det func Sin(x f64) f64 {
         return sinKernel(x, 0.0, false)
     }
     if ix >= 0x7ff00000 {
+        // An infinity has no sine or cosine, and Inf - Inf would answer with
+        // the processor's own NaN, which is not the same one on every machine.
+        // A NaN comes back as itself.
+        if ix == 0x7ff00000 && lowOf(x) == 0 {
+            return NaN()
+        }
         return x - x
     }
     r := quadrant(x)
@@ -606,6 +533,9 @@ det func Cos(x f64) f64 {
         return cosKernel(x, 0.0)
     }
     if ix >= 0x7ff00000 {
+        if ix == 0x7ff00000 && lowOf(x) == 0 {
+            return NaN()
+        }
         return x - x
     }
     r := quadrant(x)

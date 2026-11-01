@@ -287,7 +287,7 @@ SYNTAX_ERRORS = [
     r"a type alias is written", r"a type alias takes no type parameters",
     r"a field takes no 'mut'", r"a field cannot gather",
     r"runs a statement on the way out", r"a function type lists types",
-    r"with no field named, write",
+    r"'else nil' is written", r"'nil' alone is written",
 ]
 
 

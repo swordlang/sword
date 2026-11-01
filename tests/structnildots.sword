@@ -1,0 +1,12 @@
+// expect-error: expected 'nil' after '...' in a struct literal
+// Only nil fills the fields a literal leaves out.
+
+struct Mixed {
+    name string
+    banana ?[]u8
+}
+
+func main() int {
+    m := Mixed{name: "x", ...}
+    return 0
+}

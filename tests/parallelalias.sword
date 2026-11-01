@@ -1,0 +1,12 @@
+// expect-error: 'ys' reaches the memory this loop writes, so it can only be reached as 'ys[i]'
+// Two names for one memory: iteration i writes xs[i] while iteration i + 1
+// reads the same element as ys[i + 1].
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    ys := backing[..]
+    parallel for i in 0..7 {
+        xs[i] = ys[i + 1]
+    }
+}

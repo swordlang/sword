@@ -84,6 +84,7 @@ struct Name { field T ... }
 struct Name[T] { field T ... }     // generic; a type only once instantiated
 extern struct Name { ... }         // declared field order, for C
 interface Name { Method(a T) R ... }
+interface Name { mut Method(a T) R }  // the method writes through its receiver
 enum Name T { A; B = 3; C }        // T is the width, default int
 error Name = "what went wrong"     // declared, with the sentence it says
 error Name                         // declared, saying nothing
@@ -96,6 +97,14 @@ import "path/to/package"
 
 `mut` on a parameter or receiver means the callee may write through it. Only a
 mutable binding can be passed to one, and `&x` only when `x` is one.
+
+An interface method has no receiver to mark, so `mut` goes ahead of its name:
+`mut Bump()` writes through whatever the interface value points at, and only a
+mutable interface value can call it. A call through an interface is checked
+against the interface's signature, since that is all the caller sees, so a
+method satisfies it only if it writes nothing the interface does not allow: a
+`mut` receiver needs `mut` on the interface method, and a `mut` parameter needs
+`mut` on the same parameter there. A method that writes less is fine.
 
 A copy of a slice or a pointer reaches the same memory as the original, so a
 `mut` binding made from one lent read-only can be reassigned, and its own fields
@@ -113,7 +122,8 @@ A struct holding a read-only slice is the same: `p.at += 1` is the struct's own
 field, `p.input[0] = 1` goes through the copy. Whether a method or a function
 writes through what it is given is worked out from its body, so `p.Step()` is
 allowed when Step only moves `p.at`. A call through an interface or a function
-value is taken to write whatever it may. A value with a read-only part cannot be
+value is taken to write whatever its signature allows. Nothing can write through
+an interface with no `mut` method, so a copy of one lends nothing read-only. A value with a read-only part cannot be
 stored behind a pointer, and what a function hands back of its arguments keeps
 the right it was given. The check does not follow order within a function: a
 binding that is ever given read-only memory cannot be written through anywhere.
@@ -169,7 +179,7 @@ here does.
 ## Statements
 
 ```sword
-if cond { } else if cond { } else { }
+if cond { } else if cond { } else { }   // `else` may also start the next line
 if x := optional { } else { }
 if mut x := optional { }          // a copy that can be written
 
@@ -184,8 +194,9 @@ for x := optional { }              // while it holds something; `for mut x` too
 
 switch subject { case a, b: ... default: ... }
 
-parallel for i in a..b { }
+parallel for i in a..b { }         // no break; continue skips one index
 parallel for i in a..b reduce(+: acc) { }
+parallel for off, part in xs.chunks(n) { }   // a turn writes only its piece
 
 scope { spawn f(args) ... }
 lock name := shared_value { }
@@ -227,6 +238,15 @@ wrapping forms below.
 
 `+%` `-%` `*%` and `+%=` `-%=` `*%=` wrap on overflow and are never checked, in
 any build mode.
+
+`x << n` and `x >> n` with `n` at least the width of `x`'s type, or negative,
+panic in a mode with checks. In `fast` and `small` the count is taken modulo the
+width, so `x << 70` on a `u64` is `x << 6`: what the processor does anyway, at no
+cost. A constant shifted outside `0..63` does not compile.
+
+Dividing by zero, with `/` or `%`, panics in every mode, and so does dividing
+the most negative value of a signed type by `-1`, whose answer does not fit. No
+other result would be right, and next to a division the check costs little.
 
 `[*]T` supports `p + n` and `p - n`. `*T` and `[]T` do not.
 
@@ -722,6 +742,15 @@ adding in a different order is a different number: the same program answers the
 same bits on one thread and on sixteen. How many tasks run those pieces is
 still up to the scheduler — it is the cut that is fixed, not the schedule.
 
+A float `+` fixes the order inside each piece as well, as one a vector unit can
+follow. The piece keeps sixteen sums, all starting at zero, and its k-th
+element, counting from the start of the piece, is added into sum `k % 16`;
+within the body, the accumulator is the sum the current element goes into. At
+the end the sums are folded by halves — sum `j` adds sum `j + 8` for each `j`
+below 8, then `j + 4`, `j + 2` and `j + 1` — and sum 0 is the piece's answer.
+Sixteen is the language's number, not the machine's: a wider or a narrower
+vector unit gives the same bits.
+
 It is not the same number a sequential loop would reach, since the pieces are
 summed separately before being combined. Reproducible, not sequential.
 
@@ -778,14 +807,14 @@ optional orelse fallback
 optional orelse return error.Name
 optional == nil                // present or not
 optional != nil
-T{name: value, else nil}       // every optional field not named is nil
-T{nil}                         // no field named: every field is nil
+T{name: value, ...nil}         // every optional field not named is nil
+T{...nil}                      // no field named: every field is nil
 ```
 
-A struct literal names every field. `else nil`, last in the literal, gives
+A struct literal names every field. `...nil`, last in the literal, gives
 every optional field it leaves out the value `nil`; a field of any other type
-still has to be named. A literal that names no field writes `T{nil}`, which
-compiles only when every field of `T` is optional.
+still has to be named. Alone, `T{...nil}` compiles only when every field of `T`
+is optional.
 
 Comparing against `nil` is the only comparison an optional has: two of them
 would mean comparing payloads, and an absent one has none.
@@ -865,8 +894,8 @@ func (mut w *Writer) Flush() !void
 
 ```sword
 interface Allocator {
-    Alloc(n u64, align u64) ?[*]u8
-    Release(mut p [*]u8, n u64)
+    mut Alloc(n u64, align u64) ?[*]u8
+    mut Release(mut p [*]u8, n u64)
 }
 
 func Align(offset u64, align u64) u64
@@ -1080,8 +1109,8 @@ code serves a growable buffer, a socket, or a block of stack.
 
 ```sword
 interface Sink {
-    WriteByte(c u8) !void
-    Write(p []u8) !void
+    mut WriteByte(c u8) !void
+    mut Write(p []u8) !void
 }
 
 func Format(mut out Sink, format string, args []any) !void
@@ -1129,7 +1158,7 @@ rather than by pointer, so the whole tree is a single allocation.
 func Parse(input []u8, mut a mem.Allocator) !Document
 
 func (d *Document) Root() u64
-func (d *Document) Kind(at u64) u8         // Null Bool Number Str Array Object
+func (d *Document) Kind(at u64) Kind       // Null Bool Number Str Array Object
 func (d *Document) Text(at u64) string
 func (d *Document) Number(at u64) f64
 func (d *Document) Truth(at u64) bool
@@ -1322,8 +1351,10 @@ func (s Exact) Value() f64               // correctly rounded
 ```
 
 The elementary functions give the same bits on every machine: they use only
-IEEE `+ - * /`, which every processor rounds alike, and the compiler never fuses
-a multiply into an add. Each is within one unit in the last place of the true
+IEEE `+ - * /` and square root, which every processor rounds alike, and the
+compiler never fuses a multiply into an add. `Sqrt` is the processor's
+instruction, and the square root of a negative number is `NaN()` everywhere,
+which the instruction alone does not promise. Each is within one unit in the last place of the true
 value, and `Sqrt` is correctly rounded. They are det, which the C library's are
 not — a det function cannot call out of the language.
 
@@ -1916,6 +1947,10 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+hello -> HELLO
+again -> AGAIN
+-->
 
 ### `std/tls`
 
@@ -2220,6 +2255,35 @@ simulator does not simulate yet. See [Simulation](testing.md#simulation).
 | `safe` | yes | full |
 | `fast` | no | full |
 | `small` | no | for size |
+
+Shift checks go with bounds and overflow checks. A division is checked in every
+mode.
+
+`shield checks` lists the bounds checks a program still pays for, one line
+each in the form of a compiler diagnostic, so an editor can go to it:
+
+```
+$ shield checks nbody.sword
+nbody.sword:105:21: py[j]: tested once before the loop at line 103
+nbody.sword:114:11: ay[i]: checked on every turn
+```
+
+An index is proven in range, and never checked, when `for i in a..xs.len`
+walks the slice it indexes and nothing can change that slice: it is immutable,
+or the loop is a `parallel for`, whose body may write `xs[i]` but never `xs`.
+A piece of `xs.chunks(n)` counts as a slice nothing can change, `mut` or not,
+when its turn neither assigns it nor takes its address: it is made for that
+turn, so only its elements can be written.
+An index is tested once before the loop when the slice is immutable and the
+index is the loop's own or a name no turn changes. The loop then runs without
+the check when the test passes and as written when it fails, so a panic comes
+on the same turn and line either way. An index that is the loop's own plus or
+minus a constant or such a name, `a[k - 1]` or `a[k + w]`, in a loop with no
+`break`, is checked only on the first and last turns: the turns where every
+index is in range run in the middle without checks, and the ones before and
+after run as written, in the same order. Neither of these applies to a body
+with a loop, a `scope` or a `spawn` inside. `-all` lists the proven ones too. Only the
+program's own package is listed, in the mode given, `safe` by default.
 
 ## Environment
 

@@ -246,32 +246,29 @@ struct Parser {
     int saved = no_struct_lit;
     no_struct_lit = 0;
     skip_terms();
-    // `T{nil}` names no field and leaves every optional one empty.
-    if (match(TK_NIL)) {
-      no_struct_lit = saved;
-      n->fills_nil = true;
-      match(TK_COMMA);
-      skip_terms();
-      return expect(TK_RBRACE, "after 'nil', which ends a struct literal")
-                 ? n
-                 : nullptr;
-    }
     while (kind() != TK_RBRACE && kind() != TK_EOF) {
-      // `else nil` leaves every optional field not named empty; it comes
-      // last, after the fields the literal does name.
-      if (match(TK_ELSE)) {
+      // `...nil` leaves every optional field not named empty; it comes last,
+      // after the fields the literal does name, or alone.
+      if (match(TK_ELLIPSIS)) {
         no_struct_lit = saved;
-        if (n->kids.empty()) {
-          fail("with no field named, write '%s{nil}'", n->name.c_str());
-          return nullptr;
-        }
-        if (!expect(TK_NIL, "after 'else' in a struct literal")) return nullptr;
+        if (!expect(TK_NIL, "after '...' in a struct literal")) return nullptr;
         n->fills_nil = true;
         match(TK_COMMA);
         skip_terms();
-        return expect(TK_RBRACE, "after 'else nil', which ends a struct literal")
+        return expect(TK_RBRACE, "after '...nil', which ends a struct literal")
                    ? n
                    : nullptr;
+      }
+      // The spellings 0.3.2 had.
+      if (kind() == TK_ELSE && peek(1).kind == TK_NIL) {
+        fail("'else nil' is written '...nil'");
+        no_struct_lit = saved;
+        return nullptr;
+      }
+      if (kind() == TK_NIL && n->kids.empty()) {
+        fail("'nil' alone is written '%s{...nil}'", n->name.c_str());
+        no_struct_lit = saved;
+        return nullptr;
       }
       Node *init = make(ND_FIELD_INIT, peek().pos);
       if (kind() != TK_IDENT) {
@@ -751,7 +748,7 @@ struct Parser {
       if (!n) return nullptr;
       n->pos = at;
       n->is_try = true;
-      if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+      if (match_else()) n->els = kind() == TK_IF ? if_stmt() : block();
       return n;
     }
     Node *n = make(ND_IF, advance().pos);
@@ -767,8 +764,16 @@ struct Parser {
     n->cond = header_expr();
     if (!n->cond) return nullptr;
     n->body = block();
-    if (match(TK_ELSE)) n->els = kind() == TK_IF ? if_stmt() : block();
+    if (match_else()) n->els = kind() == TK_IF ? if_stmt() : block();
     return n;
+  }
+
+  // `}` at the end of a line ends a statement, so an `else` on the next line
+  // finds the `if` already closed. No statement starts with `else`, so that
+  // newline cannot have meant anything but this.
+  bool match_else() {
+    if (kind() == TK_TERM && kind(1) == TK_ELSE) advance();
+    return match(TK_ELSE);
   }
 
   // `for {}`, `for cond {}` and `for i in a..b {}` all land here.
@@ -1189,7 +1194,8 @@ struct Parser {
   }
 
   // An interface body is a list of signatures: a name, parameters, and an
-  // optional result. No receiver, no body.
+  // optional result. No receiver and no body, but `mut` ahead of the name says
+  // the method writes through the value it is called on.
   Node *interface_decl() {
     Node *n = make(ND_INTERFACE_DECL, advance().pos);
     if (kind() != TK_IDENT) {
@@ -1203,6 +1209,7 @@ struct Parser {
     skip_terms();
     while (kind() != TK_RBRACE && kind() != TK_EOF) {
       Node *m = make(ND_FUNC, peek().pos);
+      m->is_mut = match(TK_MUT);
       if (kind() != TK_IDENT) {
         fail("expected a method name");
         return nullptr;

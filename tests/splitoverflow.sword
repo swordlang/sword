@@ -1,0 +1,18 @@
+// expect: 134
+// expect-panic: panic: integer overflow at line 10
+// In the unchecked middle, an accumulation still settles its overflow, and
+// the panic still names its line.
+
+func total(xs []u8) u8 {
+    mut acc u8 = 0
+    for k in 1..xs.len {
+        v := xs[k - 1]
+        acc += v
+    }
+    return acc
+}
+
+func main() int {
+    a := [6]u8{100, 100, 100, 1, 1, 1}
+    return int(total(a[..]))
+}

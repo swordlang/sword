@@ -1,0 +1,14 @@
+// expect-error: 'r' reaches the memory of 'xs', which this loop cuts into pieces
+// A copy, made in the body, of another name for the slice being cut reaches
+// every turn's piece as much as the slice's own name does.
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    mut ys := backing[..]
+    parallel for off, part in xs.chunks(2) {
+        part[0] = off
+        r := ys
+        part[1] = r[(off + 2) % 8]
+    }
+}

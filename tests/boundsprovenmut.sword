@@ -1,0 +1,32 @@
+// expect: 112
+// A `parallel for` over a mutable slice may only write `out[i]`, never `out`
+// itself, so `out[i]` is in range and compiles without a check. The answer must
+// not change.
+
+func fill(mut out []u64) {
+    parallel for i in 0..out.len {
+        out[i] = i
+    }
+}
+
+func double(mut out []u64) {
+    parallel for i in 1..out.len {
+        out[i] = out[i] * 2
+    }
+}
+
+func main() int {
+    mut data := [8]u64{}
+    mut out := data[..]
+    fill(out)
+    double(out)
+    mut total u64 = 0
+    for x in out {
+        total += x
+    }
+    // 2 * (1 + ... + 7) = 56, twice over by the loop below
+    parallel for i in 0..out.len reduce(+: total) {
+        total += out[i]
+    }
+    return int(total)
+}

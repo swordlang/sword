@@ -1,0 +1,10 @@
+// expect: 7
+// A program may still call a function of its own sqrt.
+
+func sqrt(x f64) f64 {
+    return x + 3.0
+}
+
+func main() int {
+    return int(sqrt(4.0))
+}

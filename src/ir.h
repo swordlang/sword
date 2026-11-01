@@ -19,6 +19,7 @@ enum IrOp {
   IR_AND, IR_OR, IR_XOR, IR_SHL, IR_SHR,
   IR_EQ, IR_NE, IR_LT, IR_LE, IR_GT, IR_GE,
   IR_NEG, IR_NOT, IR_CAST,
+  IR_SQRT, // a = an f64, rounded once as IEEE 754 requires
   // imm picks which of these a read-modify-write performs.
   IR_ATOMIC_RMW,   // a = destination, b = value, yields the previous value
   IR_ATOMIC_LOAD,  // a = source
@@ -98,6 +99,26 @@ struct IrModule {
   // simulated scheduler may switch tasks, which is where two tasks' order over
   // an atomic can be explored. Off, the code is exactly what it always was.
   bool sim_points = false;
+  // Off in --mode=small: the tables are there for a debugger or a profiler
+  // walking the stack, and a program built small has asked to do without.
+  bool unwind_tables = true;
+  // On in --mode=small. With IR as input, LLVM's size decisions read the
+  // function's attribute, not clang's -Oz.
+  bool optimize_size = false;
+  // What `shield checks` lists: every index and slice of the program's own
+  // package, and whether its bounds check went, was moved before a loop or
+  // stayed. Nothing is gathered unless asked for.
+  // Ordered from best to worst: instances of one generic keep the worst.
+  enum { BOUNDS_PROVEN, BOUNDS_BEFORE_LOOP, BOUNDS_AT_ENDS, BOUNDS_CHECKED };
+  struct BoundsSite {
+    int file, line, col;
+    std::string what;
+    int how;
+    int loop_line; // BOUNDS_BEFORE_LOOP, BOUNDS_AT_ENDS: the loop
+    bool in_loop;  // BOUNDS_CHECKED: paid on every turn of one
+  };
+  bool list_bounds = false;
+  std::vector<BoundsSite> bounds;
 
   int intern(const std::string &text) {
     for (size_t i = 0; i < strings.size(); i++)

@@ -1,7 +1,7 @@
 // expect: 178
-// A struct literal that ends in 'else nil' leaves every optional field it
-// does not name empty: after named fields, on a line of its own, and in a
-// generic function. With no field named the literal is 'T{nil}'.
+// A struct literal that ends in '...nil' leaves every optional field it
+// does not name empty: alone, after named fields, on a line of its own, with
+// a space before 'nil', and in a generic function.
 
 struct Only {
     banana ?[]u8
@@ -19,18 +19,18 @@ struct Box[T] {
 }
 
 func empty[T](n u32) Box[T] {
-    return Box[T]{count: n, else nil}
+    return Box[T]{count: n, ...nil}
 }
 
 func main() int {
-    o := Only{nil}
+    o := Only{...nil}
     p := Only{
-        nil
+        ... nil
     }
-    m := Mixed{name: "x", size: 7, else nil}
+    m := Mixed{name: "x", size: 7, ...nil}
     k := Mixed{
         name: "y",
-        else nil
+        ...nil
     }
     mut n i32 = 0
     if o.banana == nil && p.banana == nil {

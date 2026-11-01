@@ -20,6 +20,11 @@ RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
             rt/sword_fs.o rt/sword_proc.o rt/sword_chan.o rt/sword_tls.o \
             rt/sword_dl.o rt/sword_ctx.o
 
+# A section per function, so that a linker outside Apple's can drop what a
+# program never calls (ld64 does it by symbol, and the objects come out the same).
+RT_SECTIONS := -ffunction-sections -fdata-sections
+$(RTOBJ): CXXFLAGS += $(RT_SECTIONS)
+
 # TLS is optional: the protocol is not something to write by hand, so it is
 # OpenSSL or nothing. Found here, or the runtime answers "built without TLS" and
 # everything else works as before. SWORD_OPENSSL=<prefix> overrides the search;
@@ -84,6 +89,9 @@ $(RT): $(RTOBJ)
 # machine rather than on any file make can date it against — but only written when
 # it changes, so that the TLS object below is rebuilt exactly when the decision
 # does.
+#
+# src/link.cpp leaves out -lssl and -lcrypto for a program that never reaches
+# std/tls, so OpenSSL has to be named by those two words.
 $(RTFLAGS): FORCE
 	@echo '$(TLS_LDFLAGS) $(DLLIB) $(CXXLIB)' > $@
 
@@ -142,7 +150,7 @@ $(TARGET_FLAGS): FORCE
 
 $(TARGET_DIR)/%.o: rt/%.cpp
 	@mkdir -p $(TARGET_DIR)
-	$(TARGET_CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+	$(TARGET_CXX) $(CXXFLAGS) $(RT_SECTIONS) -MMD -MP -c $< -o $@
 
 $(TARGET_DIR)/%.o: rt/%.S
 	@mkdir -p $(TARGET_DIR)

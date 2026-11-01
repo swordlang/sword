@@ -1,0 +1,13 @@
+// expect-error: 'r' is a copy of 'backing', so every iteration would write 'backing'
+// A slice declared in the body is the body's own binding, but a copy of one
+// from outside still reaches the same memory, and every iteration writing its
+// first element is a race.
+
+func main() {
+    mut backing := [8]u64{}
+    mut ys := backing[..]
+    parallel for i in 0..8 {
+        mut r := ys
+        r[0] = u64(i)
+    }
+}

@@ -1,5 +1,7 @@
 #include "lower.h"
+#include "lexer.h"
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <set>
@@ -72,6 +74,24 @@ struct Lowerer {
     std::string unit;
   };
   std::vector<Chunk> chunks;
+  // The loops being lowered that walk `0..xs.len` over a slice that cannot
+  // change, as (loop variable, slice): `xs[i]` inside one needs no check.
+  std::vector<std::pair<Symbol *, Symbol *>> walked;
+  // Indexing in the copy of a loop that runs only once a test before it has
+  // shown every one of these in range for every turn (see `range_loop`).
+  std::set<Node *> unchecked;
+  // `j + c` and `j - c` in the middle of a split loop, where neither can
+  // leave the type.
+  std::set<Node *> no_overflow;
+  // Set while the first pass of a loop that settles its overflow checks at
+  // the end is lowered (see `checked_loop`).
+  struct Accumulator {
+    Symbol *sym;
+    int ups = 0, downs = 0; // how many `+=` and `-=` in the body write it
+    int start = -1;         // its value before the loop
+    int up = -1, down = -1; // slots: every term added or taken away, OR'ed
+  };
+  std::vector<Accumulator> *deferring = nullptr;
   // The package being lowered. Thunks are numbered within it, so a package's
   // code reads the same whatever else the program holds, which is what lets
   // its object be reused by a split build.
@@ -89,7 +109,10 @@ struct Lowerer {
   // boxed enum comes out as a name rather than a number.
   const std::unordered_map<Type *, Symbol *> *enum_names = nullptr;
 
-  Lowerer(TypeTable &t, IrModule &m, Mode mo) : types(t), mod(m), mode(mo) {}
+  Tuning tuning;
+
+  Lowerer(TypeTable &t, IrModule &m, Mode mo, const Tuning &tu)
+      : types(t), mod(m), mode(mo), tuning(tu) {}
 
   int new_value(Type *type) {
     fn->value_type.push_back(type);
@@ -615,11 +638,13 @@ struct Lowerer {
   void captures_of(Node *loop, std::vector<Symbol *> &out) {
     std::set<Symbol *> local;
     local.insert(loop->sym);
+    if (loop->index_sym) local.insert(loop->index_sym);
     walk(loop->body, [&](Node *n) {
       if (n->kind == ND_VAR || n->kind == ND_CATCH ||
-          (n->kind == ND_FOR && n->is_range) ||
+          (n->kind == ND_FOR && !n->name.empty()) ||
           (n->kind == ND_IF && !n->name.empty()))
         if (n->sym) local.insert(n->sym);
+      if (n->index_sym) local.insert(n->index_sym);
     });
 
     std::set<Symbol *> seen;
@@ -649,6 +674,14 @@ struct Lowerer {
     // where the pieces are told to put them.
     if (reduced)
       fields.push_back(Field{"partials", types.ptr(reduced), 0, 0});
+    // A partition's turns are numbered 0..turns; each piece works out its own
+    // offset from the slice and the size, which the body cannot name.
+    bool pieces_of = !n->is_range;
+    if (pieces_of) {
+      fields.push_back(Field{"data", types.rawptr(types.u8_ty), 0, 0});
+      fields.push_back(Field{"len", types.usize_ty, 0, 0});
+      fields.push_back(Field{"size", types.usize_ty, 0, 0});
+    }
     types.layout_struct(env, std::move(fields));
     mod.structs.push_back(env);
 
@@ -679,8 +712,28 @@ struct Lowerer {
     std::string name = "sword.chunk." + id;
     chunks.push_back({name, n, env, captured, unit});
 
-    int lo = to_word(expr(n->lhs));
-    int hi = to_word(expr(n->rhs));
+    int lo, hi;
+    if (pieces_of) {
+      Type *word = types.usize_ty;
+      int len = -1;
+      int data = data_pointer(n->lhs, &len);
+      int size = to_word(expr(n->rhs));
+      guard(binop(IR_NE, size, constant(0, word), types.bool_ty),
+            "panic: chunks(0) would never advance, at line ", n->pos.line);
+      int at = (int)captured.size();
+      store(data, gep_field(block, env, at), types.rawptr(types.u8_ty));
+      store(len, gep_field(block, env, at + 1), word);
+      store(size, gep_field(block, env, at + 2), word);
+      // One turn per piece, the last one possibly short.
+      int whole = binop(IR_DIV, len, size, word);
+      int rest = binop(IR_NE, binop(IR_MOD, len, size, word),
+                       constant(0, word), types.bool_ty);
+      lo = constant(0, word);
+      hi = binop(IR_ADD, whole, to_word(rest), word);
+    } else {
+      lo = to_word(expr(n->lhs));
+      hi = to_word(expr(n->rhs));
+    }
     int out = reduced ? pieces : constant(0, types.rawptr(types.u8_ty));
     call_runtime("sword_parallel_for",
                  {lo, hi, func_address(name), block, out,
@@ -771,6 +824,166 @@ struct Lowerer {
     cur = done;
   }
 
+  // A floating-point sum is part of the language's definition, order included,
+  // so the order chosen is one a vector unit can follow: `lanes` partial sums,
+  // the j-th taking the piece's elements j, j+lanes, j+2*lanes..., folded at
+  // the end by halves. The body is lowered once per lane, each copy adding into
+  // its own sum, which is what lets LLVM put them side by side in one register
+  // without reassociating anything. What is left over when the piece is not a
+  // multiple of `lanes` carries on the same assignment, one element at a time.
+  void lane_loop(Node *loop, int slot, Type *index, int limit, int lanes,
+                 int accumulator) {
+    Type *type = loop->reduce_sym->type;
+    Type *word = types.usize_ty;
+    int sums = alloca_slot(types.array(type, lanes));
+    auto lane = [&](int j) { return gep_index(sums, constant(j, word), type); };
+    for (int j = 0; j < lanes; j++)
+      store(float_constant(loop->fval, type), lane(j), type);
+
+    int main_cond = new_block();
+    int rest_cond = new_block();
+    int exit_bb = new_block();
+    branch(main_cond);
+
+    cur = main_cond;
+    int left = binop(IR_SUB, limit, load(slot, index), index);
+    int main_body = new_block();
+    cond_branch(binop(IR_GE, left, constant(lanes, index), types.bool_ty),
+                main_body, rest_cond);
+    cur = main_body;
+    for (int j = 0; j < lanes; j++) {
+      loop->reduce_sym->slot = lane(j);
+      int after = new_block();
+      loops.push_back({after, exit_bb, scopes.size()});
+      stmt(loop->body);
+      branch(after);
+      loops.pop_back();
+      cur = after;
+      store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+            index);
+    }
+    branch(main_cond);
+
+    cur = rest_cond;
+    int at = alloca_slot(word);
+    store(constant(0, word), at, word);
+    int rest_head = new_block();
+    branch(rest_head);
+    cur = rest_head;
+    int rest_body = new_block();
+    int rest_step = new_block();
+    cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty),
+                rest_body, exit_bb);
+    cur = rest_body;
+    int where = gep_index(sums, load(at, word), type);
+    int tmp = alloca_slot(type);
+    store(load(where, type), tmp, type);
+    loop->reduce_sym->slot = tmp;
+    loops.push_back({rest_step, exit_bb, scopes.size()});
+    stmt(loop->body);
+    branch(rest_step);
+    loops.pop_back();
+    cur = rest_step;
+    store(load(tmp, type), where, type);
+    store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
+          index);
+    store(binop(IR_ADD, load(at, word), constant(1, word), word), at, word);
+    branch(rest_head);
+
+    cur = exit_bb;
+    for (int w = lanes / 2; w >= 1; w /= 2)
+      for (int j = 0; j < w; j++)
+        store(binop(IR_ADD, load(lane(j), type), load(lane(j + w), type), type),
+              lane(j), type);
+    store(load(lane(0), type), accumulator, type);
+    loop->reduce_sym->slot = accumulator;
+  }
+
+  static bool holds_still(Type *t) {
+    switch (t->kind) {
+    case TY_BOOL: case TY_INT: case TY_FLOAT: case TY_PTR:
+    case TY_SLICE: case TY_STRING:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  // Fixed by the language rather than by the machine, or the same sum would
+  // give different bits on a wider vector unit. Sixteen fills an AVX-512
+  // register of f32, and measured fastest for f64 as well.
+  static constexpr int kFloatLanes = 16;
+
+  // Turns lo..hi of a parallel loop over `xs.chunks(n)`: turn t is the piece
+  // at t·n, cut short at the end of the slice, the same pieces in the same
+  // places as the sequential loop gives.
+  void piece_turns(const Chunk &c, int envp, int lo, int hi) {
+    Node *n = c.loop;
+    Type *slice = n->type;
+    Type *elem = slice->elem;
+    Type *word = types.usize_ty;
+    int at = (int)c.captured.size();
+    int data = load(gep_field(envp, c.env, at), types.rawptr(types.u8_ty));
+    int len = load(gep_field(envp, c.env, at + 1), word);
+    int size = load(gep_field(envp, c.env, at + 2), word);
+
+    int turn = alloca_slot(word);
+    store(lo, turn, word);
+    int offset = alloca_slot(word);
+    int part = alloca_slot(slice);
+    int outer_part = n->sym->slot;
+    n->sym->slot = part;
+    int outer_offset = -1;
+    if (n->index_sym) {
+      outer_offset = n->index_sym->slot;
+      n->index_sym->slot = offset;
+    }
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(turn, word), hi, types.bool_ty), body_bb,
+                exit_bb);
+
+    cur = body_bb;
+    int start = binop(IR_MUL, load(turn, word), size, word);
+    store(start, offset, word);
+    int stop = binop(IR_ADD, start, size, word);
+    int over = binop(IR_GT, stop, len, types.bool_ty);
+    int clamp = alloca_slot(word);
+    store(stop, clamp, word);
+    int clamp_bb = new_block();
+    int ready_bb = new_block();
+    cond_branch(over, clamp_bb, ready_bb);
+    cur = clamp_bb;
+    store(len, clamp, word);
+    branch(ready_bb);
+    cur = ready_bb;
+    stop = load(clamp, word);
+    store(gep_index(data, start, elem), gep_slice_ptr(part),
+          types.rawptr(types.u8_ty));
+    store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
+    stmt(n->body);
+    steady_turns(n, false);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(turn, word), constant(1, word), word), turn, word);
+    branch(cond_bb);
+    cur = exit_bb;
+
+    n->sym->slot = outer_part;
+    if (n->index_sym) n->index_sym->slot = outer_offset;
+  }
+
   void emit_chunk(const Chunk &c, IrFunc &out) {
     Node *loop = c.loop;
     fn = &out;
@@ -803,6 +1016,22 @@ struct Lowerer {
       sym->slot = load(gep_field(envp, c.env, (int)i), types.ptr(sym->type));
     }
 
+    // What the body reaches only to read is copied in once. The race checker
+    // refuses an assignment to it here and any task that writes it alongside,
+    // so it holds still for the whole loop — but LLVM sees a store to `out[i]`
+    // that might land on `out` itself, loads the slice again every iteration,
+    // and gives up on vectorizing. A copy no one else can see is a register.
+    // Only values whose writes go elsewhere: an array or a struct is written in
+    // place, and an atomic is the place.
+    for (Symbol *sym : c.captured) {
+      if (!tuning.captures) break;
+      if (sym == loop->reduce_sym || !holds_still(sym->type)) continue;
+      int own = alloca_slot(sym->type);
+      if (is_aggregate(sym->type)) copy(own, sym->slot, sym->type);
+      else store(load(sym->slot, sym->type), own, sym->type);
+      sym->slot = own;
+    }
+
     // Each worker sums into its own copy and folds it in once at the end, so
     // there is no contention per iteration.
     int shared = -1;
@@ -823,35 +1052,36 @@ struct Lowerer {
       loop->reduce_sym->slot = accumulator;
     }
 
+    if (!loop->is_range) {
+      piece_turns(c, envp, lo, hi);
+      emit_ret(constant(0, types.error_ty), types.error_ty);
+      for (size_t i = 0; i < c.captured.size(); i++)
+        c.captured[i]->slot = saved[i];
+      auto &entry = out.blocks[0].insts;
+      entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+      return;
+    }
+
     Type *index = loop->type;
     int slot = alloca_slot(index);
     int outer = loop->sym->slot;
     loop->sym->slot = slot;
-    store(narrow(lo, index), slot, index);
+    int first = narrow(lo, index);
+    store(first, slot, index);
     int limit = narrow(hi, index);
 
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
+    // Each piece is a part of the range the parent worked out from `xs.len`
+    // before cutting it, so the same proof holds in every one.
+    Symbol *slice = walked_slice(loop, true);
+    if (slice) walked.push_back({loop->sym, slice});
 
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(slot, index), limit, types.bool_ty), body_bb,
-                exit_bb);
+    if (loop->reduce_kind == RMW_FADD && tuning.lanes) {
+      lane_loop(loop, slot, index, limit, kFloatLanes, accumulator);
+    } else {
+      versioned_loop(loop, slot, first, limit);
+    }
+    if (slice) walked.pop_back();
 
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    cur = body_bb;
-    stmt(loop->body);
-    branch(step_bb);
-    loops.pop_back();
-
-    cur = step_bb;
-    store(binop(IR_ADD, load(slot, index), constant(1, index), index), slot,
-          index);
-    branch(cond_bb);
-
-    cur = exit_bb;
     if (accumulator >= 0) {
       Type *type = loop->reduce_sym->type;
       // The answer for this piece of the range goes in the slot that belongs
@@ -900,7 +1130,7 @@ struct Lowerer {
   // --- safety checks -----------------------------------------------------
 
   // Splits the current block: when `ok` is false, report and abort.
-  void guard(int ok, const std::string &message) {
+  void guard(int ok, const std::string &message, int line) {
     int fail_bb = new_block();
     int next_bb = new_block();
     cond_branch(ok, next_bb, fail_bb);
@@ -917,7 +1147,8 @@ struct Lowerer {
     call.op = IR_CALL;
     call.callee = "sword_panic";
     call.type = types.void_ty;
-    call.args = {data.dst, constant((int64_t)message.size(), types.usize_ty)};
+    call.args = {data.dst, constant((int64_t)message.size(), types.usize_ty),
+                 constant((int64_t)line, types.usize_ty)};
     emit(call);
 
     IrInst stop{};
@@ -928,10 +1159,18 @@ struct Lowerer {
   }
 
   int checked_arith(IrOp op, int a, int b, Type *type, Pos pos) {
+    if (op == IR_SHL || op == IR_SHR) return shift(op, a, b, type, pos);
+    if (op == IR_DIV || op == IR_MOD) divisor_check(a, b, type, pos);
     int value = binop(op, a, b, type);
     if (!mode_checks(mode)) return value;
     if (op != IR_ADD && op != IR_SUB && op != IR_MUL) return value;
+    guard(negate(overflowed(op, a, b, type)),
+          "panic: integer overflow at line ", pos.line);
+    return value;
+  }
 
+  // Whether `a op b` falls outside `type`.
+  int overflowed(IrOp op, int a, int b, Type *type) {
     IrInst test{};
     test.op = IR_OVF;
     test.dst = new_value(types.bool_ty);
@@ -940,17 +1179,56 @@ struct Lowerer {
     test.imm = op;
     test.type = type;
     emit(test);
+    return test.dst;
+  }
 
+  int negate(int flag) {
+    IrInst in{};
+    in.op = IR_NOT;
+    in.dst = new_value(types.bool_ty);
+    in.a = flag;
+    in.type = types.bool_ty;
+    emit(in);
+    return in.dst;
+  }
+
+  // LLVM makes a shift by the type's width or more poison, so it is never
+  // emitted. Checked, it panics; unchecked, the count is taken modulo the
+  // width, which is what the hardware does anyway and so costs nothing.
+  int shift(IrOp op, int a, int b, Type *type, Pos pos) {
+    if (mode_checks(mode)) {
+      int ok = binop(IR_LT, b, constant(type->bits, type), types.bool_ty);
+      if (type->is_signed)
+        ok = binop(IR_AND, ok,
+                   binop(IR_GE, b, constant(0, type), types.bool_ty),
+                   types.bool_ty);
+      guard(ok, "panic: shift out of range at line ", pos.line);
+    } else {
+      b = binop(IR_AND, b, constant(type->bits - 1, type), type);
+    }
+    return binop(op, a, b, type);
+  }
+
+  // Dividing by zero, and the most negative value by -1, are undefined in LLVM
+  // and trap on some machines but not others. Checked in every mode: next to a
+  // division the comparison costs next to nothing, and there is no answer that
+  // would be right to give instead.
+  void divisor_check(int a, int b, Type *type, Pos pos) {
+    guard(binop(IR_NE, b, constant(0, type), types.bool_ty),
+          "panic: division by zero at line ", pos.line);
+    if (!type->is_signed) return;
+    int64_t lowest =
+        type->bits == 64 ? INT64_MIN : -(int64_t(1) << (type->bits - 1));
+    int overflows = binop(
+        IR_AND, binop(IR_EQ, a, constant(lowest, type), types.bool_ty),
+        binop(IR_EQ, b, constant(-1, type), types.bool_ty), types.bool_ty);
     IrInst ok{};
     ok.op = IR_NOT;
     ok.dst = new_value(types.bool_ty);
-    ok.a = test.dst;
+    ok.a = overflows;
     ok.type = types.bool_ty;
     emit(ok);
-
-    guard(ok.dst, "panic: integer overflow at line " +
-                      std::to_string(pos.line) + "\n");
-    return value;
+    guard(ok.dst, "panic: integer overflow at line ", pos.line);
   }
 
   // Indices and slice bounds must reach the width a slice length uses before
@@ -980,12 +1258,406 @@ struct Lowerer {
     return in.dst;
   }
 
+  // The slice `for i in a..xs.len` walks, when every `xs[i]` in its body is in
+  // range by construction. The loop variable cannot be assigned, and nothing
+  // can change the header of an immutable binding: assigning it is refused and
+  // `&xs` lends it read-only. In a `parallel for` a `mut` slice holds too: the
+  // race checker lets the body write only `xs[i]`, never `xs` itself, and no
+  // other task of the scope can reach it while the loop runs. A slice reached
+  // through a pointer or a field is never one of these, because the same memory
+  // can be lent `mut` under another name in the same call and shortened mid-loop.
+  // The pieces of a partition being lowered whose turn neither assigns the
+  // piece nor takes its address. The piece is made fresh for each turn, so
+  // nothing else can reach its header, and its length holds as still as an
+  // immutable slice's does; what is written through it is only the elements.
+  std::set<Symbol *> steady;
+
+  bool reshapes(Node *body, Symbol *piece) {
+    bool found = false;
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN && n->lhs->kind == ND_IDENT &&
+          n->lhs->sym == piece)
+        found = true;
+      if (n->kind == ND_UNARY && n->op == TK_AMP && n->lhs &&
+          n->lhs->kind == ND_IDENT && n->lhs->sym == piece)
+        found = true;
+    });
+    return found;
+  }
+
+  void steady_turns(Node *loop, bool on) {
+    if (!tuning.steady || !loop->sym->is_mut) return;
+    if (!on) steady.erase(loop->sym);
+    else if (!reshapes(loop->body, loop->sym)) steady.insert(loop->sym);
+  }
+
+  Symbol *walked_slice(Node *loop, bool parallel) {
+    Node *hi = loop->rhs;
+    if (!hi || hi->kind != ND_FIELD || hi->name != "len") return nullptr;
+    Node *base = hi->lhs;
+    if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
+    Symbol *s = base->sym;
+    if ((s->is_mut && !parallel && !steady.count(s)) || s->is_func || !s->type)
+      return nullptr;
+    if (!(s->is_mut ? tuning.walked_mut : tuning.walked)) return nullptr;
+    if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
+    return s;
+  }
+
+  bool proven_in_range(Node *index) {
+    if (unchecked.count(index)) return true;
+    Node *base = index->lhs, *at = index->rhs;
+    if (base->kind != ND_IDENT || at->kind != ND_IDENT) return false;
+    for (const auto &w : walked)
+      if (w.first == at->sym && w.second == base->sym) return true;
+    return false;
+  }
+
+  // For `shield checks`. A body lowered twice — a versioned loop, an overflow
+  // settled late — notes the same node twice, and the first word stands: the
+  // copy of a versioned loop that keeps its checks is the one that does not
+  // count.
+  std::map<Node *, size_t> noted;
+  void note_bounds(Node *n, int how, int loop_line = 0) {
+    if (!mod.list_bounds || !mode_checks(mode)) return;
+    // The function's own unit, not `unit`: a parallel for's body and a task's
+    // thunk are lowered after every package, once `unit` is cleared.
+    if (fn->unit.rfind("main.", 0) != 0 || noted.count(n)) return;
+    noted[n] = mod.bounds.size();
+    mod.bounds.push_back({n->pos.file, n->pos.line, n->pos.col, spelled(n),
+                          how, loop_line, !loops.empty()});
+  }
+
+  // An index or slice the way it reads in the source, short enough for one
+  // line of a listing.
+  std::string spelled(Node *n) {
+    if (!n) return "";
+    switch (n->kind) {
+    case ND_IDENT:
+      return n->name;
+    case ND_INT_LIT:
+      return std::to_string(n->ival);
+    case ND_FIELD:
+      return spelled(n->lhs) + "." + n->name;
+    case ND_INDEX:
+      return spelled(n->lhs) + "[" + spelled(n->rhs) + "]";
+    case ND_SLICE_EXPR:
+      return spelled(n->lhs) + "[" + spelled(n->cond) + ".." +
+             spelled(n->rhs) + "]";
+    case ND_BINARY:
+      return spelled(n->lhs) + " " + tok_name(n->op) + " " + spelled(n->rhs);
+    case ND_UNARY:
+      return std::string(tok_name(n->op)) + spelled(n->lhs);
+    case ND_CALL:
+      return spelled(n->lhs) + "(…)";
+    default:
+      return "…";
+    }
+  }
+
   void bounds_check(int index, int len, Pos pos) {
     if (!mode_checks(mode)) return;
     // Unsigned comparison catches negative indices too: they wrap to huge.
     int ok = binop(IR_LT, index, len, types.bool_ty);
-    guard(ok, "panic: index out of bounds at line " +
-                  std::to_string(pos.line) + "\n");
+    guard(ok, "panic: index out of bounds at line ", pos.line);
+  }
+
+  // Under `--audit`, in place of a check the compiler dropped.
+  void audit_check(int index, int len, Pos pos) {
+    int ok = binop(IR_LT, index, len, types.bool_ty);
+    guard(ok, "panic: a bounds check the compiler dropped fails at line ",
+          pos.line);
+  }
+
+  // --- overflow checks settled at the end of a loop -------------------------
+
+  // A branch to a panic after every `acc += xs[i]` keeps LLVM from splitting
+  // the sum across vector lanes, and so does remembering the overflow bit
+  // instead, since each bit depends on the running total. What a loop that
+  // does nothing but accumulate can do instead is add without checking while
+  // OR-ing every term into a bound, and look once at the end: if as many terms
+  // as were added, each as large as the bound, cannot carry the starting value
+  // out of range, no addition overflowed. Otherwise the loop runs again from
+  // the start with every check in place, which panics at the same iteration
+  // and line, or finds the bound was only pessimistic and answers the same.
+  //
+  // The first pass must be invisible: until something overflows it does
+  // exactly what the checked loop does, and after that whatever it computes is
+  // thrown away. So its body writes nothing but the accumulators and its own
+  // locals, and nothing in it can fail, call out or read an address that could
+  // depend on a value gone wrong.
+
+  // The accumulators of a body that qualifies, or nothing.
+  std::vector<Accumulator> deferrable(Node *body) {
+    std::set<Symbol *> own;
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_VAR) own.insert(n->sym);
+    });
+    std::vector<Accumulator> found;
+    if (!settles_late(body, own, found)) found.clear();
+    return found;
+  }
+
+  bool settles_late(Node *n, const std::set<Symbol *> &own,
+                    std::vector<Accumulator> &found) {
+    switch (n->kind) {
+    case ND_BLOCK:
+      for (Node *st : n->kids)
+        if (!settles_late(st, own, found)) return false;
+      return true;
+    case ND_CONTINUE:
+      return true;
+    case ND_IF:
+      return n->name.empty() && cannot_fail(n->cond) &&
+             settles_late(n->body, own, found) &&
+             (!n->els || settles_late(n->els, own, found));
+    case ND_VAR:
+      return n->rhs && is_scalar(n->type) && cannot_fail(n->rhs);
+    case ND_ASSIGN: {
+      if (n->lhs->kind != ND_IDENT || !cannot_fail(n->rhs)) return false;
+      Symbol *s = n->lhs->sym;
+      if (own.count(s))
+        return n->op == TK_ASSIGN || n->op == TK_ADD_WRAP_ASSIGN ||
+               n->op == TK_SUB_WRAP_ASSIGN || n->op == TK_AND_ASSIGN ||
+               n->op == TK_OR_ASSIGN || n->op == TK_XOR_ASSIGN;
+      if (n->op != TK_ADD_ASSIGN && n->op != TK_SUB_ASSIGN) return false;
+      if (!s->is_mut || s->is_func || !is_integer(s->type)) return false;
+      Accumulator *acc = nullptr;
+      for (Accumulator &a : found)
+        if (a.sym == s) acc = &a;
+      if (!acc) {
+        found.push_back(Accumulator{s});
+        acc = &found.back();
+      }
+      (n->op == TK_ADD_ASSIGN ? acc->ups : acc->downs)++;
+      return true;
+    }
+    default:
+      return false;
+    }
+  }
+
+  static bool is_scalar(const Type *t) {
+    return t->kind == TY_INT || t->kind == TY_FLOAT || t->kind == TY_BOOL;
+  }
+
+  // Defined for any operands, so it gives no panic, trap or undefined value
+  // however wrong they are.
+  bool cannot_fail(Node *n) {
+    switch (n->kind) {
+    case ND_INT_LIT: case ND_FLOAT_LIT: case ND_BOOL_LIT:
+      return true;
+    case ND_IDENT:
+      return !n->sym->is_func && is_scalar(n->type);
+    case ND_FIELD:
+      return is_scalar(n->type) && reads_in_place(n->lhs);
+    case ND_INDEX:
+      return is_scalar(n->type) && proven_in_range(n) &&
+             (cannot_fail(n->rhs) || no_overflow.count(n->rhs));
+    case ND_CONVERT: {
+      Type *from = n->kids[0]->type;
+      bool numbers = (from->kind == TY_INT || from->kind == TY_FLOAT) &&
+                     (n->type->kind == TY_INT || n->type->kind == TY_FLOAT);
+      // A float out of an integer's range converts to poison.
+      bool to_int = from->kind == TY_FLOAT && n->type->kind == TY_INT;
+      return numbers && !to_int && cannot_fail(n->kids[0]);
+    }
+    case ND_UNARY:
+      return (n->op == TK_BANG || n->op == TK_TILDE || n->op == TK_MINUS) &&
+             is_scalar(n->type) && cannot_fail(n->lhs);
+    case ND_BINARY: {
+      Type *t = n->lhs->type;
+      if (n->form == 1 || !is_scalar(t) || !cannot_fail(n->lhs) ||
+          !cannot_fail(n->rhs))
+        return false;
+      switch (n->op) {
+      case TK_EQ: case TK_NE: case TK_LT: case TK_LE: case TK_GT: case TK_GE:
+      case TK_ANDAND: case TK_OROR:
+        return true;
+      case TK_PLUS_WRAP: case TK_MINUS_WRAP: case TK_STAR_WRAP:
+      case TK_AMP: case TK_PIPE: case TK_CARET:
+        return t->kind == TY_INT;
+      case TK_PLUS: case TK_MINUS: case TK_STAR: case TK_SLASH:
+        return t->kind == TY_FLOAT;
+      default:
+        return false;
+      }
+    }
+    default:
+      return false;
+    }
+  }
+
+  // A field reached from a name through fields, never through an index or a
+  // call: nothing on the way can fail, and no address on it is computed.
+  bool reads_in_place(Node *n) {
+    if (n->kind == ND_IDENT) return !n->sym->is_func;
+    return n->kind == ND_FIELD && reads_in_place(n->lhs);
+  }
+
+  // The loop every counted form comes down to. `more` yields whether another
+  // iteration runs, `enter` begins one (a `for x in xs` copies the element in),
+  // `advance` moves to the next.
+  template <class More, class Enter, class Advance>
+  void counted_loop(Node *body, More more, Enter enter, Advance advance) {
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(more(), body_bb, exit_bb);
+
+    cur = body_bb;
+    enter();
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    stmt(body);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    advance();
+    branch(cond_bb);
+
+    cur = exit_bb;
+  }
+
+  // A counted loop whose index has just been set to its first value;
+  // `restart` sets it there again.
+  template <class Restart, class More, class Enter, class Advance>
+  void checked_loop(Node *body, Restart restart, More more, Enter enter,
+                    Advance advance) {
+    // Debug builds keep the panic where it happens, for a debugger to stop
+    // at; there is no vectorizer there to gain anything.
+    std::vector<Accumulator> accs;
+    if (mode == MODE_SAFE && tuning.deferred) accs = deferrable(body);
+    if (accs.empty()) {
+      counted_loop(body, more, enter, advance);
+      return;
+    }
+
+    Type *word = types.usize_ty;
+    for (Accumulator &a : accs) {
+      Type *type = a.sym->type;
+      a.start = load(a.sym->slot, type);
+      a.up = alloca_slot(type);
+      store(constant(0, type), a.up, type);
+      if (!type->is_signed && a.downs) {
+        a.down = alloca_slot(type);
+        store(constant(0, type), a.down, type);
+      }
+    }
+    int count = alloca_slot(word);
+    store(constant(0, word), count, word);
+
+    deferring = &accs;
+    counted_loop(
+        body, more,
+        [&] {
+          store(binop(IR_ADD, load(count, word), constant(1, word), word),
+                count, word);
+          enter();
+        },
+        advance);
+    deferring = nullptr;
+
+    int n = load(count, word);
+    int ok = constant(1, types.bool_ty);
+    for (const Accumulator &a : accs)
+      ok = binop(IR_AND, ok, stays_in_range(a, n), types.bool_ty);
+    int again = new_block();
+    int done = new_block();
+    cond_branch(ok, done, again);
+
+    cur = again;
+    for (const Accumulator &a : accs) store(a.start, a.sym->slot, a.sym->type);
+    restart();
+    counted_loop(body, more, enter, advance);
+    branch(done);
+
+    cur = done;
+  }
+
+  // The unchecked form of an accumulation, while `deferring`; false otherwise.
+  bool deferred_accumulate(Node *n, int at, Type *type) {
+    if (!deferring || n->lhs->kind != ND_IDENT) return false;
+    if (n->op != TK_ADD_ASSIGN && n->op != TK_SUB_ASSIGN) return false;
+    Accumulator *acc = nullptr;
+    for (Accumulator &a : *deferring)
+      if (a.sym == n->lhs->sym) acc = &a;
+    if (!acc) return false;
+
+    int value = expr(n->rhs);
+    int current = load(at, type);
+    IrOp op = n->op == TK_ADD_ASSIGN ? IR_ADD : IR_SUB;
+    store(binop(op, current, value, type), at, type);
+
+    // A signed term's size, one short for a negative: x ^ (x >> (bits-1)).
+    int bound = acc->up;
+    if (type->is_signed)
+      value = binop(IR_XOR, value,
+                    binop(IR_SHR, value, constant(type->bits - 1, type), type),
+                    type);
+    else if (op == IR_SUB)
+      bound = acc->down;
+    store(binop(IR_OR, load(bound, type), value, type), bound, type);
+    return true;
+  }
+
+  // Whether `n` iterations, each moving the accumulator by no more than its
+  // bound once per `+=` or `-=`, keep every value it can pass through inside
+  // its type. Worked in 64-bit unsigned words, where every distance between
+  // two values of the type fits.
+  int stays_in_range(const Accumulator &a, int n) {
+    Type *type = a.sym->type;
+    Type *word = types.usize_ty;
+    auto widen = [&](int v) {
+      if (type->bits == 64) return v;
+      IrInst in{};
+      in.op = IR_CAST;
+      in.dst = new_value(word);
+      in.a = v;
+      in.type = word;
+      emit(in);
+      return in.dst;
+    };
+    int ok = constant(1, types.bool_ty);
+    // How far `times` terms of at most `bound` each can carry it.
+    auto reach = [&](int bound, int times) {
+      int per = bound;
+      if (times > 1) {
+        int k = constant(times, word);
+        ok = binop(IR_AND, ok, negate(overflowed(IR_MUL, bound, k, word)),
+                   types.bool_ty);
+        per = binop(IR_MUL, bound, k, word);
+      }
+      ok = binop(IR_AND, ok, negate(overflowed(IR_MUL, n, per, word)),
+                 types.bool_ty);
+      return binop(IR_MUL, n, per, word);
+    };
+    auto within = [&](int distance, int room) {
+      ok = binop(IR_AND, ok, binop(IR_LE, distance, room, types.bool_ty),
+                 types.bool_ty);
+    };
+
+    int start = widen(a.start);
+    int bits = type->bits;
+    if (type->is_signed) {
+      int64_t most = bits == 64 ? INT64_MAX : (int64_t(1) << (bits - 1)) - 1;
+      int bound = binop(IR_ADD, widen(load(a.up, type)), constant(1, word),
+                        word);
+      int far = reach(bound, a.ups + a.downs);
+      within(far, binop(IR_SUB, constant(most, word), start, word));
+      within(far, binop(IR_SUB, start, constant(-most - 1, word), word));
+    } else {
+      int64_t most = bits == 64 ? -1 : (int64_t(1) << bits) - 1;
+      if (a.ups)
+        within(reach(widen(load(a.up, type)), a.ups),
+               binop(IR_SUB, constant(most, word), start, word));
+      if (a.downs) within(reach(widen(load(a.down, type)), a.downs), start);
+    }
+    return ok;
   }
 
   // --- places ------------------------------------------------------------
@@ -1064,7 +1736,15 @@ struct Lowerer {
       bool checked = base->kind != TY_RAWPTR;
       int data = data_pointer(n->lhs, checked ? &len : nullptr);
       int index = to_word(expr(n->rhs));
-      if (checked && len >= 0) bounds_check(index, len, n->pos);
+      if (checked && len >= 0) {
+        if (!proven_in_range(n)) {
+          note_bounds(n, IrModule::BOUNDS_CHECKED);
+          bounds_check(index, len, n->pos);
+        } else {
+          if (!unchecked.count(n)) note_bounds(n, IrModule::BOUNDS_PROVEN);
+          if (tuning.audit) audit_check(index, len, n->pos);
+        }
+      }
       return gep_index(data, index, n->type);
     }
 
@@ -1147,12 +1827,13 @@ struct Lowerer {
     int high = n->rhs ? to_word(expr(n->rhs)) : len;
 
     if (mode_checks(mode) && len >= 0) {
+      // `xs[..]` is the whole of it and cannot fail.
+      note_bounds(n, n->cond || n->rhs ? IrModule::BOUNDS_CHECKED
+                                       : IrModule::BOUNDS_PROVEN);
       int ok = binop(IR_LE, low, high, types.bool_ty);
-      guard(ok, "panic: slice bounds out of order at line " +
-                    std::to_string(n->pos.line) + "\n");
+      guard(ok, "panic: slice bounds out of order at line ", n->pos.line);
       ok = binop(IR_LE, high, len, types.bool_ty);
-      guard(ok, "panic: slice bounds out of range at line " +
-                    std::to_string(n->pos.line) + "\n");
+      guard(ok, "panic: slice bounds out of range at line ", n->pos.line);
     }
 
     int slot = alloca_slot(n->type);
@@ -1471,6 +2152,15 @@ struct Lowerer {
     if (n->form == 3) return atomic_call(n);
     if (n->form == 5) return shared_call(n);
     if (n->form == 6) return hash_of(n->kids[0]);
+    if (n->form == 7) {
+      IrInst in{};
+      in.op = IR_SQRT;
+      in.dst = new_value(n->type);
+      in.a = expr(n->kids[0]);
+      in.type = n->type;
+      emit(in);
+      return in.dst;
+    }
     IrInst in{};
     in.op = IR_CALL;
     in.callee = n->name.empty() ? n->lhs->name : n->name;
@@ -1594,7 +2284,8 @@ struct Lowerer {
                          types.usize_ty);
         return gep_index(base, offset, n->type->elem);
       }
-      if (wraps(n->op) || !is_integer(n->type))
+      if (wraps(n->op) || !is_integer(n->type) ||
+          (no_overflow.count(n) && !tuning.audit))
         return binop(ir_binop(n->op), expr(n->lhs), expr(n->rhs), n->type);
       return checked_arith(ir_binop(n->op), expr(n->lhs), expr(n->rhs),
                            n->type, n->pos);
@@ -1836,30 +2527,231 @@ struct Lowerer {
     int slot = alloca_slot(type);
     n->sym->slot = slot;
 
-    store(expr(n->lhs), slot, type);
+    int first = expr(n->lhs);
+    store(first, slot, type);
     int limit = expr(n->rhs);
 
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
+    Symbol *slice = walked_slice(n, false);
+    if (slice) walked.push_back({n->sym, slice});
+    versioned_loop(n, slot, first, limit);
+    if (slice) walked.pop_back();
+  }
 
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(slot, type), limit, types.bool_ty), body_bb,
-                exit_bb);
+  // The turns `from..to` of `loop`, its index already at `from` in `slot`.
+  void counted_range(Node *loop, int slot, int from, int to) {
+    Type *type = loop->type;
+    checked_loop(
+        loop->body, [&] { store(from, slot, type); },
+        [&] { return binop(IR_LT, load(slot, type), to, types.bool_ty); },
+        [] {},
+        [&] {
+          store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot,
+                type);
+        });
+  }
 
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    cur = body_bb;
-    stmt(n->body);
-    branch(step_bb);
-    loops.pop_back();
+  // An index whose bounds can be settled before the loop: `xs[j]`, `xs[k]`
+  // with `k` fixed, or `xs[j + c]` and `xs[j - c]`.
+  struct Hoisted {
+    Node *index;
+    Node *offset = nullptr; // `c`, when shifted
+    int sign = 0;           // +1 for `j + c`, -1 for `j - c`
+    bool fixed = false;     // `xs[k]`
+  };
 
-    cur = step_bb;
-    store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot, type);
-    branch(cond_bb);
+  void versioned_loop(Node *n, int slot, int first, int limit) {
+    std::vector<Hoisted> hoisted = hoistable(n);
+    if (!tuning.split)
+      hoisted.erase(std::remove_if(hoisted.begin(), hoisted.end(),
+                                   [](const Hoisted &h) { return h.sign; }),
+                    hoisted.end());
+    bool shifted = false;
+    for (const Hoisted &h : hoisted)
+      if (h.sign) shifted = true;
+    if (!shifted && !tuning.versioned) hoisted.clear();
+    if (hoisted.empty()) {
+      counted_range(n, slot, first, limit);
+    } else if (shifted) {
+      split_loop(n, slot, first, limit, hoisted);
+    } else {
+      // Versioning: the test is made once, and the loop as written runs when
+      // it fails, panicking on the same turn and line it always did.
+      int ok = in_range_throughout(n, hoisted, first, limit);
+      int fast = new_block();
+      int slow = new_block();
+      int join = new_block();
+      cond_branch(ok, fast, slow);
+      cur = fast;
+      for (const Hoisted &h : hoisted) {
+        note_bounds(h.index, IrModule::BOUNDS_BEFORE_LOOP, n->pos.line);
+        unchecked.insert(h.index);
+      }
+      counted_range(n, slot, first, limit);
+      for (const Hoisted &h : hoisted) unchecked.erase(h.index);
+      branch(join);
+      cur = slow;
+      counted_range(n, slot, first, limit);
+      branch(join);
+      cur = join;
+    }
+  }
 
-    cur = exit_bb;
+  // Index-set splitting, for a loop that reads `xs[j - 1]` or `xs[j + w]`,
+  // which only the first or last few turns could take out of range. The
+  // turns where every index is in range run in the middle, with no check on
+  // them and no overflow check on `j ± c`; the turns before and after run as
+  // written. The order of the turns is the same, so a panic comes on the turn
+  // and line it always did.
+  void split_loop(Node *n, int slot, int first, int limit,
+                  const std::vector<Hoisted> &hoisted) {
+    Type *type = n->type;
+    Type *flag = types.bool_ty;
+    // The middle is lo..hi, narrowed by every index in turn.
+    int lo = first, hi = limit;
+    for (const Hoisted &h : hoisted) {
+      int len = -1;
+      data_pointer(h.index->lhs, &len);
+      len = narrow(len, type);
+      if (h.fixed) {
+        int ok = binop(IR_LT, to_word(expr(h.index->rhs)), len, flag);
+        hi = pick(ok, hi, first, type);
+      } else if (h.sign > 0) {
+        int c = narrow(expr(h.offset), type);
+        int room = pick(binop(IR_LE, c, len, flag),
+                        binop(IR_SUB, len, c, type), constant(0, type), type);
+        hi = least(hi, room, type);
+      } else {
+        if (h.sign < 0) lo = most(lo, narrow(expr(h.offset), type), type);
+        hi = least(hi, len, type);
+      }
+    }
+    int head = least(lo, limit, type);
+    int tail = most(hi, head, type);
+
+    for (const Hoisted &h : hoisted)
+      note_bounds(h.index, IrModule::BOUNDS_AT_ENDS, n->pos.line);
+    counted_range(n, slot, first, head);
+    for (const Hoisted &h : hoisted) {
+      unchecked.insert(h.index);
+      if (h.sign) no_overflow.insert(h.index->rhs);
+    }
+    counted_range(n, slot, head, tail);
+    for (const Hoisted &h : hoisted) {
+      unchecked.erase(h.index);
+      no_overflow.erase(h.index->rhs);
+    }
+    counted_range(n, slot, tail, limit);
+  }
+
+  int pick(int cond, int yes, int no, Type *type) {
+    int slot = alloca_slot(type);
+    store(no, slot, type);
+    int then_bb = new_block();
+    int join = new_block();
+    cond_branch(cond, then_bb, join);
+    cur = then_bb;
+    store(yes, slot, type);
+    branch(join);
+    cur = join;
+    return load(slot, type);
+  }
+  int least(int a, int b, Type *type) {
+    return pick(binop(IR_LT, a, b, types.bool_ty), a, b, type);
+  }
+  int most(int a, int b, Type *type) {
+    return pick(binop(IR_GT, a, b, types.bool_ty), a, b, type);
+  }
+
+  // The indexing in a counted loop whose bounds can be settled before the
+  // loop starts: an immutable slice or string, which no turn can shorten,
+  // taken at the loop's own index, at an immutable integer from outside it,
+  // which no turn can move, or at the loop's index plus or minus one. A body
+  // with a loop inside is left alone, since versioning both would lower the
+  // innermost body many times over, and so is one with tasks in it, which
+  // would be lowered as several. Shifted indices split the loop in three,
+  // which a `break` would jump out of only the first part of, and which
+  // reckons in the loop's own unsigned 64-bit index.
+  std::vector<Hoisted> hoistable(Node *loop) {
+    std::vector<Hoisted> found;
+    if (mode != MODE_SAFE) return found;
+    // Every name a node of the body carries other than by using it, which
+    // takes in whatever the body declares, in any form that declares one.
+    std::set<Symbol *> inner;
+    bool nested = false, breaks = false;
+    walk(loop->body, [&](Node *n) {
+      if (n->kind == ND_FOR || n->kind == ND_SCOPE || n->kind == ND_SPAWN)
+        nested = true;
+      if (n->kind == ND_BREAK) breaks = true;
+      if (n->kind == ND_IDENT) return;
+      for (Symbol *s : {n->sym, n->index_sym, n->reduce_sym})
+        if (s) inner.insert(s);
+    });
+    if (nested) return found;
+    bool can_split = !breaks && loop->type && loop->type->bits == 64 &&
+                     !loop->type->is_signed;
+    auto fixed = [&](Node *n) {
+      return n->kind == ND_IDENT && n->sym &&
+             (!n->sym->is_mut || steady.count(n->sym)) && !n->sym->is_func &&
+             !inner.count(n->sym) && n->sym != loop->sym;
+    };
+    auto own = [&](Node *n) {
+      return n->kind == ND_IDENT && n->sym == loop->sym;
+    };
+    auto offset = [&](Node *n) {
+      if (n->kind == ND_INT_LIT) return true;
+      return fixed(n) && is_integer(n->sym->type) && !n->sym->type->is_signed;
+    };
+    walk(loop->body, [&](Node *n) {
+      if (n->kind != ND_INDEX || !fixed(n->lhs)) return;
+      Type *base = n->lhs->sym->type;
+      if (!base || (base->kind != TY_SLICE && base->kind != TY_STRING)) return;
+      if (proven_in_range(n)) return;
+      Node *at = n->rhs;
+      Hoisted h{n};
+      if (own(at)) {
+      } else if (fixed(at) && is_integer(at->sym->type)) {
+        h.fixed = true;
+      } else if (can_split && at->kind == ND_BINARY && at->form == 0 &&
+                 at->type == loop->type &&
+                 (at->op == TK_PLUS || at->op == TK_MINUS)) {
+        h.sign = at->op == TK_PLUS ? 1 : -1;
+        if (own(at->lhs) && offset(at->rhs)) h.offset = at->rhs;
+        else if (at->op == TK_PLUS && own(at->rhs) && offset(at->lhs))
+          h.offset = at->lhs;
+        else return;
+      } else {
+        return;
+      }
+      found.push_back(h);
+    });
+    return found;
+  }
+
+  // Whether every one of `hoisted` is in range on every turn of `loop`, which
+  // runs its index from `first` up to `limit`.
+  int in_range_throughout(Node *loop, const std::vector<Hoisted> &hoisted,
+                          int first, int limit) {
+    Type *index = loop->type;
+    Type *flag = types.bool_ty;
+    int empty = binop(IR_GE, first, limit, flag);
+    int ok = constant(1, flag);
+    for (const Hoisted &h : hoisted) {
+      int len = -1;
+      data_pointer(h.index->lhs, &len);
+      int in;
+      if (!h.fixed) {
+        // Every turn's index lies in first..limit, so the last is the test.
+        in = binop(IR_LE, to_word(limit), len, flag);
+        if (index->is_signed)
+          in = binop(IR_AND, in,
+                     binop(IR_GE, first, constant(0, index), flag), flag);
+        in = binop(IR_OR, empty, in, flag);
+      } else {
+        in = binop(IR_LT, to_word(expr(h.index->rhs)), len, flag);
+      }
+      ok = binop(IR_AND, ok, in, flag);
+    }
+    return ok;
   }
 
   // Walks a slice in fixed-size pieces, the last one short. Each iteration
@@ -1881,32 +2773,18 @@ struct Lowerer {
     n->sym->slot = slot;
     if (n->index_sym) n->index_sym->slot = index;
 
-    int cond_bb = new_block();
-    int body_bb = new_block();
-    int step_bb = new_block();
-    int exit_bb = new_block();
-
-    branch(cond_bb);
-    cur = cond_bb;
-    cond_branch(binop(IR_LT, load(index, word), len, types.bool_ty), body_bb,
-                exit_bb);
-
-    cur = body_bb;
-    int at = gep_index(data, load(index, word), elem);
-    if (is_aggregate(elem)) copy(slot, at, elem);
-    else store(load(at, elem), slot, elem);
-
-    loops.push_back({step_bb, exit_bb, scopes.size()});
-    stmt(n->body);
-    branch(step_bb);
-    loops.pop_back();
-
-    cur = step_bb;
-    store(binop(IR_ADD, load(index, word), constant(1, word), word), index,
-          word);
-    branch(cond_bb);
-
-    cur = exit_bb;
+    checked_loop(
+        n->body, [&] { store(constant(0, word), index, word); },
+        [&] { return binop(IR_LT, load(index, word), len, types.bool_ty); },
+        [&] {
+          int at = gep_index(data, load(index, word), elem);
+          if (is_aggregate(elem)) copy(slot, at, elem);
+          else store(load(at, elem), slot, elem);
+        },
+        [&] {
+          store(binop(IR_ADD, load(index, word), constant(1, word), word),
+                index, word);
+        });
   }
 
   void walk_loop(Node *n) {
@@ -1926,8 +2804,7 @@ struct Lowerer {
     // Checked once per loop, not per iteration: a zero-sized piece would
     // never advance the offset.
     guard(binop(IR_NE, size, constant(0, word), types.bool_ty),
-          "panic: chunks(0) would never advance, at line " +
-              std::to_string(n->pos.line) + "\n");
+          "panic: chunks(0) would never advance, at line ", n->pos.line);
 
     int offset = alloca_slot(word);
     store(constant(0, word), offset, word);
@@ -1967,7 +2844,9 @@ struct Lowerer {
     store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
 
     loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
     stmt(n->body);
+    steady_turns(n, false);
     branch(step_bb);
     loops.pop_back();
 
@@ -2170,6 +3049,7 @@ struct Lowerer {
       assign_into(at, n->rhs, type);
       return;
     }
+    if (deferred_accumulate(n, at, type)) return;
     TokKind arith = assign_arith(n->op);
     int value = expr(n->rhs);
     int current = load(at, type);
@@ -2508,8 +3388,24 @@ struct Lowerer {
 
 } // namespace
 
-void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
-  Lowerer lowerer(types, mod, mode);
+bool tuning_without(Tuning &tuning, const std::string &name) {
+  static const std::pair<const char *, bool Tuning::*> pieces[] = {
+      {"walked", &Tuning::walked},       {"walked-mut", &Tuning::walked_mut},
+      {"captures", &Tuning::captures},   {"versioned", &Tuning::versioned},
+      {"split", &Tuning::split},         {"deferred", &Tuning::deferred},
+      {"lanes", &Tuning::lanes},         {"steady", &Tuning::steady},
+  };
+  for (const auto &p : pieces)
+    if (name == p.first) {
+      tuning.*p.second = false;
+      return true;
+    }
+  return false;
+}
+
+void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod,
+           const Tuning &tuning) {
+  Lowerer lowerer(types, mod, mode, tuning);
   lowerer.enum_names = &prog.enum_names;
 
   for (Package *pkg : prog.order)

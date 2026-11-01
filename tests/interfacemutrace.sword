@@ -1,0 +1,29 @@
+// expect-error: this writes 'k', through 'c', while it is already written concurrently
+// Two tasks given the same interface value, each allowed to write through it,
+// write the same struct.
+
+interface Counter {
+    mut Bump()
+}
+
+struct Count {
+    n i64
+}
+
+func (mut c *Count) Bump() {
+    c.n += 1
+}
+
+func poke(mut c Counter) {
+    c.Bump()
+}
+
+func main() int {
+    mut k := Count{n: 0}
+    mut c Counter = &k
+    scope {
+        spawn poke(c)
+        spawn poke(c)
+    }
+    return int(k.n)
+}

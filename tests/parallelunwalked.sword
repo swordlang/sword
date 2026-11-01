@@ -1,0 +1,19 @@
+// expect: 134
+// `xs[i]` in a loop that walks `out` is checked against a length copied into
+// the piece once. The copy lets the loop vectorize; it must not let an index
+// past the end of `xs` through, and the panic names this line.
+
+func copy_into(mut out []u64, xs []u64) {
+    parallel for i in 0..out.len {
+        out[i] = xs[i]
+    }
+}
+
+func main() int {
+    mut a := [200]u64{}
+    mut b := [150]u64{}
+    mut out := a[..]
+    xs := b[..]
+    copy_into(out, xs)
+    return 0
+}

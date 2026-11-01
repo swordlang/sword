@@ -1,0 +1,23 @@
+// expect-error: F.Fill writes through parameter 1, but Filler does not say it may; mark that parameter 'mut' in the interface
+// The interface promises Fill only reads `into`, and its callers hand it
+// read-only memory on that promise.
+
+interface Filler {
+    Fill(into []u8)
+}
+
+struct F {
+    v u8
+}
+
+func (f *F) Fill(mut into []u8) {
+    into[0] = f.v
+}
+
+func main() int {
+    buf := [4]u8{1, 2, 3, 4}
+    f := F{v: 9}
+    g Filler = &f
+    g.Fill(buf[..])
+    return int(buf[0])
+}

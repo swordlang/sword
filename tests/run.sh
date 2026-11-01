@@ -2,6 +2,7 @@
 # Each test declares its expectation in a leading comment:
 #   // expect: <exit status>        must compile, run, and exit with that code
 #   // expect-output: <line>        stdout must contain that line
+#   // expect-panic: <line>         stderr must contain that line
 #   // expect-error: <substring>    must fail to compile with that message
 #   // output-varies: <why>         prints something that depends on the clock
 #                                   or the pool, so tests/threads.sh compares
@@ -13,7 +14,7 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-shield="$root/shield"
+shield=${SHIELD:-"$root/shield"}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -25,6 +26,7 @@ for src in "$root"/tests/*.sword; do
     want_exit=$(sed -n 's|^// expect: *||p' "$src" | head -1)
     want_error=$(sed -n 's|^// expect-error: *||p' "$src" | head -1)
     want_output=$(sed -n 's|^// expect-output: *||p' "$src" | head -1)
+    want_panic=$(sed -n 's|^// expect-panic: *||p' "$src" | head -1)
 
     if [ -n "$want_error" ]; then
         out=$("$shield" "$src" -o "$tmp/prog" 2>&1)
@@ -48,13 +50,16 @@ for src in "$root"/tests/*.sword; do
     fi
 
     # A network test that hangs must not stall the whole run.
-    output=$(perl -e 'alarm 30; exec @ARGV' "$tmp/prog" 2>/dev/null)
+    output=$(perl -e 'alarm 30; exec @ARGV' "$tmp/prog" 2>"$tmp/stderr")
     got=$?
     if [ "$got" != "$want_exit" ]; then
         echo "FAIL $name: exit $got, want $want_exit"
         fail=$((fail + 1))
     elif [ -n "$want_output" ] && ! printf '%s\n' "$output" | grep -qF "$want_output"; then
         echo "FAIL $name: output '$output', want '$want_output'"
+        fail=$((fail + 1))
+    elif [ -n "$want_panic" ] && ! grep -qF "$want_panic" "$tmp/stderr"; then
+        echo "FAIL $name: stderr '$(cat "$tmp/stderr")', want '$want_panic'"
         fail=$((fail + 1))
     else
         pass=$((pass + 1))
@@ -947,6 +952,63 @@ if [ "$status_254" = 254 ] && [ "$status_256" = 255 ]; then
 else
     echo "FAIL exit status of codes 254 and 256: $status_254 and $status_256, want 254 and 255"
     fail=$((fail + 1))
+fi
+
+# `shield checks` lists every bounds check of the program's own package that
+# is still in the code, and with -all the ones proven away too, one line each.
+want_checks='tests/checkslist.sword:8:19: xs[i]: proven in range
+tests/checkslist.sword:8:28: ys[i]: tested once before the loop at line 7
+tests/checkslist.sword:8:37: xs[k]: tested once before the loop at line 7
+tests/checkslist.sword:11:12: out[i]: proven in range
+tests/checkslist.sword:11:20: ys[i]: tested once before the loop at line 10
+tests/checkslist.sword:15:19: xs[j]: checked on every turn
+tests/checkslist.sword:18:15: xs[0..2]: checked
+tests/checkslist.sword:19:23: head[1]: checked
+tests/checkslist.sword:19:32: xs[..]: proven in range
+tests/checkslist.sword:25:15: a[..]: proven in range
+tests/checkslist.sword:25:22: a[..]: proven in range
+tests/checkslist.sword:25:32: b[..]: proven in range
+tests/checkslist.sword:34:19: xs[k - 1]: checked only on the first and last turns of the loop at line 33
+7 bounds checks, 1 of them on every turn; 6 proven in range'
+got_checks=$(cd "$root" && "$shield" checks -all tests/checkslist.sword 2>&1)
+got_short=$(cd "$root" && "$shield" checks tests/checkslist.sword 2>&1 |
+    grep -c ': proven in range$')
+got_fast=$(cd "$root" && "$shield" checks --mode=fast tests/checkslist.sword 2>&1)
+if [ "$got_checks" != "$want_checks" ]; then
+    echo "FAIL shield checks -all:"
+    printf '%s\n' "$got_checks" | sed 's/^/     /'
+    fail=$((fail + 1))
+elif [ "$got_short" != 0 ]; then
+    echo "FAIL shield checks without -all lists the proven ones"
+    fail=$((fail + 1))
+elif [ "$got_fast" != "no bounds checks: this mode does not check" ]; then
+    echo "FAIL shield checks --mode=fast: $got_fast"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# Each way of dropping a bounds check can be switched off for measuring, and
+# with all of them off every index in a loop is checked on every turn. Under
+# --audit a dropped check stays in as one with a message of its own.
+got_without=$(cd "$root" && "$shield" checks -all \
+    --without=walked,walked-mut,versioned,split tests/checkslist.sword 2>&1 | tail -1)
+got_unknown=$("$shield" checks --without=nothing "$root/tests/checkslist.sword" 2>&1)
+audited=$("$shield" --emit-llvm --audit "$root/tests/checkslist.sword" 2>&1 |
+    grep -c 'compiler dropped')
+unaudited=$("$shield" --emit-llvm "$root/tests/checkslist.sword" 2>&1 |
+    grep -c 'compiler dropped')
+if [ "$got_without" != "9 bounds checks, 7 of them on every turn; 4 proven in range" ]; then
+    echo "FAIL shield checks --without: $got_without"
+    fail=$((fail + 1))
+elif ! printf '%s\n' "$got_unknown" | grep -qF "nothing called 'nothing' to build without"; then
+    echo "FAIL --without=nothing: $got_unknown"
+    fail=$((fail + 1))
+elif [ "$audited" = 0 ] || [ "$unaudited" != 0 ]; then
+    echo "FAIL --audit: the message $audited times with it, $unaudited without"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
 fi
 
 # Both programs say the version the source says, and the same one.

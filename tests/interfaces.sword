@@ -6,7 +6,7 @@ error WriteFailed = "the write failed"
 extern func write(fd i32, buf [*]u8, n u64) i64
 
 interface Writer {
-    put(s string) !u64
+    mut put(s string) !u64
 }
 
 struct Fd {

@@ -33,6 +33,7 @@ func main() !int {
     return int(dst[63] % 100)
 }
 ```
+<!-- exits: 69 -->
 
 Eight tasks write into eight pieces of the same array. That compiles because
 `chunks` hands out pieces that cannot overlap. Slice `dst` by hand inside the
@@ -53,7 +54,7 @@ make
 make install
 ```
 
-That builds the latest release, 0.3.2 "Quench", from `main`; `develop` has
+That builds the latest release, 0.4.0 "Temper", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -65,6 +66,9 @@ func main() !int {
     return 0
 }
 ```
+<!-- prints:
+8 workers, 12.5ms each
+-->
 
 That puts `shield` (the compiler) and `swordls` (the language server) in
 `~/.local/bin`. See [docs/install.md](docs/install.md) for prefixes, editor
@@ -76,6 +80,8 @@ setup and what the build needs.
   what it costs. Read this before the tour if you are deciding whether to care.
 - **[A tour of Sword](docs/tour.md)** — start here. Every section is a program
   you can run, and they build on each other from hello world to parallel code.
+- **[Sword by example](docs/examples/README.md)** — complete programs, one subject
+  each: an allocator, a bytecode machine, a binary format, calling C.
 - **[Concurrency](docs/concurrency.md)** — how tasks, partitions and the race
   checker fit together, and why they are shaped the way they are.
 - **[HTTP](docs/http.md)** — writing a server and a client with `std/http`.

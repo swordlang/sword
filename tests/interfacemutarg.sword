@@ -1,0 +1,26 @@
+// expect-error: cannot pass immutable binding 'b'
+// A `mut` parameter of an interface method asks for writable memory, as it does
+// on any function.
+
+interface Reader {
+    Read(mut into []u8)
+}
+
+struct R {
+    v u8
+}
+
+func (r *R) Read(mut into []u8) {
+    into[0] = r.v
+}
+
+func use(r Reader, b []u8) {
+    r.Read(b)
+}
+
+func main() int {
+    buf := [4]u8{1, 2, 3, 4}
+    r := R{v: 9}
+    use(&r, buf[..])
+    return int(buf[0])
+}

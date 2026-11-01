@@ -1,0 +1,17 @@
+// expect: 99
+// `continue` in a parallel loop skips the one index it is in; a loop nested in
+// the body may still break out of itself.
+
+func main() int {
+    mut acc u64 = 0
+    parallel for i in 0..100 reduce(+: acc) {
+        if i == 3 {
+            continue
+        }
+        for {
+            break
+        }
+        acc += 1
+    }
+    return int(acc)
+}

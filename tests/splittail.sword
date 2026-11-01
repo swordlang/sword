@@ -1,0 +1,21 @@
+// expect: 134
+// expect-output: turn 2
+// expect-panic: panic: index out of bounds at line 13
+// The last turn reads past the end. Every turn before it runs and prints,
+// and the panic comes on that turn, as it did before the loop was split.
+
+import "std/io"
+
+func walk(xs []u64) !u64 {
+    mut acc u64 = 0
+    for k in 0..xs.len {
+        try io.Printf("turn {}\n", k)
+        acc +%= xs[k + 1]
+    }
+    return acc
+}
+
+func main() !int {
+    a := [4]u64{1, 2, 3, 4}
+    return int(try walk(a[..]))
+}

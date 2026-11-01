@@ -16,6 +16,7 @@
 #include "version.h"
 #include "types.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
@@ -42,6 +43,7 @@ enum Stage {
 void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
+        "       shield checks <file.sword | directory> [-all] [options]\n"
         "       shield get <module>[@version | @commit | @none]\n"
         "       shield vendor\n"
         "       shield new [--lib] <module path> [package name]\n"
@@ -52,6 +54,7 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this one; repeat for more\n"
         "  -bench         test only: run the Benchmark... functions instead\n"
+        "  -all           checks only: list the bounds checks proven away too\n"
         "  -sim           test only: run each test under simulated scheduling,\n"
         "                 one thread and a virtual clock, once per seed\n"
         "  -seeds <n>     test only, with -sim: how many seeds (default 100)\n"
@@ -236,6 +239,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // read as an archive and not as more LLVM IR.
   std::string cmd = "clang " + quoted("-O" + opt_level) + " -Wno-override-module";
   if (!target.empty()) cmd += " --target=" + quoted(target);
+  for (const std::string &f : dead_strip_compile_flags(target))
+    cmd += " " + quoted(f);
   cmd += " -x ir " + quoted(ll_path);
   if (object_only) {
     cmd += " -c -o " + quoted(out_path);
@@ -251,6 +256,8 @@ bool assemble(const std::string &ll_path, const std::string &out_path,
   // what resolves what is still missing: what the runtime was built against,
   // then --link, then the libraries extern declarations named.
   for (const std::string &arg : link) cmd += " " + quoted(arg);
+  for (const std::string &arg : dead_strip_link_flags(target))
+    cmd += " " + quoted(arg);
   cmd += " -o " + quoted(out_path);
   int status = system(cmd.c_str());
   if (status != 0) {
@@ -271,7 +278,7 @@ bool link_objects(const std::vector<std::string> &objects,
   for (const std::string &o : objects) cmd += " " + quoted(o);
   if (!runtime.empty()) cmd += " " + quoted(runtime) + " -pthread";
   for (const std::string &arg : link) cmd += " " + quoted(arg);
-  for (const std::string &arg : split_link_flags(target))
+  for (const std::string &arg : dead_strip_link_flags(target))
     cmd += " " + quoted(arg);
   cmd += " -o " + quoted(out_path);
   if (system(cmd.c_str()) == 0) return true;
@@ -495,6 +502,59 @@ int simulate(const std::string &output, const char *input, uint64_t first,
   return failed ? 1 : 0;
 }
 
+// One line per index or slice, in source order, the way a diagnostic reads,
+// so an editor can jump to it. A generic function's instances share a line;
+// the listing gives the line the worst answer any instance got.
+int list_checks(const IrModule &mod, Mode mode, bool every) {
+  if (!mode_checks(mode)) {
+    printf("no bounds checks: this mode does not check\n");
+    return 0;
+  }
+  std::vector<IrModule::BoundsSite> sites = mod.bounds;
+  std::stable_sort(sites.begin(), sites.end(),
+                   [](const IrModule::BoundsSite &a,
+                      const IrModule::BoundsSite &b) {
+                     if (a.file != b.file) return a.file < b.file;
+                     if (a.line != b.line) return a.line < b.line;
+                     return a.col < b.col;
+                   });
+  std::vector<IrModule::BoundsSite> kept;
+  for (const auto &s : sites) {
+    if (!kept.empty() && kept.back().file == s.file &&
+        kept.back().line == s.line && kept.back().col == s.col) {
+      if (s.how > kept.back().how) kept.back() = s;
+      continue;
+    }
+    kept.push_back(s);
+  }
+  int left = 0, every_turn = 0, proven = 0;
+  for (const auto &s : kept) {
+    if (s.how == IrModule::BOUNDS_PROVEN) {
+      proven++;
+      if (!every) continue;
+    } else {
+      left++;
+      if (s.how == IrModule::BOUNDS_CHECKED && s.in_loop) every_turn++;
+    }
+    printf("%s:%d:%d: %s: ", source_at(s.file).path.c_str(), s.line, s.col,
+           s.what.c_str());
+    if (s.how == IrModule::BOUNDS_PROVEN) printf("proven in range\n");
+    else if (s.how == IrModule::BOUNDS_BEFORE_LOOP)
+      printf("tested once before the loop at line %d\n", s.loop_line);
+    else if (s.how == IrModule::BOUNDS_AT_ENDS)
+      printf("checked only on the first and last turns of the loop at line"
+             " %d\n", s.loop_line);
+    else if (s.in_loop) printf("checked on every turn\n");
+    else printf("checked\n");
+  }
+  if (left == 0) printf("no bounds checks");
+  else if (left == 1) printf("1 bounds check");
+  else printf("%d bounds checks", left);
+  if (left > 0) printf(", %d of them on every turn", every_turn);
+  printf("; %d proven in range\n", proven);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -526,12 +586,17 @@ int main(int argc, char **argv) {
   // `shield test <path>` builds the package together with its `*_test.sword`
   // files, behind an entry point that runs them, then runs it.
   bool testing = argc > 1 && !strcmp(argv[1], "test");
-  int first = testing ? 2 : 1;
+  // `shield checks <path>` lowers the program and lists its bounds checks
+  // instead of building it.
+  bool checking = argc > 1 && !strcmp(argv[1], "checks");
+  bool every_check = false; // `-all`: the proven ones as well
+  int first = testing || checking ? 2 : 1;
   bool named = false; // whether -o asked for a particular path
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
   bool benching = false;         // `-bench`: run the benchmarks instead
   bool sim = false;              // `-sim` / `--sim`: built for the simulator
+  Tuning tuning;                 // `--without=`, `--audit`: for measuring
   uint64_t seeds = 100;          // `-seeds`: how many, from 1
   bool one_seed = false;         // `-seed`: just this one
   uint64_t seed = 0;
@@ -571,6 +636,7 @@ int main(int argc, char **argv) {
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
+    else if (checking && !strcmp(arg, "-all")) every_check = true;
     else if (testing && !strcmp(arg, "-sim")) sim = true;
     else if (!testing && !strcmp(arg, "--sim")) sim = true;
     else if (testing && !strcmp(arg, "-seeds") && i + 1 < argc)
@@ -579,6 +645,25 @@ int main(int argc, char **argv) {
       one_seed = true;
       seed = strtoull(argv[++i], nullptr, 10);
     }
+    // Left out of the usage on purpose: they measure the compiler and are
+    // not a way to build a program.
+    else if (!strncmp(arg, "--without=", 10)) {
+      std::string list = arg + 10;
+      for (size_t at = 0; at <= list.size();) {
+        size_t comma = list.find(',', at);
+        if (comma == std::string::npos) comma = list.size();
+        std::string name = list.substr(at, comma - at);
+        if (!tuning_without(tuning, name)) {
+          fprintf(stderr,
+                  "shield: nothing called '%s' to build without (walked, "
+                  "walked-mut, captures, versioned, split, deferred, lanes)\n",
+                  name.c_str());
+          return 1;
+        }
+        at = comma + 1;
+      }
+    }
+    else if (!strcmp(arg, "--audit")) tuning.audit = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (!strcmp(arg, "--version")) {
       printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
@@ -662,6 +747,10 @@ int main(int argc, char **argv) {
   request.weak_symbols = prog.weak_symbols;
   std::string runtime = runtime_archive(target);
   if (!runtime.empty()) request.runtime_flags = runtime_link_flags(target);
+  // Only std/tls reaches OpenSSL, through the runtime's sword_tls_ functions.
+  request.tls = false;
+  for (const auto &symbol : prog.c_symbols)
+    if (symbol.first.rfind("sword_tls_", 0) == 0) request.tls = true;
   if (!target.empty() && runtime.empty() && !object_only) {
     fprintf(stderr,
             "shield: there is no runtime for %s; build one with"
@@ -686,7 +775,12 @@ int main(int argc, char **argv) {
 
   IrModule mod;
   mod.sim_points = sim;
-  lower(prog, types, mode, mod);
+  mod.unwind_tables = mode != MODE_SMALL;
+  mod.optimize_size = mode == MODE_SMALL;
+  mod.list_bounds = checking;
+  lower(prog, types, mode, mod, tuning);
+
+  if (checking) return list_checks(mod, mode, every_check);
 
   if (stage == STAGE_IR) {
     ir_print(mod, stdout);

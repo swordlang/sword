@@ -1,0 +1,12 @@
+// expect: 134
+// Dividing by zero panics, in every build mode.
+
+func rem(a u64, b u64) u64 {
+    return a % b
+}
+
+func main() int {
+    mut z u64 = 1
+    z -= 1
+    return int(rem(7, z))
+}

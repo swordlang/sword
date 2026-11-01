@@ -1,0 +1,17 @@
+// expect-error: every turn would write 'total' through 'bump'; a 'parallel for' over pieces may only write its own piece, 'part'
+// A turn owns its piece and what it declares; everything else it may only
+// read, whether the write is an assignment or a call that takes it 'mut'.
+
+func bump(mut t *u64) {
+    *t += 1
+}
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    mut total u64 = 0
+    parallel for part in xs.chunks(2) {
+        part[0] = 1
+        bump(&total)
+    }
+}
