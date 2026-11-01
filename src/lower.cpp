@@ -638,11 +638,13 @@ struct Lowerer {
   void captures_of(Node *loop, std::vector<Symbol *> &out) {
     std::set<Symbol *> local;
     local.insert(loop->sym);
+    if (loop->index_sym) local.insert(loop->index_sym);
     walk(loop->body, [&](Node *n) {
       if (n->kind == ND_VAR || n->kind == ND_CATCH ||
-          (n->kind == ND_FOR && n->is_range) ||
+          (n->kind == ND_FOR && !n->name.empty()) ||
           (n->kind == ND_IF && !n->name.empty()))
         if (n->sym) local.insert(n->sym);
+      if (n->index_sym) local.insert(n->index_sym);
     });
 
     std::set<Symbol *> seen;
