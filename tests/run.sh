@@ -954,6 +954,40 @@ else
     fail=$((fail + 1))
 fi
 
+# `shield checks` lists every bounds check of the program's own package that
+# is still in the code, and with -all the ones proven away too, one line each.
+want_checks='tests/checkslist.sword:8:19: xs[i]: proven in range
+tests/checkslist.sword:8:28: ys[i]: tested once before the loop at line 7
+tests/checkslist.sword:8:37: xs[k]: tested once before the loop at line 7
+tests/checkslist.sword:11:12: out[i]: proven in range
+tests/checkslist.sword:11:20: ys[i]: tested once before the loop at line 10
+tests/checkslist.sword:15:19: xs[j]: checked on every turn
+tests/checkslist.sword:18:15: xs[0..2]: checked
+tests/checkslist.sword:19:23: head[1]: checked
+tests/checkslist.sword:19:32: xs[..]: proven in range
+tests/checkslist.sword:25:15: a[..]: proven in range
+tests/checkslist.sword:25:22: a[..]: proven in range
+tests/checkslist.sword:25:32: b[..]: proven in range
+tests/checkslist.sword:34:19: xs[k - 1]: checked only on the first and last turns of the loop at line 33
+7 bounds checks, 1 of them on every turn; 6 proven in range'
+got_checks=$(cd "$root" && "$shield" checks -all tests/checkslist.sword 2>&1)
+got_short=$(cd "$root" && "$shield" checks tests/checkslist.sword 2>&1 |
+    grep -c ': proven in range$')
+got_fast=$(cd "$root" && "$shield" checks --mode=fast tests/checkslist.sword 2>&1)
+if [ "$got_checks" != "$want_checks" ]; then
+    echo "FAIL shield checks -all:"
+    printf '%s\n' "$got_checks" | sed 's/^/     /'
+    fail=$((fail + 1))
+elif [ "$got_short" != 0 ]; then
+    echo "FAIL shield checks without -all lists the proven ones"
+    fail=$((fail + 1))
+elif [ "$got_fast" != "no bounds checks: this mode does not check" ]; then
+    echo "FAIL shield checks --mode=fast: $got_fast"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do

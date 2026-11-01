@@ -16,6 +16,7 @@
 #include "version.h"
 #include "types.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
@@ -42,6 +43,7 @@ enum Stage {
 void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
+        "       shield checks <file.sword | directory> [-all] [options]\n"
         "       shield get <module>[@version | @commit | @none]\n"
         "       shield vendor\n"
         "       shield new [--lib] <module path> [package name]\n"
@@ -52,6 +54,7 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this one; repeat for more\n"
         "  -bench         test only: run the Benchmark... functions instead\n"
+        "  -all           checks only: list the bounds checks proven away too\n"
         "  -sim           test only: run each test under simulated scheduling,\n"
         "                 one thread and a virtual clock, once per seed\n"
         "  -seeds <n>     test only, with -sim: how many seeds (default 100)\n"
@@ -499,6 +502,59 @@ int simulate(const std::string &output, const char *input, uint64_t first,
   return failed ? 1 : 0;
 }
 
+// One line per index or slice, in source order, the way a diagnostic reads,
+// so an editor can jump to it. A generic function's instances share a line;
+// the listing gives the line the worst answer any instance got.
+int list_checks(const IrModule &mod, Mode mode, bool every) {
+  if (!mode_checks(mode)) {
+    printf("no bounds checks: this mode does not check\n");
+    return 0;
+  }
+  std::vector<IrModule::BoundsSite> sites = mod.bounds;
+  std::stable_sort(sites.begin(), sites.end(),
+                   [](const IrModule::BoundsSite &a,
+                      const IrModule::BoundsSite &b) {
+                     if (a.file != b.file) return a.file < b.file;
+                     if (a.line != b.line) return a.line < b.line;
+                     return a.col < b.col;
+                   });
+  std::vector<IrModule::BoundsSite> kept;
+  for (const auto &s : sites) {
+    if (!kept.empty() && kept.back().file == s.file &&
+        kept.back().line == s.line && kept.back().col == s.col) {
+      if (s.how > kept.back().how) kept.back() = s;
+      continue;
+    }
+    kept.push_back(s);
+  }
+  int left = 0, every_turn = 0, proven = 0;
+  for (const auto &s : kept) {
+    if (s.how == IrModule::BOUNDS_PROVEN) {
+      proven++;
+      if (!every) continue;
+    } else {
+      left++;
+      if (s.how == IrModule::BOUNDS_CHECKED && s.in_loop) every_turn++;
+    }
+    printf("%s:%d:%d: %s: ", source_at(s.file).path.c_str(), s.line, s.col,
+           s.what.c_str());
+    if (s.how == IrModule::BOUNDS_PROVEN) printf("proven in range\n");
+    else if (s.how == IrModule::BOUNDS_BEFORE_LOOP)
+      printf("tested once before the loop at line %d\n", s.loop_line);
+    else if (s.how == IrModule::BOUNDS_AT_ENDS)
+      printf("checked only on the first and last turns of the loop at line"
+             " %d\n", s.loop_line);
+    else if (s.in_loop) printf("checked on every turn\n");
+    else printf("checked\n");
+  }
+  if (left == 0) printf("no bounds checks");
+  else if (left == 1) printf("1 bounds check");
+  else printf("%d bounds checks", left);
+  if (left > 0) printf(", %d of them on every turn", every_turn);
+  printf("; %d proven in range\n", proven);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -530,7 +586,11 @@ int main(int argc, char **argv) {
   // `shield test <path>` builds the package together with its `*_test.sword`
   // files, behind an entry point that runs them, then runs it.
   bool testing = argc > 1 && !strcmp(argv[1], "test");
-  int first = testing ? 2 : 1;
+  // `shield checks <path>` lowers the program and lists its bounds checks
+  // instead of building it.
+  bool checking = argc > 1 && !strcmp(argv[1], "checks");
+  bool every_check = false; // `-all`: the proven ones as well
+  int first = testing || checking ? 2 : 1;
   bool named = false; // whether -o asked for a particular path
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
@@ -575,6 +635,7 @@ int main(int argc, char **argv) {
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
+    else if (checking && !strcmp(arg, "-all")) every_check = true;
     else if (testing && !strcmp(arg, "-sim")) sim = true;
     else if (!testing && !strcmp(arg, "--sim")) sim = true;
     else if (testing && !strcmp(arg, "-seeds") && i + 1 < argc)
@@ -696,7 +757,10 @@ int main(int argc, char **argv) {
   mod.sim_points = sim;
   mod.unwind_tables = mode != MODE_SMALL;
   mod.optimize_size = mode == MODE_SMALL;
+  mod.list_bounds = checking;
   lower(prog, types, mode, mod);
+
+  if (checking) return list_checks(mod, mode, every_check);
 
   if (stage == STAGE_IR) {
     ir_print(mod, stdout);

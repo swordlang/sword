@@ -84,7 +84,9 @@ never lets LLVM see into the runtime. Temper is about that:
 - test once, before a loop starts, the indexing it does on another slice or
   at an index no turn moves, and run a copy of the loop with no checks when
   the test passes. When it fails the loop runs as written, so the panic comes
-  on the same turn and line it always did;
+  on the same turn and line it always did. A loop that reads `a[k - 1]` or
+  `a[k + w]` runs the turns where those are in range without checks, and only
+  its first and last turns as written;
 - settle the overflow checks of a loop that does nothing but add once, after
   it, instead of on every addition, with the same panic on the same line;
 - `noalias` where the race checker has proved two pieces disjoint — only there,
