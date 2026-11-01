@@ -44,6 +44,7 @@ void usage() {
   fputs("usage: shield <file.sword | directory> [options]\n"
         "       shield test <file.sword | directory> [options]\n"
         "       shield checks <file.sword | directory> [-all] [options]\n"
+        "       shield det <file.sword | directory> [-all] [options]\n"
         "       shield get <module>[@version | @commit | @none]\n"
         "       shield vendor\n"
         "       shield new [--lib] <module path> [package name]\n"
@@ -54,7 +55,8 @@ void usage() {
         "  -p <n>         test only: how many tests may run at once\n"
         "  -run <name>    test only: run just this one; repeat for more\n"
         "  -bench         test only: run the Benchmark... functions instead\n"
-        "  -all           checks only: list the bounds checks proven away too\n"
+        "  -all           checks only: list the bounds checks proven away too;\n"
+        "                 det only: list the functions that are det too\n"
         "  -sim           test only: run each test under simulated scheduling,\n"
         "                 one thread and a virtual clock, once per seed\n"
         "  -seeds <n>     test only, with -sim: how many seeds (default 100)\n"
@@ -555,6 +557,44 @@ int list_checks(const IrModule &mod, Mode mode, bool every) {
   return 0;
 }
 
+// One line per function, the way a diagnostic reads; under one that is not
+// det, the chain that took it away, from the function to the cause.
+int list_det(const DetListing &listing, bool every) {
+  int det = 0, given = 0;
+  for (const DetListing::Function &f : listing.functions) {
+    bool plain = f.det && f.unless.empty();
+    if (plain) det++;
+    else if (f.det) given++;
+    if (plain && !every) continue;
+    printf("%s:%d:%d: %s: ", source_at(f.at.file).path.c_str(), f.at.line,
+           f.at.col, f.name.c_str());
+    if (plain) printf("det\n");
+    else if (!f.det) printf("not det\n");
+    else {
+      printf("det when its ");
+      for (size_t i = 0; i < f.unless.size(); i++)
+        printf("%s%s", i == 0 ? "" : i + 1 == f.unless.size() ? " and " : ", ",
+               f.unless[i].c_str());
+      printf(f.unless.size() == 1 ? " is\n" : " are\n");
+    }
+    for (const auto &link : f.why)
+      printf("    %s:%d:%d: %s\n", source_at(link.first.file).path.c_str(),
+             link.first.line, link.first.col, link.second.c_str());
+  }
+  size_t all = listing.functions.size();
+  printf("%d of %zu function%s det", det, all, all == 1 ? "" : "s");
+  if (given > 0)
+    printf(", %d more when what %s handed is", given,
+           given == 1 ? "it is" : "they are");
+  if (listing.uninstantiated == 1)
+    printf("; 1 generic function nothing instantiates is not counted");
+  else if (listing.uninstantiated > 1)
+    printf("; %d generic functions nothing instantiates are not counted",
+           listing.uninstantiated);
+  printf("\n");
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -590,7 +630,10 @@ int main(int argc, char **argv) {
   // instead of building it.
   bool checking = argc > 1 && !strcmp(argv[1], "checks");
   bool every_check = false; // `-all`: the proven ones as well
-  int first = testing || checking ? 2 : 1;
+  // `shield det <path>` checks the program, or a library, and lists which of
+  // its functions are det.
+  bool listing_det = argc > 1 && !strcmp(argv[1], "det");
+  int first = testing || checking || listing_det ? 2 : 1;
   bool named = false; // whether -o asked for a particular path
   std::string forwarded; // options the test binary reads for itself
   std::vector<std::string> only; // `-run`: the tests to keep
@@ -636,7 +679,8 @@ int main(int argc, char **argv) {
     else if (testing && !strcmp(arg, "-run") && i + 1 < argc)
       only.push_back(argv[++i]);
     else if (testing && !strcmp(arg, "-bench")) benching = true;
-    else if (checking && !strcmp(arg, "-all")) every_check = true;
+    else if ((checking || listing_det) && !strcmp(arg, "-all"))
+      every_check = true;
     else if (testing && !strcmp(arg, "-sim")) sim = true;
     else if (!testing && !strcmp(arg, "--sim")) sim = true;
     else if (testing && !strcmp(arg, "-seeds") && i + 1 < argc)
@@ -729,7 +773,9 @@ int main(int argc, char **argv) {
     return 1;
 
   TypeTable types;
-  if (!check(prog, types)) return 1;
+  DetListing det;
+  if (!check(prog, types, listing_det ? &det : nullptr)) return 1;
+  if (listing_det) return list_det(det, every_check);
 
   if (stage == STAGE_AST) {
     for (Package *pkg : prog.order) {

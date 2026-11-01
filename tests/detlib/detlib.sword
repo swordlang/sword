@@ -1,0 +1,41 @@
+package detlib
+
+// A library listed by `shield det` on its own, with no main: it cannot know
+// what it will be handed, so a call through an interface leaves a function
+// det on a condition. run.sh holds the listing.
+
+import "std/mem"
+import "std/time"
+
+interface Scale {
+    By(v i64) i64
+}
+
+func Copy(mut a mem.Allocator, xs []u8) ?[]u8 {
+    mut out := mem.Alloc[u8](a, xs.len) orelse return nil
+    for i in 0..xs.len {
+        out[i] = xs[i]
+    }
+    return out
+}
+
+func Twice(mut a mem.Allocator, xs []u8) u64 {
+    out := Copy(a, xs) orelse return 0
+    return out.len * 2
+}
+
+func Both(mut a mem.Allocator, s Scale, xs []u8) i64 {
+    return s.By(i64(Twice(a, xs)))
+}
+
+func Sum(xs []i64) i64 {
+    mut total i64 = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+func Stamp(mut a mem.Allocator, xs []u8) i64 {
+    return i64(Twice(a, xs)) + time.Now().AsNanos()
+}

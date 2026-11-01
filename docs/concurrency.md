@@ -219,6 +219,10 @@ back are the operating system's business. The same call is one or the other
 depending on what the program binds into the interface, and the compiler knows
 which because it can see the whole program.
 
+`shield det` asks the same question of every function at once, written `det`
+or not, and prints the chain under each one that is not, so you can see how
+much of a program is det before claiming it anywhere.
+
 ## The race checker
 
 One rule covers it:
