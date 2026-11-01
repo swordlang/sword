@@ -1,0 +1,12 @@
+// expect-error: 'parallel for' needs a range or a partition
+// A loop over elements hands each turn a copy, which a parallel loop could not
+// write back; over positions it is 'parallel for i in 0..xs.len'.
+
+func main() {
+    xs := [4]u64{1, 2, 3, 4}
+    s := xs[..]
+    mut out := [4]u64{}
+    parallel for x in s {
+        out[0] = x
+    }
+}

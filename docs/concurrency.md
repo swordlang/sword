@@ -390,6 +390,68 @@ production as a heisenbug three months later.
 There is no `break` either. The iterations have no order, so there is no point
 after which the rest would be skipped; `continue` skips the one index it is in.
 
+### Over the pieces of a partition
+
+A grid stored by rows is written a row at a time, and `xs[i]` cannot say that:
+the turn that owns row `r` writes `w` elements, none of them at its own index.
+A `parallel for` over a partition gives each turn its piece instead:
+
+```sword
+import "std/io"
+
+// One step of heat spreading on a grid of w columns: each cell becomes the
+// mean of its four neighbours, and the border stays where it is.
+func step(w u64, a []f64, mut b []f64) {
+    parallel for off, row in b.chunks(w) {
+        if off == 0 || off + w >= a.len {
+            for j in 0..row.len {
+                row[j] = a[off + j]
+            }
+            continue
+        }
+        up := a[off - w..off]
+        mid := a[off..off + w]
+        down := a[off + w..off + 2 * w]
+        row[0] = mid[0]
+        row[w - 1] = mid[w - 1]
+        for j in 1..w - 1 {
+            row[j] = (up[j] + down[j] + mid[j - 1] + mid[j + 1]) * 0.25
+        }
+    }
+}
+
+func main() !void {
+    mut a := [64]f64{}
+    mut b := [64]f64{}
+    for j in 0..8 {
+        a[j] = 100.0
+    }
+    for k in 0..10 {
+        step(8, a[..], b[..])
+        step(8, b[..], a[..])
+    }
+    try io.Printf("{} {}\n", a[9], a[27])
+}
+```
+<!-- prints:
+46.75421719766746 26.123753395404492
+-->
+
+Each turn writes `row`, and only `row`. The rows above and below come from
+`a`, which the loop only reads, so a turn reads its neighbours' cells without
+racing anyone. `b` itself is out of reach in the body: by its own name it is
+every other turn's row too, and the compiler says so.
+
+```sword
+parallel for off, row in b.chunks(w) {
+    row[0] = b[off + w]     // error: 'b' is cut into pieces by this loop, so a turn reaches it only through its own piece, 'row'
+}
+```
+
+The pieces are the ones the sequential `chunks` loop gives, at the same
+offsets, the last one short, and there is no `reduce`: each turn answers in its
+own piece.
+
 ### Reductions
 
 Accumulating into one variable is the exception that needs help:

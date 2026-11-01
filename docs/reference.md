@@ -196,6 +196,7 @@ switch subject { case a, b: ... default: ... }
 
 parallel for i in a..b { }         // no break; continue skips one index
 parallel for i in a..b reduce(+: acc) { }
+parallel for off, part in xs.chunks(n) { }   // a turn writes only its piece
 
 scope { spawn f(args) ... }
 lock name := shared_value { }

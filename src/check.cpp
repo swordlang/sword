@@ -995,6 +995,44 @@ struct Checker {
     return false;
   }
 
+  // Every place the body writes, and the call it was written through when it
+  // was not an assignment. A write does not have to look like one. `c.Add(1)`
+  // and `bump(&c)` reach the same memory as `c.n += 1`; only the shape is
+  // different. What the callee may write is in its signature, which is the
+  // same thing `mut` on a parameter means everywhere else.
+  void each_write(Node *body,
+                  const std::function<void(Node *, const char *)> &note) {
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN) {
+        note(n->lhs, nullptr);
+        return;
+      }
+      if (n->kind != ND_CALL) return;
+      Type *sig = n->sym ? n->sym->type : nullptr;
+      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
+        sig = n->lhs->type;
+      const Field *dynamic = n->form == CALL_DYNAMIC ? called_method(n)
+                                                     : nullptr;
+      if (dynamic) sig = dynamic->type;
+      if (!sig) return;
+      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
+                                                        : nullptr;
+      size_t skip = 0;
+      if (dynamic && dynamic->writes) note(n->lhs->lhs, how);
+      if (n->form == CALL_METHOD) {
+        skip = 1;
+        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
+            n->lhs->lhs)
+          note(n->lhs->lhs, how);
+      }
+      for (size_t i = 0; i < n->kids.size(); i++) {
+        size_t at = i + skip;
+        if (at < sig->param_mut.size() && sig->param_mut[at])
+          note(n->kids[i], how);
+      }
+    });
+  }
+
   // Iterations run on different workers at the same time, so whatever the
   // body writes has to be reachable by exactly one of them.
   void check_parallel_body(Node *loop) {
@@ -1058,40 +1096,7 @@ struct Checker {
       written.insert(root);
     };
 
-    walk(loop->body, [&](Node *n) {
-      if (n->kind == ND_ASSIGN) {
-        note_write(n->lhs, nullptr);
-        return;
-      }
-      // A write does not have to look like one. `c.Add(1)` and `bump(&c)`
-      // reach the same memory as `c.n += 1`, and every iteration would do it;
-      // only the shape is different. What the callee may write is in its
-      // signature, which is the same thing `mut` on a parameter means
-      // everywhere else.
-      if (n->kind != ND_CALL) return;
-      Type *sig = n->sym ? n->sym->type : nullptr;
-      if (!sig && n->lhs && n->lhs->type && n->lhs->type->kind == TY_FUNC)
-        sig = n->lhs->type;
-      const Field *dynamic = n->form == CALL_DYNAMIC ? called_method(n)
-                                                     : nullptr;
-      if (dynamic) sig = dynamic->type;
-      if (!sig) return;
-      const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
-                                                        : nullptr;
-      size_t skip = 0;
-      if (dynamic && dynamic->writes) note_write(n->lhs->lhs, how);
-      if (n->form == CALL_METHOD) {
-        skip = 1;
-        if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
-            n->lhs->lhs)
-          note_write(n->lhs->lhs, how);
-      }
-      for (size_t i = 0; i < n->kids.size(); i++) {
-        size_t at = i + skip;
-        if (at < sig->param_mut.size() && sig->param_mut[at])
-          note_write(n->kids[i], how);
-      }
-    });
+    each_write(loop->body, note_write);
 
     // Once a name is written by the loop, every other mention of it has to be
     // indexed too, or one iteration would read what another is writing.
@@ -1114,7 +1119,65 @@ struct Checker {
               "reached as '%s[%s]'",
               n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
     });
+  }
 
+  // A parallel loop over a partition gives each turn one piece. The piece is
+  // all of the slice a turn may write, and the slice itself is out of reach:
+  // by its own name it is every other turn's piece too.
+  void check_parallel_pieces(Node *loop) {
+    std::set<Symbol *> local;
+    local.insert(loop->sym);
+    if (loop->index_sym) local.insert(loop->index_sym);
+    walk(loop->body, [&](Node *n) {
+      if (n->sym && (n->kind == ND_VAR || n->kind == ND_CATCH ||
+                     (n->kind == ND_FOR && !n->name.empty()) ||
+                     (n->kind == ND_IF && !n->name.empty())))
+        local.insert(n->sym);
+      if (n->index_sym) local.insert(n->index_sym);
+    });
+
+    Symbol *whole = loop->sym->chunk_of;
+    const char *piece = loop->name.c_str();
+    auto note_write = [&](Node *place, const char *how) {
+      Symbol *root = share_root(place);
+      if (!root || root == whole) return;
+      if (local.count(root)) {
+        Symbol *outer = outside_alias(root, local);
+        if (!outer) return;
+        root = outer;
+      }
+      std::string through = how ? std::string(" through '") + how + "'" : "";
+      error(place->pos,
+            "every turn would write '%s'%s; a 'parallel for' over pieces may "
+            "only write its own piece, '%s'",
+            root->name.c_str(), through.c_str(), piece);
+    };
+
+    // Naming the slice already says what is wrong; what it then makes the
+    // piece seem to reach would only say it again.
+    bool named = false;
+    std::vector<Symbol *> memory;
+    canonical(whole, memory);
+    walk(loop->body, [&](Node *n) {
+      if (n->kind != ND_IDENT || !n->sym || n->sym->is_func) return;
+      if (n->sym == whole) {
+        error(n->pos,
+              "'%s' is cut into pieces by this loop, so a turn reaches it only "
+              "through its own piece, '%s'",
+              n->sym->name.c_str(), piece);
+        named = true;
+        return;
+      }
+      if (local.count(n->sym) && !outside_alias(n->sym, local)) return;
+      if (reaches_any(n->sym, memory)) {
+        error(n->pos,
+              "'%s' reaches the memory of '%s', which this loop cuts into "
+              "pieces; a turn reaches it only through its own piece, '%s'",
+              n->sym->name.c_str(), whole->name.c_str(), piece);
+        named = true;
+      }
+    });
+    if (!named) each_write(loop->body, note_write);
   }
 
   // Everything the parent itself touches inside the block races with the
@@ -3718,14 +3781,36 @@ struct Checker {
           pop_scope();
           return;
         }
+        if (n->is_parallel && n->form != FOR_PARTITION) {
+          error(n->pos, "'parallel for' needs a range or a partition, as in "
+                        "'for i in 0..xs.len' or 'for off, part in "
+                        "xs.chunks(n)'");
+          pop_scope();
+          return;
+        }
+        if (n->is_parallel) {
+          open_scopes.push_back(n);
+          scope_loop_base.push_back(loop_depth);
+          scope_lock_base.push_back(held_locks.size());
+        }
         loop_depth++;
+        if (n->is_parallel) parallel_bodies.push_back(loop_depth);
         check_stmt(n->body);
+        if (n->is_parallel) parallel_bodies.pop_back();
         loop_depth--;
+        if (n->is_parallel) {
+          check_parallel_pieces(n);
+          scope_lock_base.pop_back();
+          scope_loop_base.pop_back();
+          open_scopes.pop_back();
+        }
         pop_scope();
         break;
       }
       if (n->is_parallel && !n->is_range) {
-        error(n->pos, "'parallel for' needs a range, as in 'for i in 0..n'");
+        error(n->pos, "'parallel for' needs a range or a partition, as in "
+                      "'for i in 0..xs.len' or 'for off, part in "
+                      "xs.chunks(n)'");
         pop_scope();
         return;
       }

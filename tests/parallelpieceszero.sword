@@ -1,0 +1,15 @@
+// expect: 134
+// expect-panic: panic: chunks(0) would never advance, at line 7
+// A parallel loop checks the size once, before cutting, as the sequential one
+// does.
+
+func cut(n u64, mut xs []u64) {
+    parallel for part in xs.chunks(n) {
+        part[0] = 1
+    }
+}
+
+func main() {
+    mut backing := [8]u64{}
+    cut(0, backing[..])
+}
