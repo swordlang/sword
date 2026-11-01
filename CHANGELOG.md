@@ -4,6 +4,120 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.4.0 — Temper
+
+*2026-11-01.* Tempering takes the brittleness out of hardened steel without
+softening it: this release takes out the checks the language proves are never
+needed, keeps every other one where it was, and makes a parallel float sum give
+the same bits on every machine.
+
+### What changes for existing programs
+
+- **A float `reduce(+)` gives different bits than in 0.3**, and from now on the
+  same ones on every thread count and every machine. Each of the 64 pieces
+  keeps sixteen sums, element k of the piece going into sum k % 16, folded by
+  halves, and the pieces are added in order. Against an exact sum of 16.7
+  million values the error went from −2.2e-5 to 1.7e-6.
+- **Interface methods that write say `mut`**: `mut Write(p []u8) !void`. A
+  call through an interface is checked against its signature like any other,
+  so a method that writes cannot be called on a value lent read-only, and a
+  method satisfies an interface only if it writes nothing the interface does
+  not allow. `mem.Allocator`'s `Alloc` and `Release` and `fmt.Sink`'s writes
+  are `mut`; calling them on an allocator that is not `mut` stops compiling,
+  and the message says what to add (#78).
+- **`...nil` replaces 0.3.2's `else nil`**: `Request{path: "/", ...nil}`, and
+  `T{...nil}` for a literal that names no field, which replaces `T{nil}`. Both
+  old spellings are refused with the one to write instead.
+- **`break` in a `parallel for` is refused.** It ended only the piece of the
+  range it ran in, so which indices ran depended on where the range was cut.
+  `continue` still skips one index.
+- **A shift out of range and a division that has no answer are never
+  undefined.** With checks on, a shift by the width or more panics; with them
+  off the count is taken modulo the width. A division by zero, and the most
+  negative value divided by −1, panic in every mode, and a constant that shifts
+  outside 0..63 is a compile error. Before, `1 << 70` on a `u64` gave 216, and
+  so did `7 / 0`.
+- **Two races in a `parallel for` are refused**: writing through a local copy
+  of a slice from outside (`mut r := ys; r[0] = …`), and reaching the memory
+  the loop writes under another name anywhere but `[i]`
+  (`xs[i] = ys[i + 1]` with both over one array).
+- `parallel for x in xs` used to pass the checker and fail in clang; it is
+  refused with what to write instead.
+
+### Language
+
+- **`parallel for off, part in xs.chunks(n)`** spreads a partition's turns over
+  the workers, each turn writing only its own piece. A grid stored by rows is
+  written a row at a time; `xs`, and any other name for its memory, cannot
+  appear in the body. There is no `reduce`.
+- An `else` may start the line after its `if`.
+
+### Speed
+
+Measured on an Apple M4, one thread unless said, alternating rounds against the
+build before, medians; the same answers on both sides.
+
+- **Bounds checks the language proves go.** `xs[i]` in `for i in a..xs.len`
+  over a slice nothing can change, and `out[i]` in a `parallel for`: a reducing
+  loop with overflow checks 182.6 → 140.7 ms, `out[i] = xs[i] *% 2` 224.9 →
+  181.3 ms.
+- **A loop's indexing is tested once, before it**, when no turn can move what
+  it indexes; a copy of the loop runs without checks when the test passes, and
+  the loop as written when it fails, so a panic comes on the same turn and
+  line. The all-pairs n-body: 99.8 → 55.8 ms, against 52.3 for C.
+- **A loop reading `a[k - 1]` or `a[k + w]` checks only its first and last
+  turns.** A stencil: 44.0 → 28.5 ms. A `mut` piece of `xs.chunks(n)` its turn
+  never reassigns counts as fixed too: a stencil by rows 30 → 26 ms.
+- **A loop that only adds settles its overflow check after it**, with the same
+  panic on the same line when there is one: `u64`, 2 MB summed 2000 times,
+  144.9 → 38.4 ms. When the bound gives up without an overflow the loop runs
+  twice, 142.4 → 186.3 ms.
+- **A float `reduce(+)` vectorises** through its sixteen sums: 266.0 → 40.3 ms
+  for `f64` in cache, 171.6 → 43.0 ms over 128 MB.
+- **What a `parallel for` only reads is copied into each piece**, so LLVM
+  stops reloading it every iteration: `out[i] = xs[i] * k + 1` 179 → 54 ms.
+- **A short `parallel for` costs a quarter of what it did**: the pieces come
+  from a counter, and on one worker the loop runs in the caller. A loop of 64
+  elements with `reduce`: 487 → 123 ns on one thread, 44 223 → 15 463 on ten.
+- **`num.Sqrt` is the processor's instruction**, with the same bits; a
+  negative argument still gives `NaN()` on every machine. The n-body that
+  calls it 67 million times: 11 048 → 98 ms.
+- **`num.Exact` adds into four banks**: 23.4 → 12.2 ms for 10⁷ terms, 2.5× a
+  plain sum. It takes about two kilobytes.
+- **Smaller binaries.** The link drops what nothing calls, a program that never
+  reaches `std/tls` does not link OpenSSL, the parking lot's buckets are no
+  longer initialised data, and each panic message is one string: `return 42`
+  stripped, 106 904 → 54 256 bytes. `--mode=small` drops the unwind tables.
+
+`noalias` on slices was measured and left out: `restrict` in C bought about
+3 %, inside the noise, and the race checker proves iterations independent, not
+slices disjoint, so a wrong one would be undefined behaviour.
+
+### Tools
+
+- **`shield checks <file | dir>`** lists every bounds check the program still
+  pays for, one line each in the form of a diagnostic: checked on every turn,
+  tested once before the loop at line N, checked only on the first and last
+  turns; `-all` lists the proven ones too.
+- The language server shows `mut` on an interface method.
+- The documentation's programs that say what they print are run and held to
+  it, and `docs/examples` is Sword by example: whole programs, explained a
+  piece at a time.
+
+### Standard library
+
+- `num.Sin` and `num.Cos` of an infinity answer `NaN()`, the same bits on
+  every machine; they gave the processor's NaN.
+
+### Fixes
+
+- Indexing through a pointer to an array or a slice (`a[1]` with
+  `a *[4]i64`) read and wrote the pointer's own slot.
+- A task woken while queued for a lock went on with its queue node still
+  linked, which showed as a segfault in a `select` on two channels; and the
+  lock buckets were built with a `call_once` that raced on Linux.
+- A loop over elements inside a `parallel for` gave clang bad IR.
+
 ## 0.3.2 — Quench
 
 *2026-10-30.* A patch to Quench that adds one form: a struct literal can leave
