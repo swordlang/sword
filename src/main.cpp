@@ -596,6 +596,7 @@ int main(int argc, char **argv) {
   std::vector<std::string> only; // `-run`: the tests to keep
   bool benching = false;         // `-bench`: run the benchmarks instead
   bool sim = false;              // `-sim` / `--sim`: built for the simulator
+  Tuning tuning;                 // `--without=`, `--audit`: for measuring
   uint64_t seeds = 100;          // `-seeds`: how many, from 1
   bool one_seed = false;         // `-seed`: just this one
   uint64_t seed = 0;
@@ -644,6 +645,25 @@ int main(int argc, char **argv) {
       one_seed = true;
       seed = strtoull(argv[++i], nullptr, 10);
     }
+    // Left out of the usage on purpose: they measure the compiler and are
+    // not a way to build a program.
+    else if (!strncmp(arg, "--without=", 10)) {
+      std::string list = arg + 10;
+      for (size_t at = 0; at <= list.size();) {
+        size_t comma = list.find(',', at);
+        if (comma == std::string::npos) comma = list.size();
+        std::string name = list.substr(at, comma - at);
+        if (!tuning_without(tuning, name)) {
+          fprintf(stderr,
+                  "shield: nothing called '%s' to build without (walked, "
+                  "walked-mut, captures, versioned, split, deferred, lanes)\n",
+                  name.c_str());
+          return 1;
+        }
+        at = comma + 1;
+      }
+    }
+    else if (!strcmp(arg, "--audit")) tuning.audit = true;
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (!strcmp(arg, "--version")) {
       printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
@@ -758,7 +778,7 @@ int main(int argc, char **argv) {
   mod.unwind_tables = mode != MODE_SMALL;
   mod.optimize_size = mode == MODE_SMALL;
   mod.list_bounds = checking;
-  lower(prog, types, mode, mod);
+  lower(prog, types, mode, mod, tuning);
 
   if (checking) return list_checks(mod, mode, every_check);
 
