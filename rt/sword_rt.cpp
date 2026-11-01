@@ -1830,6 +1830,38 @@ uint16_t sword_scope_end(void *blob) {
   return failed == kNoFailure ? 0 : (uint16_t)(failed & 0xFFFF);
 }
 
+namespace {
+
+// One parallel for's pieces, taken one at a time by whoever is free.
+struct Pieces {
+  sword_chunk_fn fn;
+  void *env;
+  int64_t lo, hi, chunk, count;
+  std::atomic<int64_t> next{0};
+  // The lowest failing piece's index and code, as a scope keeps its lowest
+  // failing spawn: the same answer however the pieces were shared out.
+  std::atomic<uint64_t> failed{kNoFailure};
+};
+
+void drain_pieces(Pieces *s) {
+  for (;;) {
+    int64_t i = s->next.fetch_add(1, std::memory_order_relaxed);
+    if (i >= s->count) return;
+    int64_t from = s->lo + i * s->chunk;
+    int64_t to = from + s->chunk > s->hi ? s->hi : from + s->chunk;
+    uint16_t code = s->fn(s->env, from, to, i);
+    if (code == 0) continue;
+    uint64_t mine = (uint64_t)i << 16 | code;
+    uint64_t seen = s->failed.load(std::memory_order_relaxed);
+    while (mine < seen &&
+           !s->failed.compare_exchange_weak(seen, mine,
+                                            std::memory_order_relaxed)) {
+    }
+  }
+}
+
+} // namespace
+
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
                             void *env, int64_t *pieces, int64_t most) {
   if (pieces) *pieces = 0;
@@ -1847,42 +1879,39 @@ uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
   if (chunk < 1) chunk = 1;
   int64_t count = (total + chunk - 1) / chunk;
 
-  // How many tasks run that cut is another matter, and it is allowed to
-  // depend on the pool: a piece answers in its own slot, so who ran it and in
-  // what order changes nothing. With few workers one task walks several
-  // pieces in a row, which is what keeps the fixed cut from costing anything.
+  // Who runs which piece is another matter, and it is allowed to depend on
+  // the pool: a piece answers in its own slot, so who ran it and in what
+  // order changes nothing. The caller and one helper per other worker take
+  // the next piece from a counter until none is left. Every task handed out
+  // is a worker woken, which for a short loop is most of what it costs, so
+  // there are no more of them than there are workers to run them; and the
+  // caller starts at once instead of waiting for any of them. A helper that
+  // wakes after the pieces are gone finds the counter spent and is done.
+  Pieces shared{fn, env, lo, hi, chunk, count};
+
   Pool &p = pool();
-  int64_t tasks = (int64_t)p.workers.size() * 4;
-  if (tasks < 1) tasks = 1;
-  if (tasks > count) tasks = count;
-  int64_t each = (count + tasks - 1) / tasks;
-
-  struct Run {
-    sword_chunk_fn fn;
-    void *env;
-    int64_t lo, hi, chunk, first, last;
-  };
-
-  alignas(8) unsigned char blob[SWORD_SCOPE_SIZE];
-  sword_scope_begin(blob);
-  for (int64_t at = 0; at < count; at += each) {
-    Run r{fn, env, lo, hi, chunk, at, at + each > count ? count : at + each};
-    sword_scope_spawn(
-        blob,
-        [](void *args) -> uint16_t {
-          Run *r = (Run *)args;
-          uint16_t failed = 0;
-          for (int64_t i = r->first; i < r->last; i++) {
-            int64_t from = r->lo + i * r->chunk;
-            int64_t to = from + r->chunk > r->hi ? r->hi : from + r->chunk;
-            uint16_t code = r->fn(r->env, from, to, i);
-            if (code && !failed) failed = code;
-          }
-          return failed;
-        },
-        &r, (int64_t)sizeof(Run));
+  int64_t helpers = (int64_t)p.workers.size() - 1;
+  if (helpers > count - 1) helpers = count - 1;
+  if (helpers > 0) {
+    // A helper's arguments are a copy of the pointer to `shared`, which
+    // outlives it: the scope joins before this frame returns.
+    alignas(8) unsigned char blob[SWORD_SCOPE_SIZE];
+    sword_scope_begin(blob);
+    Pieces *at = &shared;
+    for (int64_t h = 0; h < helpers; h++)
+      sword_scope_spawn(
+          blob, [](void *args) -> uint16_t {
+            drain_pieces(*(Pieces **)args);
+            return 0;
+          },
+          &at, (int64_t)sizeof(Pieces *));
+    drain_pieces(&shared);
+    sword_scope_end(blob);
+  } else {
+    drain_pieces(&shared);
   }
   if (pieces) *pieces = count;
-  return sword_scope_end(blob);
+  uint64_t failed = shared.failed.load(std::memory_order_acquire);
+  return failed == kNoFailure ? 0 : (uint16_t)(failed & 0xFFFF);
 }
 }

@@ -1,0 +1,32 @@
+// expect: 0
+// Many short parallel loops in a row, some with fewer turns than there are
+// workers: the pieces are shared out from a counter, and a helper that wakes
+// after they are gone must still be joined before the loop returns.
+
+func filled(mut xs []u64, n u64) {
+    parallel for i in 0..n {
+        xs[i] = i * 3
+    }
+}
+
+func main() int {
+    mut xs := [200]u64{}
+    mut total u64 = 0
+    for r in 0..3000 {
+        n := u64(r % 200)
+        filled(xs[..], n)
+        mut acc u64 = 0
+        parallel for i in 0..n reduce(+: acc) {
+            acc += xs[i]
+        }
+        // 3 × (0 + 1 + … + n-1), with n-1 wrapping harmlessly at n = 0
+        if acc != 3 * (n * (n -% 1) / 2) {
+            return 1
+        }
+        total += acc
+    }
+    if total == 0 {
+        return 2
+    }
+    return 0
+}
