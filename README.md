@@ -54,7 +54,7 @@ make
 make install
 ```
 
-That builds the latest release, 0.3.2 "Quench", from `main`; `develop` has
+That builds the latest release, 0.4.0 "Temper", from `main`; `develop` has
 what is coming next. What each release changed is in
 [CHANGELOG.md](CHANGELOG.md).
 

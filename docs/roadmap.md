@@ -2,8 +2,8 @@
 
 Where Sword is going, in the order it is likely to get there. Versions stay
 below 1.0 until the language stops changing under people's feet, and each one
-is named for a step in making a blade: Tamahagane, Fold and Quench are out,
-Temper is next, and the last is Edge, at 1.0.
+is named for a step in making a blade: Tamahagane, Fold, Quench and Temper
+are out, Polish is next, and the last is Edge, at 1.0.
 
 Nothing here has a date. A version ships when what it promises works and has
 been measured, and the [changelog](../CHANGELOG.md) says what each one actually
@@ -75,41 +75,38 @@ cycle.
 
 ## 0.4 Temper — speed
 
-Sword gets correct code out of LLVM, but not yet fast code. The compiler emits
-bounds checks it could prove away, calls everything with the C convention, and
-never lets LLVM see into the runtime. Temper is about that:
+Sword got correct code out of LLVM before Temper, but not fast code: it emitted
+bounds checks it could prove away, and checked every addition of a sum. Temper
+took out what the language proves and kept the rest where it was:
 
-- drop the bounds checks the language already proves, such as `xs[i]` inside
-  `for i in 0..xs.len` over a slice that cannot change;
-- test once, before a loop starts, the indexing it does on another slice or
-  at an index no turn moves, and run a copy of the loop with no checks when
-  the test passes. When it fails the loop runs as written, so the panic comes
-  on the same turn and line it always did. A loop that reads `a[k - 1]` or
-  `a[k + w]` runs the turns where those are in range without checks, and only
-  its first and last turns as written;
-- settle the overflow checks of a loop that does nothing but add once, after
-  it, instead of on every addition, with the same panic on the same line;
-- `noalias` where the race checker has proved two pieces disjoint — only there,
-  since a wrong one is undefined behaviour;
-- a faster calling convention for functions nothing outside the program calls,
-  and link-time optimisation with the runtime's hot paths;
-- smaller binaries: no TLS library in a program that does not import
-  `std/tls`, and nothing in the binary that nothing calls;
-- `shield checks`, which lists every bounds check that is still there, line by
-  line, so the ones that cost something in a loop can be looked at;
-- `runtime.SetThreads(n)`, so a program says how many workers it runs on
-  instead of leaving it to whoever sets `SWORD_THREADS`. It holds until the
-  first task starts, which is when the workers are made, and returns an error
-  after that. The variable stays, as the default the function overrides;
-- a runtime that needs no C++ library. On Linux, loading `libstdc++` is half of
-  what it takes a program that does nothing to start, and a binary that needs
-  it does not run on an image without it. The runtime keeps its C++ but stops
-  using that language's standard library, so a program asks for the C library
-  and nothing else.
+- `xs[i]` inside `for i in a..xs.len` needs no check over a slice nothing can
+  change, and neither does `out[i]` in a `parallel for`, whose body cannot
+  touch `out` itself;
+- a loop's indexing on another slice, or at an index no turn moves, is tested
+  once before it, and a copy of the loop runs without checks when the test
+  passes; a loop reading `a[k - 1]` or `a[k + w]` checks only its first and
+  last turns. A panic comes on the same turn and line it always did;
+- a loop that only adds settles its overflow check once, after it;
+- a float `reduce(+)` keeps sixteen sums per piece in an order the language
+  fixes, so a vector unit can follow it and the bits are the same on any
+  thread count and any machine;
+- `parallel for off, row in b.chunks(w)` writes a grid a row at a time;
+- `num.Sqrt` is the processor's instruction, with the same bits;
+- binaries lost what nothing calls and the TLS library when nothing reaches
+  `std/tls`: `return 42` went from 107 KB to 54 KB on macOS;
+- `shield checks` lists every bounds check that is still there, line by line.
 
-Every change is measured before and after, and the
-numbers go out together with a comparison against C, C++, Rust and Go: the same
-algorithms, idiomatic in each language, with versions and flags written down.
+Two of the plans were measured and left out. `noalias` on slices bought about
+3 % in C with `restrict`, inside the noise, and the race checker proves
+iterations independent, not slices disjoint, so a wrong one would be
+undefined behaviour. A faster calling convention for internal functions
+measured no effect.
+
+The comparison against C, C++, Rust, Zig and Go is in
+[sword-experiments](https://github.com/swordlang/sword-experiments): the same
+five kernels in each language on three machines, with versions and flags
+written down. Sword gives one answer per kernel on every machine and thread
+count.
 
 One change in Temper is not about speed. A method called through an interface
 could write through a value lent read-only, because an interface did not say
@@ -162,6 +159,19 @@ too, rather than leaving every register to a function written in C:
 
 On the other side of the scale, the HTTP client keeps a pool of connections per
 host instead of one, and can send a body in chunks as the server already does.
+
+Polish also takes what Temper left:
+
+- `runtime.SetThreads(n)`, so a program says how many workers it runs on
+  instead of leaving it to whoever sets `SWORD_THREADS`. It holds until the
+  first task starts, which is when the workers are made, and returns an error
+  after that. The variable stays, as the default the function overrides;
+- a runtime that needs no C++ library. On Linux, loading `libstdc++` is half of
+  what it takes a program that does nothing to start, and a binary that needs
+  it does not run on an image without it;
+- LLVM seeing the runtime's hot paths, an uncontended lock and the atomics;
+- faster float printing and parsing, and a faster `num.Exp`, with the same
+  output and the same bits.
 
 ## 0.6 — graphics processors
 
