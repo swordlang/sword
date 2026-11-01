@@ -9,8 +9,15 @@
 # The standard library's tests run at each count too; they print their own
 # timings, so there it is the verdict that has to agree.
 #
+# With SWORD_ANSWERS set, each test's exit status and checksum go to that file
+# as well, one line each, for CI to compare between machines. A test whose
+# output is meant to differ from one system to another, because it prints
+# something the operating system words, says so with
+# `// output-differs: <why>` and is compared there by its exit status alone.
+#
 #   SWORD_COUNTS  the pool sizes to try   (default: 1 2 3 4 8 16)
 #   SWORD_ROUNDS  runs at each size       (default: 1)
+#   SWORD_ANSWERS where to write the answers (default: nowhere)
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -29,6 +36,7 @@ for src in "$root"/tests/*.sword; do
     name=$(basename "$src" .sword)
     want_exit=$(sed -n 's|^// expect: *||p' "$src" | head -1)
     varies=$(sed -n 's|^// output-varies: *||p' "$src" | head -1)
+    differs=$(sed -n 's|^// output-differs: *||p' "$src" | head -1)
 
     if ! "$shield" "$src" -o "$tmp/$name" > "$tmp/$name.log" 2>&1; then
         echo "FAIL $name: compilation failed"
@@ -61,6 +69,13 @@ for src in "$root"/tests/*.sword; do
 
     answers=$(sort -u "$tmp/$name.answers" | wc -l | tr -d ' ')
     first=$(head -1 "$tmp/$name.answers" | cut -d' ' -f1)
+    if [ -n "${SWORD_ANSWERS:-}" ]; then
+        if [ -n "$differs" ]; then
+            echo "$name $first -" >> "$SWORD_ANSWERS"
+        else
+            echo "$name $(head -1 "$tmp/$name.answers")" >> "$SWORD_ANSWERS"
+        fi
+    fi
     if [ "$answers" != 1 ] || [ "$first" != "$want_exit" ]; then
         echo "FAIL $name: $answers answers across thread counts, want exit $want_exit"
         sed 's/^/     /' "$tmp/$name.seen"
