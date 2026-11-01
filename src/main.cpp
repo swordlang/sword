@@ -656,7 +656,8 @@ int main(int argc, char **argv) {
         if (!tuning_without(tuning, name)) {
           fprintf(stderr,
                   "shield: nothing called '%s' to build without (walked, "
-                  "walked-mut, captures, versioned, split, deferred, lanes)\n",
+                  "walked-mut, captures, versioned, split, deferred, lanes, "
+                  "steady)\n",
                   name.c_str());
           return 1;
         }
