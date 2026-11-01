@@ -14,7 +14,7 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-shield="$root/shield"
+shield=${SHIELD:-"$root/shield"}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -983,6 +983,29 @@ elif [ "$got_short" != 0 ]; then
     fail=$((fail + 1))
 elif [ "$got_fast" != "no bounds checks: this mode does not check" ]; then
     echo "FAIL shield checks --mode=fast: $got_fast"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
+# Each way of dropping a bounds check can be switched off for measuring, and
+# with all of them off every index in a loop is checked on every turn. Under
+# --audit a dropped check stays in as one with a message of its own.
+got_without=$(cd "$root" && "$shield" checks -all \
+    --without=walked,walked-mut,versioned,split tests/checkslist.sword 2>&1 | tail -1)
+got_unknown=$("$shield" checks --without=nothing "$root/tests/checkslist.sword" 2>&1)
+audited=$("$shield" --emit-llvm --audit "$root/tests/checkslist.sword" 2>&1 |
+    grep -c 'compiler dropped')
+unaudited=$("$shield" --emit-llvm "$root/tests/checkslist.sword" 2>&1 |
+    grep -c 'compiler dropped')
+if [ "$got_without" != "9 bounds checks, 7 of them on every turn; 4 proven in range" ]; then
+    echo "FAIL shield checks --without: $got_without"
+    fail=$((fail + 1))
+elif ! printf '%s\n' "$got_unknown" | grep -qF "nothing called 'nothing' to build without"; then
+    echo "FAIL --without=nothing: $got_unknown"
+    fail=$((fail + 1))
+elif [ "$audited" = 0 ] || [ "$unaudited" != 0 ]; then
+    echo "FAIL --audit: the message $audited times with it, $unaudited without"
     fail=$((fail + 1))
 else
     pass=$((pass + 1))

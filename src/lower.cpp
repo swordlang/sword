@@ -1,6 +1,7 @@
 #include "lower.h"
 #include "lexer.h"
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <set>
@@ -108,7 +109,10 @@ struct Lowerer {
   // boxed enum comes out as a name rather than a number.
   const std::unordered_map<Type *, Symbol *> *enum_names = nullptr;
 
-  Lowerer(TypeTable &t, IrModule &m, Mode mo) : types(t), mod(m), mode(mo) {}
+  Tuning tuning;
+
+  Lowerer(TypeTable &t, IrModule &m, Mode mo, const Tuning &tu)
+      : types(t), mod(m), mode(mo), tuning(tu) {}
 
   int new_value(Type *type) {
     fn->value_type.push_back(type);
@@ -920,6 +924,7 @@ struct Lowerer {
     // Only values whose writes go elsewhere: an array or a struct is written in
     // place, and an atomic is the place.
     for (Symbol *sym : c.captured) {
+      if (!tuning.captures) break;
       if (sym == loop->reduce_sym || !holds_still(sym->type)) continue;
       int own = alloca_slot(sym->type);
       if (is_aggregate(sym->type)) copy(own, sym->slot, sym->type);
@@ -960,7 +965,7 @@ struct Lowerer {
     Symbol *slice = walked_slice(loop, true);
     if (slice) walked.push_back({loop->sym, slice});
 
-    if (loop->reduce_kind == RMW_FADD) {
+    if (loop->reduce_kind == RMW_FADD && tuning.lanes) {
       lane_loop(loop, slot, index, limit, kFloatLanes, accumulator);
     } else {
       versioned_loop(loop, slot, first, limit);
@@ -1158,6 +1163,7 @@ struct Lowerer {
     if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
     Symbol *s = base->sym;
     if ((s->is_mut && !parallel) || s->is_func || !s->type) return nullptr;
+    if (!(s->is_mut ? tuning.walked_mut : tuning.walked)) return nullptr;
     if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
     return s;
   }
@@ -1218,6 +1224,13 @@ struct Lowerer {
     // Unsigned comparison catches negative indices too: they wrap to huge.
     int ok = binop(IR_LT, index, len, types.bool_ty);
     guard(ok, "panic: index out of bounds at line ", pos.line);
+  }
+
+  // Under `--audit`, in place of a check the compiler dropped.
+  void audit_check(int index, int len, Pos pos) {
+    int ok = binop(IR_LT, index, len, types.bool_ty);
+    guard(ok, "panic: a bounds check the compiler dropped fails at line ",
+          pos.line);
   }
 
   // --- overflow checks settled at the end of a loop -------------------------
@@ -1382,7 +1395,7 @@ struct Lowerer {
     // Debug builds keep the panic where it happens, for a debugger to stop
     // at; there is no vectorizer there to gain anything.
     std::vector<Accumulator> accs;
-    if (mode == MODE_SAFE) accs = deferrable(body);
+    if (mode == MODE_SAFE && tuning.deferred) accs = deferrable(body);
     if (accs.empty()) {
       counted_loop(body, more, enter, advance);
       return;
@@ -1591,8 +1604,9 @@ struct Lowerer {
         if (!proven_in_range(n)) {
           note_bounds(n, IrModule::BOUNDS_CHECKED);
           bounds_check(index, len, n->pos);
-        } else if (!unchecked.count(n)) {
-          note_bounds(n, IrModule::BOUNDS_PROVEN);
+        } else {
+          if (!unchecked.count(n)) note_bounds(n, IrModule::BOUNDS_PROVEN);
+          if (tuning.audit) audit_check(index, len, n->pos);
         }
       }
       return gep_index(data, index, n->type);
@@ -2134,7 +2148,8 @@ struct Lowerer {
                          types.usize_ty);
         return gep_index(base, offset, n->type->elem);
       }
-      if (wraps(n->op) || !is_integer(n->type) || no_overflow.count(n))
+      if (wraps(n->op) || !is_integer(n->type) ||
+          (no_overflow.count(n) && !tuning.audit))
         return binop(ir_binop(n->op), expr(n->lhs), expr(n->rhs), n->type);
       return checked_arith(ir_binop(n->op), expr(n->lhs), expr(n->rhs),
                            n->type, n->pos);
@@ -2410,9 +2425,14 @@ struct Lowerer {
 
   void versioned_loop(Node *n, int slot, int first, int limit) {
     std::vector<Hoisted> hoisted = hoistable(n);
+    if (!tuning.split)
+      hoisted.erase(std::remove_if(hoisted.begin(), hoisted.end(),
+                                   [](const Hoisted &h) { return h.sign; }),
+                    hoisted.end());
     bool shifted = false;
     for (const Hoisted &h : hoisted)
       if (h.sign) shifted = true;
+    if (!shifted && !tuning.versioned) hoisted.clear();
     if (hoisted.empty()) {
       counted_range(n, slot, first, limit);
     } else if (shifted) {
@@ -3229,8 +3249,24 @@ struct Lowerer {
 
 } // namespace
 
-void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod) {
-  Lowerer lowerer(types, mod, mode);
+bool tuning_without(Tuning &tuning, const std::string &name) {
+  static const std::pair<const char *, bool Tuning::*> pieces[] = {
+      {"walked", &Tuning::walked},       {"walked-mut", &Tuning::walked_mut},
+      {"captures", &Tuning::captures},   {"versioned", &Tuning::versioned},
+      {"split", &Tuning::split},         {"deferred", &Tuning::deferred},
+      {"lanes", &Tuning::lanes},
+  };
+  for (const auto &p : pieces)
+    if (name == p.first) {
+      tuning.*p.second = false;
+      return true;
+    }
+  return false;
+}
+
+void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod,
+           const Tuning &tuning) {
+  Lowerer lowerer(types, mod, mode, tuning);
   lowerer.enum_names = &prog.enum_names;
 
   for (Package *pkg : prog.order)
