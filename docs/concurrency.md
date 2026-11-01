@@ -450,7 +450,10 @@ parallel for off, row in b.chunks(w) {
 
 The pieces are the ones the sequential `chunks` loop gives, at the same
 offsets, the last one short, and there is no `reduce`: each turn answers in its
-own piece.
+own piece. Slicing the three rows once per turn, as above, is what lets the
+compiler drop the checks in the inner loop: every index there is checked only
+on its first and last turns, which `shield checks` shows. Written as
+`a[off + w + j]` they stay on every turn.
 
 ### Reductions
 

@@ -1,0 +1,18 @@
+// expect: 134
+// expect-panic: panic: index out of bounds at line 13
+// A turn that assigns its piece shortens it in the middle of the loop, so
+// the length the loop started from is not the one it ends with, and the index
+// is checked on every turn.
+
+func main() {
+    mut backing := [8]u64{}
+    mut xs := backing[..]
+    parallel for part in xs.chunks(4) {
+        mut j u64 = 0
+        for k in 0..part.len {
+            part[k] = 1
+            part = part[0..1]
+            j += 1
+        }
+    }
+}

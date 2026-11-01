@@ -30,6 +30,7 @@ struct Tuning {
   bool split = true;      // the range split where `xs[j ± c]` could fall out
   bool deferred = true;   // an accumulating loop's overflow settled at the end
   bool lanes = true;      // a float `reduce(+)` in sixteen sums
+  bool steady = true;     // a `mut` piece of `xs.chunks(n)` its turn never reshapes
   bool audit = false;
 };
 

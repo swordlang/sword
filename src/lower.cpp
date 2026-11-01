@@ -969,7 +969,9 @@ struct Lowerer {
     store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
 
     loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
     stmt(n->body);
+    steady_turns(n, false);
     branch(step_bb);
     loops.pop_back();
 
@@ -1264,13 +1266,39 @@ struct Lowerer {
   // other task of the scope can reach it while the loop runs. A slice reached
   // through a pointer or a field is never one of these, because the same memory
   // can be lent `mut` under another name in the same call and shortened mid-loop.
+  // The pieces of a partition being lowered whose turn neither assigns the
+  // piece nor takes its address. The piece is made fresh for each turn, so
+  // nothing else can reach its header, and its length holds as still as an
+  // immutable slice's does; what is written through it is only the elements.
+  std::set<Symbol *> steady;
+
+  bool reshapes(Node *body, Symbol *piece) {
+    bool found = false;
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN && n->lhs->kind == ND_IDENT &&
+          n->lhs->sym == piece)
+        found = true;
+      if (n->kind == ND_UNARY && n->op == TK_AMP && n->lhs &&
+          n->lhs->kind == ND_IDENT && n->lhs->sym == piece)
+        found = true;
+    });
+    return found;
+  }
+
+  void steady_turns(Node *loop, bool on) {
+    if (!tuning.steady || !loop->sym->is_mut) return;
+    if (!on) steady.erase(loop->sym);
+    else if (!reshapes(loop->body, loop->sym)) steady.insert(loop->sym);
+  }
+
   Symbol *walked_slice(Node *loop, bool parallel) {
     Node *hi = loop->rhs;
     if (!hi || hi->kind != ND_FIELD || hi->name != "len") return nullptr;
     Node *base = hi->lhs;
     if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
     Symbol *s = base->sym;
-    if ((s->is_mut && !parallel) || s->is_func || !s->type) return nullptr;
+    if ((s->is_mut && !parallel && !steady.count(s)) || s->is_func || !s->type)
+      return nullptr;
     if (!(s->is_mut ? tuning.walked_mut : tuning.walked)) return nullptr;
     if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
     return s;
@@ -2662,8 +2690,9 @@ struct Lowerer {
     bool can_split = !breaks && loop->type && loop->type->bits == 64 &&
                      !loop->type->is_signed;
     auto fixed = [&](Node *n) {
-      return n->kind == ND_IDENT && n->sym && !n->sym->is_mut &&
-             !n->sym->is_func && !inner.count(n->sym) && n->sym != loop->sym;
+      return n->kind == ND_IDENT && n->sym &&
+             (!n->sym->is_mut || steady.count(n->sym)) && !n->sym->is_func &&
+             !inner.count(n->sym) && n->sym != loop->sym;
     };
     auto own = [&](Node *n) {
       return n->kind == ND_IDENT && n->sym == loop->sym;
@@ -2815,7 +2844,9 @@ struct Lowerer {
     store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
 
     loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
     stmt(n->body);
+    steady_turns(n, false);
     branch(step_bb);
     loops.pop_back();
 
@@ -3362,7 +3393,7 @@ bool tuning_without(Tuning &tuning, const std::string &name) {
       {"walked", &Tuning::walked},       {"walked-mut", &Tuning::walked_mut},
       {"captures", &Tuning::captures},   {"versioned", &Tuning::versioned},
       {"split", &Tuning::split},         {"deferred", &Tuning::deferred},
-      {"lanes", &Tuning::lanes},
+      {"lanes", &Tuning::lanes},         {"steady", &Tuning::steady},
   };
   for (const auto &p : pieces)
     if (name == p.first) {
