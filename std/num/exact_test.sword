@@ -54,3 +54,214 @@ func TestExactMerge(mut t *testing.T) !void {
     t.Equal(bitsOf(MergeExact(left, right).Value()), bitsOf(whole))
     t.Equal(bitsOf(MergeExact(right, left).Value()), bitsOf(whole))
 }
+
+// The accumulator as it was with one bank of words, kept as the reference the
+// four-bank one is held to: both are exact, so on any terms, in any split, they
+// must give the same double.
+struct refExact {
+    words     [68]i64
+    unsettled u64
+    nan       bool
+    posInf    bool
+    negInf    bool
+}
+
+func newRef() refExact {
+    return refExact{words: [68]i64{}, unsettled: 0, nan: false, posInf: false,
+                 negInf: false}
+}
+
+func refSettle(mut words []i64) {
+    mut carry i64 = 0
+    for i in 0..exactWords - 1 {
+        v := words[i] + carry
+        low := v & 0xFFFFFFFF
+        words[i] = low
+        carry = (v - low) / 4294967296
+    }
+    words[exactWords - 1] += carry
+}
+
+func (mut s *refExact) add(v f64) {
+    b := bitsOf(v)
+    field := (b >> 52) & 0x7FF
+    fraction := b & 0xFFFFFFFFFFFFF
+    negative := b >> 63 == 1
+    if field == 0x7FF {
+        if fraction != 0 {
+            s.nan = true
+        } else if negative {
+            s.negInf = true
+        } else {
+            s.posInf = true
+        }
+        return
+    }
+    // The value is m·2^(pos - 1074): a subnormal has no hidden bit and the
+    // exponent of the smallest normal.
+    mut m := fraction
+    mut pos u64 = 0
+    if field != 0 {
+        m |= 0x10000000000000
+        pos = field - 1
+    }
+    if m == 0 {
+        return
+    }
+    word := pos / 32
+    shift := pos % 32
+    first := (m & 0xFFFFFFFF) << shift
+    second := ((m >> 32) << shift) + (first >> 32)
+    pieces := [3]i64{i64(first & 0xFFFFFFFF), i64(second & 0xFFFFFFFF),
+                     i64(second >> 32)}
+    for i in 0..3 {
+        if negative {
+            s.words[word + u64(i)] -= pieces[i]
+        } else {
+            s.words[word + u64(i)] += pieces[i]
+        }
+    }
+    s.unsettled += 1
+    if s.unsettled >= unsettledMost {
+        refSettle(s.words[..])
+        s.unsettled = 0
+    }
+}
+
+func refMerge(a refExact, b refExact) refExact {
+    mut out := a
+    mut other := b
+    refSettle(out.words[..])
+    refSettle(other.words[..])
+    for i in 0..exactWords {
+        out.words[i] += other.words[i]
+    }
+    out.unsettled = 2
+    out.nan = a.nan || b.nan
+    out.posInf = a.posInf || b.posInf
+    out.negInf = a.negInf || b.negInf
+    return out
+}
+
+// The double nearest the exact sum, ties to even. Infinite terms give an
+// infinite sum, both signs of them a NaN; a finite sum too large for a double is
+// an infinity of its sign.
+func (s refExact) value() f64 {
+    if s.nan || (s.posInf && s.negInf) {
+        return NaN()
+    }
+    if s.posInf {
+        return Inf()
+    }
+    if s.negInf {
+        return -Inf()
+    }
+    mut words := s.words
+    refSettle(words[..])
+    negative := words[exactWords - 1] < 0
+    if negative {
+        for i in 0..exactWords {
+            words[i] = -words[i]
+        }
+        refSettle(words[..])
+    }
+    mut limbs := [68]u64{}
+    mut top i64 = -1
+    for i in 0..exactWords {
+        limbs[i] = u64(words[i])
+        if words[i] != 0 {
+            top = i64(i)
+        }
+    }
+    if top < 0 {
+        return 0.0
+    }
+    if words[exactWords - 1] >= 4294967296 {
+        return signed(Inf(), negative)
+    }
+    lead := u64(top) * 32 + leadingBit(limbs[u64(top)])
+    // Below 2^53 units of 2^-1074 every value is a double already, and its bits
+    // are the number itself.
+    if lead <= 52 {
+        return signed(fromBits(bitsOfLimbs(limbs[..], 0, lead + 1)), negative)
+    }
+    mut mantissa := bitsOfLimbs(limbs[..], lead - 52, 53)
+    mut at := lead
+    half := bitsOfLimbs(limbs[..], lead - 53, 1) == 1
+    mut rest := false
+    if lead >= 54 {
+        below := lead - 53
+        for i in 0..below / 32 {
+            if limbs[i] != 0 {
+                rest = true
+            }
+        }
+        if !rest && below % 32 != 0 &&
+           bitsOfLimbs(limbs[..], (below / 32) * 32, below % 32) != 0 {
+            rest = true
+        }
+    }
+    if half && (rest || mantissa & 1 == 1) {
+        mantissa += 1
+        if mantissa == 0x20000000000000 {
+            mantissa = 0x10000000000000
+            at += 1
+        }
+    }
+    field := at - 51
+    if field >= 0x7FF {
+        return signed(Inf(), negative)
+    }
+    return signed(fromBits(field << 52 | (mantissa & 0xFFFFFFFFFFFFF)), negative)
+}
+
+
+// splitmix64, so the terms are the same on every run and every machine.
+func mixed(z u64) u64 {
+    mut x := z +% 0x9e3779b97f4a7c15
+    x = (x ^ (x >> 30)) *% 0xbf58476d1ce4e5b9
+    x = (x ^ (x >> 27)) *% 0x94d049bb133111eb
+    return x ^ (x >> 31)
+}
+
+// Any bits at all, then a third of the time an exponent from a narrower
+// range, so that terms both cancel and spread over every word.
+func term(z u64) f64 {
+    r := mixed(z)
+    if r % 3 == 0 {
+        return fromBits(r)
+    }
+    exponent := (mixed(r) % 120 + 963) << 52
+    return fromBits((r & 0x800FFFFFFFFFFFFF) | exponent)
+}
+
+func TestExactAgainstOneBank(mut t *testing.T) !void {
+    mut terms := [400]f64{}
+    mut seed u64 = 0
+    for round in 0..20000 {
+        n := mixed(u64(round)) % 400 + 1
+        cut := mixed(u64(round) + 1000000) % n
+        mut whole := NewExact()
+        mut ref := newRef()
+        mut left := NewExact()
+        mut right := NewExact()
+        for i in 0..n {
+            terms[i] = term(seed)
+            seed += 1
+            whole.Add(terms[i])
+            ref.add(terms[i])
+            if i < cut {
+                left.Add(terms[i])
+            } else {
+                right.Add(terms[i])
+            }
+        }
+        want := bitsOf(ref.value())
+        if bitsOf(whole.Value()) != want ||
+           bitsOf(MergeExact(left, right).Value()) != want ||
+           bitsOf(MergeExact(right, left).Value()) != want {
+            t.Failf("round {}: {} terms, cut at {}", round, n, cut)
+            return
+        }
+    }
+}

@@ -18,7 +18,7 @@ package num
 //     }
 //     answer := total.Value()
 //
-// It costs a few hundred bytes and a few more operations per term than a plain
+// It costs about two kilobytes and a few more operations per term than a plain
 // sum; Value costs a pass over the words.
 
 const exactWords = 68
@@ -26,9 +26,14 @@ const exactWords = 68
 // into it without a carry every time. After this many terms the carries are
 // settled before a word could overflow.
 const unsettledMost = 1073741824
+// Terms in turn go to one of four copies of the words. Neighbouring terms
+// mostly land on the same words, and with one copy each Add waited for the
+// last one's store; four let that many run at once. They are added together
+// only in Value and MergeExact, so the answer is the same.
+const exactBanks = 4
 
 struct Exact {
-    words     [68]i64
+    words     [272]i64
     unsettled u64
     nan       bool
     posInf    bool
@@ -38,7 +43,7 @@ struct Exact {
 // Nothing added yet. All zeros, which is also what a piece of a parallel loop
 // starts from.
 func NewExact() Exact {
-    return Exact{words: [68]i64{}, unsettled: 0, nan: false, posInf: false,
+    return Exact{words: [272]i64{}, unsettled: 0, nan: false, posInf: false,
                  negInf: false}
 }
 
@@ -79,7 +84,7 @@ func (mut s *Exact) Add(v f64) {
     if m == 0 {
         return
     }
-    word := pos / 32
+    word := (s.unsettled % exactBanks) * exactWords + pos / 32
     shift := pos % 32
     first := (m & 0xFFFFFFFF) << shift
     second := ((m >> 32) << shift) + (first >> 32)
@@ -94,8 +99,14 @@ func (mut s *Exact) Add(v f64) {
     }
     s.unsettled += 1
     if s.unsettled >= unsettledMost {
-        settle(s.words[..])
+        settleBanks(s.words[..])
         s.unsettled = 0
+    }
+}
+
+func settleBanks(mut words []i64) {
+    for k in 0..exactBanks {
+        settle(words[k * exactWords..(k + 1) * exactWords])
     }
 }
 
@@ -103,9 +114,9 @@ func (mut s *Exact) Add(v f64) {
 func MergeExact(a Exact, b Exact) Exact {
     mut out := a
     mut other := b
-    settle(out.words[..])
-    settle(other.words[..])
-    for i in 0..exactWords {
+    settleBanks(out.words[..])
+    settleBanks(other.words[..])
+    for i in 0..exactBanks * exactWords {
         out.words[i] += other.words[i]
     }
     out.unsettled = 2
@@ -128,7 +139,14 @@ func (s Exact) Value() f64 {
     if s.negInf {
         return -Inf()
     }
-    mut words := s.words
+    mut all := s.words
+    settleBanks(all[..])
+    mut words := [68]i64{}
+    for k in 0..exactBanks {
+        for i in 0..exactWords {
+            words[i] += all[k * exactWords + i]
+        }
+    }
     settle(words[..])
     negative := words[exactWords - 1] < 0
     if negative {
