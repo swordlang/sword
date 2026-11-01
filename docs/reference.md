@@ -2273,8 +2273,13 @@ or the loop is a `parallel for`, whose body may write `xs[i]` but never `xs`.
 An index is tested once before the loop when the slice is immutable and the
 index is the loop's own or a name no turn changes. The loop then runs without
 the check when the test passes and as written when it fails, so a panic comes
-on the same turn and line either way. `-all` lists the proven ones too. Only
-the program's own package is listed, in the mode given, `safe` by default.
+on the same turn and line either way. An index that is the loop's own plus or
+minus a constant or such a name, `a[k - 1]` or `a[k + w]`, in a loop with no
+`break`, is checked only on the first and last turns: the turns where every
+index is in range run in the middle without checks, and the ones before and
+after run as written, in the same order. Neither of these applies to a body
+with a loop, a `scope` or a `spawn` inside. `-all` lists the proven ones too. Only the
+program's own package is listed, in the mode given, `safe` by default.
 
 ## Environment
 

@@ -27,3 +27,11 @@ func main() int {
     }
     return 0
 }
+
+func shifted(xs []u64) u64 {
+    mut acc u64 = 0
+    for k in 1..xs.len {
+        acc +%= xs[k - 1]
+    }
+    return acc
+}

@@ -108,12 +108,13 @@ struct IrModule {
   // What `shield checks` lists: every index and slice of the program's own
   // package, and whether its bounds check went, was moved before a loop or
   // stayed. Nothing is gathered unless asked for.
-  enum { BOUNDS_PROVEN, BOUNDS_BEFORE_LOOP, BOUNDS_CHECKED };
+  // Ordered from best to worst: instances of one generic keep the worst.
+  enum { BOUNDS_PROVEN, BOUNDS_BEFORE_LOOP, BOUNDS_AT_ENDS, BOUNDS_CHECKED };
   struct BoundsSite {
     int file, line, col;
     std::string what;
     int how;
-    int loop_line; // BOUNDS_BEFORE_LOOP: the loop the test is made before
+    int loop_line; // BOUNDS_BEFORE_LOOP, BOUNDS_AT_ENDS: the loop
     bool in_loop;  // BOUNDS_CHECKED: paid on every turn of one
   };
   bool list_bounds = false;

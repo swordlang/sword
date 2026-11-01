@@ -79,6 +79,9 @@ struct Lowerer {
   // Indexing in the copy of a loop that runs only once a test before it has
   // shown every one of these in range for every turn (see `range_loop`).
   std::set<Node *> unchecked;
+  // `j + c` and `j - c` in the middle of a split loop, where neither can
+  // leave the type.
+  std::set<Node *> no_overflow;
   // Set while the first pass of a loop that settles its overflow checks at
   // the end is lowered (see `checked_loop`).
   struct Accumulator {
@@ -948,7 +951,8 @@ struct Lowerer {
     int slot = alloca_slot(index);
     int outer = loop->sym->slot;
     loop->sym->slot = slot;
-    store(narrow(lo, index), slot, index);
+    int first = narrow(lo, index);
+    store(first, slot, index);
     int limit = narrow(hi, index);
 
     // Each piece is a part of the range the parent worked out from `xs.len`
@@ -959,14 +963,7 @@ struct Lowerer {
     if (loop->reduce_kind == RMW_FADD) {
       lane_loop(loop, slot, index, limit, kFloatLanes, accumulator);
     } else {
-      checked_loop(
-          loop->body, [&] { store(narrow(lo, index), slot, index); },
-          [&] { return binop(IR_LT, load(slot, index), limit, types.bool_ty); },
-          [] {},
-          [&] {
-            store(binop(IR_ADD, load(slot, index), constant(1, index), index),
-                  slot, index);
-          });
+      versioned_loop(loop, slot, first, limit);
     }
     if (slice) walked.pop_back();
 
@@ -1306,7 +1303,8 @@ struct Lowerer {
     case ND_FIELD:
       return is_scalar(n->type) && reads_in_place(n->lhs);
     case ND_INDEX:
-      return is_scalar(n->type) && proven_in_range(n);
+      return is_scalar(n->type) && proven_in_range(n) &&
+             (cannot_fail(n->rhs) || no_overflow.count(n->rhs));
     case ND_CONVERT: {
       Type *from = n->kids[0]->type;
       bool numbers = (from->kind == TY_INT || from->kind == TY_FLOAT) &&
@@ -2136,7 +2134,7 @@ struct Lowerer {
                          types.usize_ty);
         return gep_index(base, offset, n->type->elem);
       }
-      if (wraps(n->op) || !is_integer(n->type))
+      if (wraps(n->op) || !is_integer(n->type) || no_overflow.count(n))
         return binop(ir_binop(n->op), expr(n->lhs), expr(n->rhs), n->type);
       return checked_arith(ir_binop(n->op), expr(n->lhs), expr(n->rhs),
                            n->type, n->pos);
@@ -2384,19 +2382,41 @@ struct Lowerer {
 
     Symbol *slice = walked_slice(n, false);
     if (slice) walked.push_back({n->sym, slice});
-    auto loop = [&] {
-      checked_loop(
-          n->body, [&] { store(first, slot, type); },
-          [&] { return binop(IR_LT, load(slot, type), limit, types.bool_ty); },
-          [] {},
-          [&] {
-            store(binop(IR_ADD, load(slot, type), constant(1, type), type),
-                  slot, type);
-          });
-    };
-    std::vector<Node *> hoisted = hoistable(n);
+    versioned_loop(n, slot, first, limit);
+    if (slice) walked.pop_back();
+  }
+
+  // The turns `from..to` of `loop`, its index already at `from` in `slot`.
+  void counted_range(Node *loop, int slot, int from, int to) {
+    Type *type = loop->type;
+    checked_loop(
+        loop->body, [&] { store(from, slot, type); },
+        [&] { return binop(IR_LT, load(slot, type), to, types.bool_ty); },
+        [] {},
+        [&] {
+          store(binop(IR_ADD, load(slot, type), constant(1, type), type), slot,
+                type);
+        });
+  }
+
+  // An index whose bounds can be settled before the loop: `xs[j]`, `xs[k]`
+  // with `k` fixed, or `xs[j + c]` and `xs[j - c]`.
+  struct Hoisted {
+    Node *index;
+    Node *offset = nullptr; // `c`, when shifted
+    int sign = 0;           // +1 for `j + c`, -1 for `j - c`
+    bool fixed = false;     // `xs[k]`
+  };
+
+  void versioned_loop(Node *n, int slot, int first, int limit) {
+    std::vector<Hoisted> hoisted = hoistable(n);
+    bool shifted = false;
+    for (const Hoisted &h : hoisted)
+      if (h.sign) shifted = true;
     if (hoisted.empty()) {
-      loop();
+      counted_range(n, slot, first, limit);
+    } else if (shifted) {
+      split_loop(n, slot, first, limit, hoisted);
     } else {
       // Versioning: the test is made once, and the loop as written runs when
       // it fails, panicking on the same turn and line it always did.
@@ -2406,70 +2426,163 @@ struct Lowerer {
       int join = new_block();
       cond_branch(ok, fast, slow);
       cur = fast;
-      for (Node *h : hoisted)
-        note_bounds(h, IrModule::BOUNDS_BEFORE_LOOP, n->pos.line);
-      unchecked.insert(hoisted.begin(), hoisted.end());
-      loop();
-      for (Node *h : hoisted) unchecked.erase(h);
+      for (const Hoisted &h : hoisted) {
+        note_bounds(h.index, IrModule::BOUNDS_BEFORE_LOOP, n->pos.line);
+        unchecked.insert(h.index);
+      }
+      counted_range(n, slot, first, limit);
+      for (const Hoisted &h : hoisted) unchecked.erase(h.index);
       branch(join);
       cur = slow;
-      loop();
+      counted_range(n, slot, first, limit);
       branch(join);
       cur = join;
     }
-    if (slice) walked.pop_back();
   }
 
-  // The indexing in a `for i in a..b` whose bounds can be tested before the
+  // Index-set splitting, for a loop that reads `xs[j - 1]` or `xs[j + w]`,
+  // which only the first or last few turns could take out of range. The
+  // turns where every index is in range run in the middle, with no check on
+  // them and no overflow check on `j ± c`; the turns before and after run as
+  // written. The order of the turns is the same, so a panic comes on the turn
+  // and line it always did.
+  void split_loop(Node *n, int slot, int first, int limit,
+                  const std::vector<Hoisted> &hoisted) {
+    Type *type = n->type;
+    Type *flag = types.bool_ty;
+    // The middle is lo..hi, narrowed by every index in turn.
+    int lo = first, hi = limit;
+    for (const Hoisted &h : hoisted) {
+      int len = -1;
+      data_pointer(h.index->lhs, &len);
+      len = narrow(len, type);
+      if (h.fixed) {
+        int ok = binop(IR_LT, to_word(expr(h.index->rhs)), len, flag);
+        hi = pick(ok, hi, first, type);
+      } else if (h.sign > 0) {
+        int c = narrow(expr(h.offset), type);
+        int room = pick(binop(IR_LE, c, len, flag),
+                        binop(IR_SUB, len, c, type), constant(0, type), type);
+        hi = least(hi, room, type);
+      } else {
+        if (h.sign < 0) lo = most(lo, narrow(expr(h.offset), type), type);
+        hi = least(hi, len, type);
+      }
+    }
+    int head = least(lo, limit, type);
+    int tail = most(hi, head, type);
+
+    for (const Hoisted &h : hoisted)
+      note_bounds(h.index, IrModule::BOUNDS_AT_ENDS, n->pos.line);
+    counted_range(n, slot, first, head);
+    for (const Hoisted &h : hoisted) {
+      unchecked.insert(h.index);
+      if (h.sign) no_overflow.insert(h.index->rhs);
+    }
+    counted_range(n, slot, head, tail);
+    for (const Hoisted &h : hoisted) {
+      unchecked.erase(h.index);
+      no_overflow.erase(h.index->rhs);
+    }
+    counted_range(n, slot, tail, limit);
+  }
+
+  int pick(int cond, int yes, int no, Type *type) {
+    int slot = alloca_slot(type);
+    store(no, slot, type);
+    int then_bb = new_block();
+    int join = new_block();
+    cond_branch(cond, then_bb, join);
+    cur = then_bb;
+    store(yes, slot, type);
+    branch(join);
+    cur = join;
+    return load(slot, type);
+  }
+  int least(int a, int b, Type *type) {
+    return pick(binop(IR_LT, a, b, types.bool_ty), a, b, type);
+  }
+  int most(int a, int b, Type *type) {
+    return pick(binop(IR_GT, a, b, types.bool_ty), a, b, type);
+  }
+
+  // The indexing in a counted loop whose bounds can be settled before the
   // loop starts: an immutable slice or string, which no turn can shorten,
-  // taken at the loop's own index or at an immutable integer from outside it,
-  // which no turn can move. A body with a loop inside is left alone, since
-  // versioning both would lower the innermost body four times, and so is one
-  // with tasks in it, which would be lowered as two.
-  std::vector<Node *> hoistable(Node *loop) {
-    std::vector<Node *> found;
+  // taken at the loop's own index, at an immutable integer from outside it,
+  // which no turn can move, or at the loop's index plus or minus one. A body
+  // with a loop inside is left alone, since versioning both would lower the
+  // innermost body many times over, and so is one with tasks in it, which
+  // would be lowered as several. Shifted indices split the loop in three,
+  // which a `break` would jump out of only the first part of, and which
+  // reckons in the loop's own unsigned 64-bit index.
+  std::vector<Hoisted> hoistable(Node *loop) {
+    std::vector<Hoisted> found;
     if (mode != MODE_SAFE) return found;
     // Every name a node of the body carries other than by using it, which
     // takes in whatever the body declares, in any form that declares one.
     std::set<Symbol *> inner;
-    bool nested = false;
+    bool nested = false, breaks = false;
     walk(loop->body, [&](Node *n) {
       if (n->kind == ND_FOR || n->kind == ND_SCOPE || n->kind == ND_SPAWN)
         nested = true;
+      if (n->kind == ND_BREAK) breaks = true;
       if (n->kind == ND_IDENT) return;
       for (Symbol *s : {n->sym, n->index_sym, n->reduce_sym})
         if (s) inner.insert(s);
     });
     if (nested) return found;
+    bool can_split = !breaks && loop->type && loop->type->bits == 64 &&
+                     !loop->type->is_signed;
     auto fixed = [&](Node *n) {
       return n->kind == ND_IDENT && n->sym && !n->sym->is_mut &&
              !n->sym->is_func && !inner.count(n->sym) && n->sym != loop->sym;
+    };
+    auto own = [&](Node *n) {
+      return n->kind == ND_IDENT && n->sym == loop->sym;
+    };
+    auto offset = [&](Node *n) {
+      if (n->kind == ND_INT_LIT) return true;
+      return fixed(n) && is_integer(n->sym->type) && !n->sym->type->is_signed;
     };
     walk(loop->body, [&](Node *n) {
       if (n->kind != ND_INDEX || !fixed(n->lhs)) return;
       Type *base = n->lhs->sym->type;
       if (!base || (base->kind != TY_SLICE && base->kind != TY_STRING)) return;
+      if (proven_in_range(n)) return;
       Node *at = n->rhs;
-      bool own = at->kind == ND_IDENT && at->sym == loop->sym;
-      if (!own && !(fixed(at) && is_integer(at->sym->type))) return;
-      if (!proven_in_range(n)) found.push_back(n);
+      Hoisted h{n};
+      if (own(at)) {
+      } else if (fixed(at) && is_integer(at->sym->type)) {
+        h.fixed = true;
+      } else if (can_split && at->kind == ND_BINARY && at->form == 0 &&
+                 at->type == loop->type &&
+                 (at->op == TK_PLUS || at->op == TK_MINUS)) {
+        h.sign = at->op == TK_PLUS ? 1 : -1;
+        if (own(at->lhs) && offset(at->rhs)) h.offset = at->rhs;
+        else if (at->op == TK_PLUS && own(at->rhs) && offset(at->lhs))
+          h.offset = at->lhs;
+        else return;
+      } else {
+        return;
+      }
+      found.push_back(h);
     });
     return found;
   }
 
   // Whether every one of `hoisted` is in range on every turn of `loop`, which
   // runs its index from `first` up to `limit`.
-  int in_range_throughout(Node *loop, const std::vector<Node *> &hoisted,
+  int in_range_throughout(Node *loop, const std::vector<Hoisted> &hoisted,
                           int first, int limit) {
     Type *index = loop->type;
     Type *flag = types.bool_ty;
     int empty = binop(IR_GE, first, limit, flag);
     int ok = constant(1, flag);
-    for (Node *n : hoisted) {
+    for (const Hoisted &h : hoisted) {
       int len = -1;
-      data_pointer(n->lhs, &len);
+      data_pointer(h.index->lhs, &len);
       int in;
-      if (n->rhs->sym == loop->sym) {
+      if (!h.fixed) {
         // Every turn's index lies in first..limit, so the last is the test.
         in = binop(IR_LE, to_word(limit), len, flag);
         if (index->is_signed)
@@ -2477,7 +2590,7 @@ struct Lowerer {
                      binop(IR_GE, first, constant(0, index), flag), flag);
         in = binop(IR_OR, empty, in, flag);
       } else {
-        in = binop(IR_LT, to_word(expr(n->rhs)), len, flag);
+        in = binop(IR_LT, to_word(expr(h.index->rhs)), len, flag);
       }
       ok = binop(IR_AND, ok, in, flag);
     }
