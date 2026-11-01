@@ -159,7 +159,7 @@ arguments to reach the answer:
 | a channel copied, stored or returned | the compiler can no longer follow it |
 | an `extern` call, or one through an `extern func` | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
-| a call through an interface or a function value | unless every target is det |
+| a call through an interface or a function value | unless every target the program has is det |
 | a call to anything that is not det | |
 
 What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
@@ -174,7 +174,9 @@ told when the property is lost, and the message walks the chain from what was
 claimed to the call that lost it. A pointer is opaque to whoever is handed one,
 so an arena doing arithmetic on addresses to align what it hands out does not
 make its callers depend on the layout — only reading an address as a number
-here does.
+here does. An interface nothing in the program implements is never called
+through, so a call through it takes nothing away. `shield det` lists every
+function and what it was found to be ([Command line](#command-line)).
 
 ## Statements
 
@@ -2285,6 +2287,29 @@ index is in range run in the middle without checks, and the ones before and
 after run as written, in the same order. Neither of these applies to a body
 with a loop, a `scope` or a `spawn` inside. `-all` lists the proven ones too. Only the
 program's own package is listed, in the mode given, `safe` by default.
+
+`shield det` lists the functions of the package that are not det, each with the
+chain that took it away, and `-all` the det ones too; the last line counts them:
+
+```
+$ shield det sim.sword
+sim.sword:5:1: visit: not det
+    sim.sword:6:13: visit reads or writes an atomic
+sim.sword:10:1: step: not det
+    sim.sword:12:23: step calls visit, which is not det
+    sim.sword:6:13: visit reads or writes an atomic
+sim.sword:16:1: main: not det
+    sim.sword:21:25: main reads or writes an atomic
+1 of 4 functions det
+```
+
+It also takes a library, a directory with no `main`. A library cannot know what
+it will be handed, so a function whose only way of losing det is a call through
+an interface is det on that condition, `Copy: det when its mem.Allocator is`,
+and counted apart: `1 of 5 functions det, 3 more when what they are handed is`.
+In a program the condition is settled by what the program binds into the
+interface. A generic is det when every instance the program makes of it is; one
+nothing instantiates is not counted.
 
 ## Environment
 

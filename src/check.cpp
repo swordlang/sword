@@ -4464,6 +4464,12 @@ struct Determinism {
   // does arithmetic on one — an arena aligning what it hands out — does not
   // make its callers depend on the layout. Doing it *here* does.
   std::map<Symbol *, Why> local_lost;
+  // A library's functions that are det when what they are handed through
+  // these interfaces is. Only a library listed on its own has any: a program
+  // knows every implementation.
+  bool library = false;
+  std::map<Symbol *, std::set<std::string>> needs;
+  std::map<Symbol *, Why> needs_why;
   std::map<Symbol *, std::vector<Node *>> bodies;
   std::map<std::string, Symbol *> by_name;  // every function, by linker name
   std::vector<Symbol *> order;
@@ -4593,16 +4599,18 @@ struct Determinism {
 
   // The first target a call of this shape can reach that is not det, or null
   // when every one of them is. `found` says whether the targets are known at
-  // all: an interface nothing implements in this program is not one of them.
+  // all. An interface nothing in the program implements has no value that
+  // could be called through, so it reaches nothing.
   Symbol *stray_target(Node *call, bool &known) {
     known = true;
     if (call->form == 2) { // through an interface
       std::string iface = interface_of(call);
-      auto at = by_interface.find(iface);
-      if (iface.empty() || at == by_interface.end()) {
+      if (iface.empty()) {
         known = false;
         return nullptr;
       }
+      auto at = by_interface.find(iface);
+      if (at == by_interface.end()) return nullptr;
       for (Symbol *target : at->second) {
         if (!target) {
           known = false;
@@ -4878,6 +4886,14 @@ struct Determinism {
         for (Node *body : bodies[fn]) {
           each(body, [&](Node *n) {
             if (n->kind != ND_CALL || lost.count(fn)) return;
+            // A library does not know what it will be handed, so a call
+            // through an interface makes it det on the condition that what
+            // it is handed is; a program resolves that by what it has.
+            if (library && n->form == 2 && !interface_of(n).empty()) {
+              if (depends(fn, interface_of(n), Why{n->pos, nullptr, nullptr}))
+                changed = true;
+              return;
+            }
             if (n->form == 2 || n->form == 4) {
               bool known = true;
               Symbol *stray = stray_target(n, known);
@@ -4896,6 +4912,11 @@ struct Determinism {
             if (n->sym && lost.count(n->sym) && !channel_member(n)) {
               mark(fn, n->pos, nullptr, n->sym);
               changed = true;
+            } else if (n->sym && n->sym != fn && needs.count(n->sym) &&
+                       !channel_member(n)) {
+              for (const std::string &iface : needs[n->sym])
+                if (depends(fn, iface, Why{n->pos, nullptr, n->sym}))
+                  changed = true;
             }
           });
         }
@@ -4903,13 +4924,43 @@ struct Determinism {
     }
   }
 
+  // Whether fn now depends on one more interface; the first reason found is
+  // the one kept, as for lost.
+  bool depends(Symbol *fn, const std::string &iface, Why why) {
+    if (!needs[fn].insert(iface).second) return false;
+    if (!needs_why.count(fn)) needs_why[fn] = why;
+    return true;
+  }
+
+  bool is_det(Symbol *fn) { return !lost.count(fn) && !local_lost.count(fn); }
+
+  // From a function det only on a condition to the call through the
+  // interface that set it.
+  std::vector<std::pair<Pos, std::string>> condition(Symbol *fn) {
+    std::vector<std::pair<Pos, std::string>> chain;
+    std::set<Symbol *> seen;
+    for (Symbol *at = fn; at && needs_why.count(at) && !seen.count(at);) {
+      seen.insert(at);
+      const Why &why = needs_why[at];
+      std::string here = shown_name(at->name);
+      if (why.through)
+        chain.push_back({why.at, here + " calls " +
+                                     shown_name(why.through->name)});
+      else
+        chain.push_back({why.at, here + " calls through an interface"});
+      at = why.through;
+    }
+    return chain;
+  }
+
   // The chain from what was claimed to what lost it, since the reason is
   // rarely in the function that was marked.
-  void blame(Symbol *fn) {
+  std::vector<std::pair<Pos, std::string>> blame(Symbol *fn) {
+    std::vector<std::pair<Pos, std::string>> chain;
     if (!lost.count(fn)) {
       const Why &why = local_lost[fn];
-      note(why.at, "%s %s", shown_name(fn->name).c_str(), why.what);
-      return;
+      chain.push_back({why.at, shown_name(fn->name) + " " + why.what});
+      return chain;
     }
     std::set<Symbol *> seen;
     Symbol *at = fn;
@@ -4918,35 +4969,94 @@ struct Determinism {
       const Why &why = lost[at];
       std::string here = shown_name(at->name);
       if (why.what && why.through)
-        note(why.at, "%s %s, and %s is not det", here.c_str(), why.what,
-             shown_name(why.through->name).c_str());
+        chain.push_back({why.at, here + " " + why.what + ", and " +
+                                     shown_name(why.through->name) +
+                                     " is not det"});
       else if (why.through)
-        note(why.at, "%s calls %s, which is not det", here.c_str(),
-             shown_name(why.through->name).c_str());
+        chain.push_back({why.at, here + " calls " +
+                                     shown_name(why.through->name) +
+                                     ", which is not det"});
       else
-        note(why.at, "%s %s", here.c_str(),
-             why.what ? why.what : "cannot be checked");
-      if (!why.through) return;
+        chain.push_back(
+            {why.at, here + " " + (why.what ? why.what : "cannot be checked")});
+      if (!why.through) break;
       at = why.through;
+    }
+    return chain;
+  }
+
+  // Every function the package being compiled declares, in source order. A
+  // generic is compiled only as its instances, which are clones carrying the
+  // generic's position, so they are found by it.
+  void list(DetListing &out) {
+    Package *pkg = prog.main();
+    if (!pkg) return;
+    std::map<std::pair<int, int>, std::vector<Symbol *>> instances;
+    for (Package *owner : prog.order)
+      for (Node *decl : owner->instances)
+        if (decl->kind == ND_FUNC && decl->sym && bodies.count(decl->sym))
+          instances[{decl->pos.file, decl->pos.line * 100000 + decl->pos.col}]
+              .push_back(decl->sym);
+    for (Node *decl : pkg->unit->kids) {
+      if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern) continue;
+      std::vector<Symbol *> made;
+      if (decl->tparams.empty()) {
+        if (!bodies.count(decl->sym)) continue;
+        made.push_back(decl->sym);
+      } else {
+        auto at = instances.find(
+            {decl->pos.file, decl->pos.line * 100000 + decl->pos.col});
+        if (at == instances.end()) {
+          out.uninstantiated++;
+          continue;
+        }
+        made = at->second;
+      }
+      DetListing::Function f;
+      f.at = decl->pos;
+      // A method keeps its type: two of them called Alloc in one package
+      // are told apart by it.
+      const std::string &full = decl->sym->name;
+      f.name = full.compare(0, 5, "main.") == 0 ? full.substr(5)
+                                                 : shown_name(full);
+      for (Symbol *fn : made)
+        if (!is_det(fn)) {
+          f.det = false;
+          f.why = blame(fn);
+          break;
+        }
+      if (f.det)
+        for (Symbol *fn : made)
+          if (needs.count(fn)) {
+            for (const std::string &iface : needs[fn])
+              f.unless.push_back(shown_name(iface));
+            f.why = condition(fn);
+            break;
+          }
+      out.functions.push_back(f);
     }
   }
 
-  void run() {
+  void run(DetListing *listing) {
+    Package *pkg = prog.main();
+    library = listing && pkg && !pkg->globals.count("main");
     collect();
     for (Symbol *fn : order)
       for (Node *body : bodies[fn]) scan(fn, body);
     kahn();
     settle();
+    if (listing) list(*listing);
 
     for (Package *pkg : prog.order)
       for (Node *decl : pkg->unit->kids) {
         if (decl->kind != ND_FUNC || !decl->is_det || !decl->sym) continue;
-        if (!lost.count(decl->sym) && !local_lost.count(decl->sym)) continue;
+        if (is_det(decl->sym)) continue;
         error(decl->pos,
               "'%s' is marked det, but what it answers can depend on more than"
               " its arguments",
               shown_name(decl->sym->name).c_str());
-        blame(decl->sym);
+        for (const auto &link : blame(decl->sym))
+          note(link.first, "%s", link.second.c_str());
       }
   }
 };
@@ -5492,12 +5602,12 @@ struct Copies {
 
 } // namespace
 
-bool check(Program &prog, TypeTable &types) {
+bool check(Program &prog, TypeTable &types, DetListing *listing) {
   for (Package *pkg : prog.order)
     if (!Checker(prog, *pkg, types).run()) return false;
 
   Package *main = prog.main();
-  if (main && !main->globals.count("main"))
+  if (main && !listing && !main->globals.count("main"))
     error(Pos{-1, 0, 0},
           "no 'main' function: a program needs 'func main() int' somewhere in "
           "the package being compiled");
@@ -5513,7 +5623,7 @@ bool check(Program &prog, TypeTable &types) {
 
   // Last, over the whole program: whether a function answers the same thing
   // every time is not a question about one package.
-  Determinism(prog, types).run();
+  Determinism(prog, types).run(listing);
   Copies(prog).run();
   return error_count() == 0;
 }
