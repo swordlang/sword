@@ -508,9 +508,12 @@ anything pulls in nothing else, and starts no thread of its own.
 
 Each worker has its own deque. The owner pushes and pops at one end, thieves
 take from the other, and the victim rotates so workers do not all converge on
-the same target. `parallel for` cuts the range into several chunks per worker —
-enough slack for stealing to even out an uneven body, without paying task
-overhead per iteration.
+the same target. `parallel for` cuts the range into 64 pieces whatever the
+pool, which is what keeps a floating-point reduction's bits the same on any
+number of threads. The task that reached the loop and one helper for every
+other worker take the next piece from a shared counter until none is left: an
+uneven body evens out, and a short loop pays for few wake-ups. On one worker
+the loop runs in the task that reached it.
 
 A thread waiting on a scope does not idle. It runs whatever work it can find
 until the count reaches zero, which is what makes nested scopes safe from
