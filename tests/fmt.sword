@@ -18,7 +18,14 @@ func main() !int {
     try b.WriteByte(32)
     try fmt.Bool(&b, true)
     try b.WriteByte(32)
-    try fmt.Hex(&b, 48879, 4)
+
+    /* Tests base convertion */
+    base := fmt.Base {
+        Mask: 15,
+        Inc: 4
+    }
+
+    try fmt.BaseConverter(&b, 48879, base, 4)
     if !strings.Equal(b.Str(), "-42 7 true beef") {
         return 1
     }
