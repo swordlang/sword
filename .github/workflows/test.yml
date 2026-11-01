@@ -2,7 +2,8 @@
 # and then the suite again at every pool size from 1 to 16 threads. The second
 # half is the one that matters most: a program's answer is not supposed to
 # depend on how many threads ran it, and tests/threads.sh is where that is
-# checked rather than claimed.
+# checked rather than claimed. Nor on the machine: Linux arm64 runs the suite
+# too, and the answers of the three are compared.
 #
 # Then the runtime again under AddressSanitizer and ThreadSanitizer, since most
 # of what can go wrong in it passes an ordinary run, the suite once more built
@@ -31,6 +32,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         tls: [with, without]
+        include:
+          - os: ubuntu-24.04-arm
+            tls: with
     name: ${{ matrix.os }}, ${{ matrix.tls }} TLS
     runs-on: ${{ matrix.os }}
     # A normal run takes under ten minutes. A hang takes whatever it is
@@ -69,7 +73,40 @@ jobs:
       - run: make
       - run: make test
       - name: The suite at 1, 2, 3, 4, 8 and 16 threads
+        env:
+          SWORD_ANSWERS: ${{ matrix.tls == 'with' && format('{0}/answers.txt', runner.temp) || '' }}
         run: ./tests/threads.sh
+      - if: matrix.tls == 'with'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: answers-${{ matrix.os }}
+          path: ${{ runner.temp }}/answers.txt
+
+  # A det program answers the same bits on every machine, so every test that
+  # prints something must print the same thing on x86-64 and on arm64, on Linux
+  # and on macOS.
+  answers:
+    name: same answers on every machine
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: answers-*
+      - run: |
+          set -- answers-*/answers.txt
+          [ $# -eq 3 ] || { echo "want three machines' answers, have $#"; exit 1; }
+          bad=0
+          for other in "$2" "$3"; do
+            if ! diff "$1" "$other" > diff.txt; then
+              echo "$1 and $other differ:"
+              cat diff.txt
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] && echo "$(wc -l < "$1") tests, the same answers on all three"
+          exit "$bad"
 
   sanitizers:
     strategy:
