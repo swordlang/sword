@@ -2047,8 +2047,9 @@ its two halves. The strings point into the connection's read buffer, so they are
 valid for as long as the handler runs.
 
 ```sword
-func (r *Request) Param(name string) string  // what a {name} route matched
-func (r *Request) Query(name string) string  // still percent-encoded
+func (r *Request) Param(name string) string     // what a {name} route matched
+func (r *Request) Query(name string) string     // still percent-encoded
+func (r *Request) Cookie(name string) ?string   // first cookie with that name
 ```
 
 Routing. A `{name}` in a pattern matches one path segment and a `{name...}` at the
