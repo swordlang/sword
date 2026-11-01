@@ -976,6 +976,25 @@ struct Checker {
     });
   }
 
+  // A binding declared in a parallel body is the body's own, unless it is a
+  // copy of a slice or a pointer from outside: then writing through it writes
+  // what every iteration shares.
+  static Symbol *outside_alias(Symbol *sym, const std::set<Symbol *> &local) {
+    for (Symbol *r : sym->aliases)
+      if (r != sym && !local.count(r)) return r;
+    return nullptr;
+  }
+
+  // Whether a binding reaches any of the memory named by `roots`, which are
+  // canonical bindings.
+  static bool reaches_any(Symbol *sym, const std::vector<Symbol *> &roots) {
+    std::vector<Symbol *> mine;
+    canonical(sym, mine);
+    for (Symbol *r : mine)
+      if (std::find(roots.begin(), roots.end(), r) != roots.end()) return true;
+    return false;
+  }
+
   // Iterations run on different workers at the same time, so whatever the
   // body writes has to be reachable by exactly one of them.
   void check_parallel_body(Node *loop) {
@@ -1006,7 +1025,17 @@ struct Checker {
     // written through, when it was not written by an assignment.
     auto note_write = [&](Node *place, const char *how) {
       Symbol *root = share_root(place);
-      if (!root || local.count(root) || root == loop->reduce_sym) return;
+      if (!root || root == loop->reduce_sym) return;
+      if (local.count(root)) {
+        Symbol *outer = outside_alias(root, local);
+        if (outer)
+          error(place->pos,
+                "'%s' is a copy of '%s', so every iteration would write '%s'; "
+                "write '%s[%s]' instead",
+                root->name.c_str(), outer->name.c_str(), outer->name.c_str(),
+                outer->name.c_str(), loop->name.c_str());
+        return;
+      }
       Node *base = place;
       while (base && base->kind != ND_IDENT) base = base->lhs;
       if (!base || !covered.count(base)) {
@@ -1066,14 +1095,26 @@ struct Checker {
 
     // Once a name is written by the loop, every other mention of it has to be
     // indexed too, or one iteration would read what another is writing.
+    std::vector<Symbol *> memory;
+    for (Symbol *w : written) canonical(w, memory);
     walk(loop->body, [&](Node *n) {
-      if (n->kind != ND_IDENT || !n->sym || !written.count(n->sym)) return;
+      if (n->kind != ND_IDENT || !n->sym || n->sym->is_func) return;
       if (covered.count(n)) return;
-      error(n->pos,
-            "'%s' is written by this loop, so it can only be reached as "
-            "'%s[%s]'",
-            n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
+      if (written.count(n->sym)) {
+        error(n->pos,
+              "'%s' is written by this loop, so it can only be reached as "
+              "'%s[%s]'",
+              n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
+        return;
+      }
+      if (local.count(n->sym) && !outside_alias(n->sym, local)) return;
+      if (reaches_any(n->sym, memory))
+        error(n->pos,
+              "'%s' reaches the memory this loop writes, so it can only be "
+              "reached as '%s[%s]'",
+              n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
     });
+
   }
 
   // Everything the parent itself touches inside the block races with the
@@ -2991,7 +3032,10 @@ struct Checker {
       return;
     }
     if (!require_mutable(n->lhs, "assign to")) return;
-    if (n->op == TK_ASSIGN) alias(place_root(n->lhs), n->rhs, false);
+    // Only a value that carries memory makes the place reach it: `xs[0] =
+    // ys[1]` copies a number out of `ys`, not `ys`.
+    if (n->op == TK_ASSIGN && n->rhs->type && shares_memory(n->rhs->type))
+      alias(place_root(n->lhs), n->rhs, false);
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
                    n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
