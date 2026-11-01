@@ -284,8 +284,8 @@ A `return` takes an expression unless the statement ends where the word does.
 `for` has four shapes: forever (`for { }`), while a condition holds
 (`for ok { }`), over a range or a partition (`for i in 0..n { }`,
 `for off, part in xs.chunks(n) { }`), and while an optional holds a value
-(`for job := queue.Next() { }`). `parallel for` is the same loop with its
-iterations spread over the scheduler, and `reduce` names what each piece
+(`for job := queue.Next() { }`). `parallel for` is the loop over a range or a
+partition with its turns spread over the scheduler, and `reduce`, over a range, names what each piece
 accumulates on its own — `reduce(+: total)`, `reduce(min: best)`,
 `reduce(num.Merge: acc)`; `operator` there is any operator token. There is no
 fallthrough between cases, so a case's statements end where the next `case`

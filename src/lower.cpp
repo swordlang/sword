@@ -638,11 +638,13 @@ struct Lowerer {
   void captures_of(Node *loop, std::vector<Symbol *> &out) {
     std::set<Symbol *> local;
     local.insert(loop->sym);
+    if (loop->index_sym) local.insert(loop->index_sym);
     walk(loop->body, [&](Node *n) {
       if (n->kind == ND_VAR || n->kind == ND_CATCH ||
-          (n->kind == ND_FOR && n->is_range) ||
+          (n->kind == ND_FOR && !n->name.empty()) ||
           (n->kind == ND_IF && !n->name.empty()))
         if (n->sym) local.insert(n->sym);
+      if (n->index_sym) local.insert(n->index_sym);
     });
 
     std::set<Symbol *> seen;
@@ -672,6 +674,14 @@ struct Lowerer {
     // where the pieces are told to put them.
     if (reduced)
       fields.push_back(Field{"partials", types.ptr(reduced), 0, 0});
+    // A partition's turns are numbered 0..turns; each piece works out its own
+    // offset from the slice and the size, which the body cannot name.
+    bool pieces_of = !n->is_range;
+    if (pieces_of) {
+      fields.push_back(Field{"data", types.rawptr(types.u8_ty), 0, 0});
+      fields.push_back(Field{"len", types.usize_ty, 0, 0});
+      fields.push_back(Field{"size", types.usize_ty, 0, 0});
+    }
     types.layout_struct(env, std::move(fields));
     mod.structs.push_back(env);
 
@@ -702,8 +712,28 @@ struct Lowerer {
     std::string name = "sword.chunk." + id;
     chunks.push_back({name, n, env, captured, unit});
 
-    int lo = to_word(expr(n->lhs));
-    int hi = to_word(expr(n->rhs));
+    int lo, hi;
+    if (pieces_of) {
+      Type *word = types.usize_ty;
+      int len = -1;
+      int data = data_pointer(n->lhs, &len);
+      int size = to_word(expr(n->rhs));
+      guard(binop(IR_NE, size, constant(0, word), types.bool_ty),
+            "panic: chunks(0) would never advance, at line ", n->pos.line);
+      int at = (int)captured.size();
+      store(data, gep_field(block, env, at), types.rawptr(types.u8_ty));
+      store(len, gep_field(block, env, at + 1), word);
+      store(size, gep_field(block, env, at + 2), word);
+      // One turn per piece, the last one possibly short.
+      int whole = binop(IR_DIV, len, size, word);
+      int rest = binop(IR_NE, binop(IR_MOD, len, size, word),
+                       constant(0, word), types.bool_ty);
+      lo = constant(0, word);
+      hi = binop(IR_ADD, whole, to_word(rest), word);
+    } else {
+      lo = to_word(expr(n->lhs));
+      hi = to_word(expr(n->rhs));
+    }
     int out = reduced ? pieces : constant(0, types.rawptr(types.u8_ty));
     call_runtime("sword_parallel_for",
                  {lo, hi, func_address(name), block, out,
@@ -884,6 +914,76 @@ struct Lowerer {
   // register of f32, and measured fastest for f64 as well.
   static constexpr int kFloatLanes = 16;
 
+  // Turns lo..hi of a parallel loop over `xs.chunks(n)`: turn t is the piece
+  // at t·n, cut short at the end of the slice, the same pieces in the same
+  // places as the sequential loop gives.
+  void piece_turns(const Chunk &c, int envp, int lo, int hi) {
+    Node *n = c.loop;
+    Type *slice = n->type;
+    Type *elem = slice->elem;
+    Type *word = types.usize_ty;
+    int at = (int)c.captured.size();
+    int data = load(gep_field(envp, c.env, at), types.rawptr(types.u8_ty));
+    int len = load(gep_field(envp, c.env, at + 1), word);
+    int size = load(gep_field(envp, c.env, at + 2), word);
+
+    int turn = alloca_slot(word);
+    store(lo, turn, word);
+    int offset = alloca_slot(word);
+    int part = alloca_slot(slice);
+    int outer_part = n->sym->slot;
+    n->sym->slot = part;
+    int outer_offset = -1;
+    if (n->index_sym) {
+      outer_offset = n->index_sym->slot;
+      n->index_sym->slot = offset;
+    }
+
+    int cond_bb = new_block();
+    int body_bb = new_block();
+    int step_bb = new_block();
+    int exit_bb = new_block();
+
+    branch(cond_bb);
+    cur = cond_bb;
+    cond_branch(binop(IR_LT, load(turn, word), hi, types.bool_ty), body_bb,
+                exit_bb);
+
+    cur = body_bb;
+    int start = binop(IR_MUL, load(turn, word), size, word);
+    store(start, offset, word);
+    int stop = binop(IR_ADD, start, size, word);
+    int over = binop(IR_GT, stop, len, types.bool_ty);
+    int clamp = alloca_slot(word);
+    store(stop, clamp, word);
+    int clamp_bb = new_block();
+    int ready_bb = new_block();
+    cond_branch(over, clamp_bb, ready_bb);
+    cur = clamp_bb;
+    store(len, clamp, word);
+    branch(ready_bb);
+    cur = ready_bb;
+    stop = load(clamp, word);
+    store(gep_index(data, start, elem), gep_slice_ptr(part),
+          types.rawptr(types.u8_ty));
+    store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
+
+    loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
+    stmt(n->body);
+    steady_turns(n, false);
+    branch(step_bb);
+    loops.pop_back();
+
+    cur = step_bb;
+    store(binop(IR_ADD, load(turn, word), constant(1, word), word), turn, word);
+    branch(cond_bb);
+    cur = exit_bb;
+
+    n->sym->slot = outer_part;
+    if (n->index_sym) n->index_sym->slot = outer_offset;
+  }
+
   void emit_chunk(const Chunk &c, IrFunc &out) {
     Node *loop = c.loop;
     fn = &out;
@@ -950,6 +1050,16 @@ struct Lowerer {
         store(identity, accumulator, type);
       }
       loop->reduce_sym->slot = accumulator;
+    }
+
+    if (!loop->is_range) {
+      piece_turns(c, envp, lo, hi);
+      emit_ret(constant(0, types.error_ty), types.error_ty);
+      for (size_t i = 0; i < c.captured.size(); i++)
+        c.captured[i]->slot = saved[i];
+      auto &entry = out.blocks[0].insts;
+      entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+      return;
     }
 
     Type *index = loop->type;
@@ -1156,13 +1266,39 @@ struct Lowerer {
   // other task of the scope can reach it while the loop runs. A slice reached
   // through a pointer or a field is never one of these, because the same memory
   // can be lent `mut` under another name in the same call and shortened mid-loop.
+  // The pieces of a partition being lowered whose turn neither assigns the
+  // piece nor takes its address. The piece is made fresh for each turn, so
+  // nothing else can reach its header, and its length holds as still as an
+  // immutable slice's does; what is written through it is only the elements.
+  std::set<Symbol *> steady;
+
+  bool reshapes(Node *body, Symbol *piece) {
+    bool found = false;
+    walk(body, [&](Node *n) {
+      if (n->kind == ND_ASSIGN && n->lhs->kind == ND_IDENT &&
+          n->lhs->sym == piece)
+        found = true;
+      if (n->kind == ND_UNARY && n->op == TK_AMP && n->lhs &&
+          n->lhs->kind == ND_IDENT && n->lhs->sym == piece)
+        found = true;
+    });
+    return found;
+  }
+
+  void steady_turns(Node *loop, bool on) {
+    if (!tuning.steady || !loop->sym->is_mut) return;
+    if (!on) steady.erase(loop->sym);
+    else if (!reshapes(loop->body, loop->sym)) steady.insert(loop->sym);
+  }
+
   Symbol *walked_slice(Node *loop, bool parallel) {
     Node *hi = loop->rhs;
     if (!hi || hi->kind != ND_FIELD || hi->name != "len") return nullptr;
     Node *base = hi->lhs;
     if (!base || base->kind != ND_IDENT || !base->sym) return nullptr;
     Symbol *s = base->sym;
-    if ((s->is_mut && !parallel) || s->is_func || !s->type) return nullptr;
+    if ((s->is_mut && !parallel && !steady.count(s)) || s->is_func || !s->type)
+      return nullptr;
     if (!(s->is_mut ? tuning.walked_mut : tuning.walked)) return nullptr;
     if (s->type->kind != TY_SLICE && s->type->kind != TY_STRING) return nullptr;
     return s;
@@ -2554,8 +2690,9 @@ struct Lowerer {
     bool can_split = !breaks && loop->type && loop->type->bits == 64 &&
                      !loop->type->is_signed;
     auto fixed = [&](Node *n) {
-      return n->kind == ND_IDENT && n->sym && !n->sym->is_mut &&
-             !n->sym->is_func && !inner.count(n->sym) && n->sym != loop->sym;
+      return n->kind == ND_IDENT && n->sym &&
+             (!n->sym->is_mut || steady.count(n->sym)) && !n->sym->is_func &&
+             !inner.count(n->sym) && n->sym != loop->sym;
     };
     auto own = [&](Node *n) {
       return n->kind == ND_IDENT && n->sym == loop->sym;
@@ -2707,7 +2844,9 @@ struct Lowerer {
     store(binop(IR_SUB, stop, start, word), gep_slice_len(part), word);
 
     loops.push_back({step_bb, exit_bb, scopes.size()});
+    steady_turns(n, true);
     stmt(n->body);
+    steady_turns(n, false);
     branch(step_bb);
     loops.pop_back();
 
@@ -3254,7 +3393,7 @@ bool tuning_without(Tuning &tuning, const std::string &name) {
       {"walked", &Tuning::walked},       {"walked-mut", &Tuning::walked_mut},
       {"captures", &Tuning::captures},   {"versioned", &Tuning::versioned},
       {"split", &Tuning::split},         {"deferred", &Tuning::deferred},
-      {"lanes", &Tuning::lanes},
+      {"lanes", &Tuning::lanes},         {"steady", &Tuning::steady},
   };
   for (const auto &p : pieces)
     if (name == p.first) {

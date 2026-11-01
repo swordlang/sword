@@ -1,0 +1,33 @@
+// expect: 0
+// expect-output: 9 3
+// A loop over elements inside a parallel body declares its variable there, so
+// the variable is the iteration's own and nothing the parent has to hand in.
+
+import "std/io"
+
+func main() !void {
+    ys := [3]i64{1, 2, 3}
+    zs := ys[..]
+    mut out := [4]i64{}
+    parallel for i in 0..4 {
+        mut s i64 = 0
+        for y in ys[..] {
+            s += y
+        }
+        for k, y in ys[..] {
+            if k == 0 {
+                s += y - 1
+            }
+        }
+        out[i] = s + i64(i)
+    }
+    mut most := [2]u64{}
+    parallel for i in 0..2 {
+        mut seen u64 = 0
+        for part in zs.chunks(2) {
+            seen += 1
+        }
+        most[i] = seen + u64(i)
+    }
+    try io.Printf("{} {}\n", out[3], most[1])
+}
