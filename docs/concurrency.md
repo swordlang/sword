@@ -411,6 +411,43 @@ again, and two spawns in one turn give it to two tasks; each is refused like
 slicing by hand, with a note that points at the `chunks` loop. A spawn in each
 branch of an `if` is fine, since only one of them starts.
 
+### Pieces whose elements lead elsewhere
+
+The pieces of a partition are apart, but only one level down. When the
+elements are themselves slices or pointers, two of them can lead to the same
+memory, and nothing about the partition says otherwise:
+
+```sword
+func bump(mut part [][]i64) {
+    part[0][0] = part[0][0] + 1
+}
+
+func run(mut rows [][]i64) {
+    scope {
+        for part in rows.chunks(1) {
+            spawn bump(part)    // error
+        }
+    }
+}
+```
+
+If `rows` holds the same slice twice, the two tasks write one element. So a
+piece whose elements hold slices or pointers, handed to a `mut` parameter,
+counts as the whole slice:
+
+```
+error: every turn of this loop hands the same memory to a new task, so the
+       tasks would overlap in 'rows'
+note: 'part' is a piece of its own, but its elements hold slices or pointers
+      that may reach the same memory as another piece's, so handing it to a
+      'mut' parameter hands over all of 'rows'
+```
+
+Read-only pieces are still fine, and so is a slice of structs that hold no
+slice or pointer. When each row really is its own memory, a flat slice cut
+with `chunks(width)` says so in a way the compiler can check: that is what the
+row-by-row `parallel for` below does.
+
 ## `parallel for`
 
 For the common case of "do this to every element", there is a loop that spreads
@@ -439,6 +476,25 @@ parallel for i in 0..n {
 
 That is the neighbour bug, and it is the kind of thing that shows up in
 production as a heisenbug three months later.
+
+`xs[i]` is one iteration's own, but when it is a slice or a pointer, what it
+leads to need not be. Writing through it is refused, and so is handing it to
+a `mut` parameter; replacing the element is not:
+
+```sword
+parallel for i in 0..rows.len {
+    rows[i] = rows[i][1..]      // fine: the element itself
+    rows[i][0] = 0              // error
+}
+```
+
+```
+error: this writes through 'rows[i]' into the memory it leads to, which
+       another iteration's element may lead to as well
+```
+
+The same holds for a turn's piece in a `parallel for` over a partition, and for
+any other name that reaches its elements.
 
 There is no `break` either. The iterations have no order, so there is no point
 after which the rest would be skipped; `continue` skips the one index it is in.
