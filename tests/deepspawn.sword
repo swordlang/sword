@@ -1,0 +1,22 @@
+// expect-error: hands over all of 'rows'
+// The pieces of a slice of slices are apart, but the slices in them are not:
+// both rows here are the same memory, and each task writes through its piece.
+
+func bump(mut part [][]i64) {
+    part[0][0] = part[0][0] + 1
+}
+
+func run(mut rows [][]i64) {
+    scope {
+        for part in rows.chunks(1) {
+            spawn bump(part)
+        }
+    }
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [2][]i64{inner[..], inner[..]}
+    run(rows[..])
+    return int(inner[0])
+}

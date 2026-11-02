@@ -101,6 +101,22 @@ func received(ch chan[Box], t i64) {
         fill(b.xs, t)
     }
 }
+
+func fillrows(mut rows [][]i64, t i64) {
+    for j in 0..rows.len {
+        fill(rows[j], t)
+    }
+}
+"""
+
+# Only in the programs that use it: every iteration writes through its row,
+# which the checker refuses whatever the rows are.
+PROWS = """
+func prows(mut rows [][]i64, t i64) {
+    parallel for i in 0..rows.len {
+        rows[i][0] = rows[i][0] *% 31 +% t
+    }
+}
 """
 
 
@@ -128,6 +144,7 @@ class Gen:
         self.results = []
         self.holders = []
         self.needs_arena = False
+        self.needs_prows = False
 
     def fresh(self, p):
         self.n += 1
@@ -224,8 +241,31 @@ class Gen:
     def task(self):
         """One spawn or loop of spawns: (lines, [(reads, writes, inner race)])."""
         r = self.r
-        k = r.randrange(11)
+        k = r.randrange(13)
         t = self.next_tag()
+        if k in (11, 12):
+            # A slice of slices: the rows are elements of their own, but the
+            # memory each one leads to can be another row's.
+            views = [self.view() for _ in range(r.randrange(2, 5))]
+            rows = self.fresh("rr")
+            self.setup.append("mut %s := [%d][]i64{%s}" % (rows, len(views), ", ".join(v.expr for v in views)))
+            named = self.fresh("rs")
+            self.setup.append("mut %s := %s[..]" % (named, rows))
+            if k == 12:
+                self.needs_prows = True
+                heads = [(v.base, v.lo) for v in views]
+                inner = "prows's iterations write the same element" if len(set(heads)) < len(heads) else None
+                return ["spawn prows(%s, %d)" % (named, t)], [(set(), set(heads), inner)]
+            c = r.randrange(1, len(views) + 1)
+            lines = ["for o, part in %s.chunks(%d) {" % (named, c),
+                     "    spawn fillrows(part, %d)" % t, "}"]
+            acc = []
+            for lo in range(0, len(views), c):
+                cells = set()
+                for v in views[lo:lo + c]:
+                    cells |= v.cells()
+                acc.append((set(), cells, None))
+            return lines, acc
         if k == 9:
             if not self.holders or r.random() < 0.5:
                 a = self.view()
@@ -341,7 +381,7 @@ class Gen:
             body.append("scope {")
             body += ["    " + l for l in lines]
             body.append("}")
-        out = [HEADER, "func main() !int {",
+        out = [HEADER + (PROWS if self.needs_prows else ""), "func main() !int {",
                "    mut buf := [%d]i64{}" % N, "    mut oth := [%d]i64{}" % N,
                "    for i in 0..buf.len {", "        buf[i] = i64(i) +% 1",
                "        oth[i] = i64(i) *% 3 +% 2", "    }"]
