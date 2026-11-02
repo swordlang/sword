@@ -76,6 +76,9 @@ struct Checker {
     // Reaching an atomic or a shared is safe however many tasks do it: the
     // one goes through single instructions, the other through a mutex.
     bool is_synced = false;
+    // Memory a shared value holds, reached through that value: its lock puts
+    // such uses one after another, and nothing else does.
+    Symbol *guard = nullptr;
     // The parent's own uses inside the scope run one after another; they race
     // only with its tasks.
     bool by_parent = false;
@@ -843,6 +846,11 @@ struct Checker {
     case ND_TRY:
       roots_of(value->lhs, out);
       return;
+    case ND_CONVERT:
+      // `shared[Box](Box{xs: buf[..]})`: the value converted keeps what it
+      // reaches.
+      if (!value->kids.empty()) roots_of(value->kids[0], out);
+      return;
     case ND_ORELSE: case ND_CATCH:
       roots_of(value->lhs, out);
       roots_of(value->rhs, out);
@@ -880,6 +888,7 @@ struct Checker {
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
     use.is_synced = ::is_atomic(reached) || ::is_shared(reached);
+    bool holds = ::is_shared(reached);
     if (root->chunk_of) {
       use.chunk = root;
       root = root->chunk_of;
@@ -890,13 +899,31 @@ struct Checker {
     for (Symbol *r : roots) {
       use.root = r;
       use.via = use.chunk ? use.chunk : r != root ? root : nullptr;
-      uses.push_back(use);
+      // What a shared value was given is not its own: the lock orders the
+      // uses through it, not a use of that memory by its first name. Whoever
+      // holds the value may write under the lock, `mut` or not.
+      Access held = use;
+      if (holds && r != root) {
+        held.is_synced = false;
+        held.guard = root;
+        held.writes = true;
+      }
+      uses.push_back(held);
     }
     return uses;
   }
 
+  // A shared value whose contents reach other memory: what it was given can
+  // be the memory of another name.
+  bool holds_memory(Symbol *s) {
+    const Type *t = s ? s->type : nullptr;
+    while (t && (t->kind == TY_PTR || t->kind == TY_RAWPTR)) t = t->elem;
+    return t && ::is_shared(t) && shares_memory(t->elem);
+  }
+
   static bool clashes(const Access &a, const Access &b) {
     if (!a.root || a.root != b.root) return false;
+    if (a.guard && a.guard == b.guard) return false;
     if (a.is_synced || b.is_synced) return false;
     if (!a.writes && !b.writes) return false;
     if (a.by_parent && b.by_parent) return false;
@@ -955,9 +982,23 @@ struct Checker {
     for (auto &level : scope_uses) {
       for (const Access &other : level) {
         if (other.root && other.root != use.root) {
+          // Two parameters as one memory, or one of them a shared value
+          // holding the other's memory.
           Access same = other;
           same.root = use.root;
-          if (clashes(use, same)) need_apart(use.root, other.root, use.at);
+          Access mine = use, held = same;
+          if (holds_memory(use.root)) {
+            mine.is_synced = false;
+            mine.guard = use.root;
+            mine.writes = true;
+          }
+          if (holds_memory(other.root)) {
+            held.is_synced = false;
+            held.guard = other.root;
+            held.writes = true;
+          }
+          if (clashes(use, same) || clashes(mine, held))
+            need_apart(use.root, other.root, use.at);
         }
         if (!clashes(use, other)) continue;
         const char *mine = use.writes ? "writes" : "reads";
@@ -3148,8 +3189,11 @@ struct Checker {
     if (!require_mutable(n->lhs, "assign to")) return;
     // Only a value that carries memory makes the place reach it: `xs[0] =
     // ys[1]` copies a number out of `ys`, not `ys`.
-    if (n->op == TK_ASSIGN && n->rhs->type && shares_memory(n->rhs->type))
-      alias(place_root(n->lhs), n->rhs, false);
+    if (n->op == TK_ASSIGN && n->rhs->type && shares_memory(n->rhs->type)) {
+      Symbol *into = place_root(n->lhs);
+      if (into && into->locked) into = into->locked;
+      alias(into, n->rhs, false);
+    }
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
                    n->op == TK_XOR_ASSIGN || n->op == TK_SHL_ASSIGN ||
@@ -3311,6 +3355,7 @@ struct Checker {
     push_scope();
     n->sym =
         declare(n->name, types.ptr(owner->elem), !n->is_read, n->name_pos);
+    n->sym->locked = root;
     held_locks.push_back({root, n->pos, n->is_read});
     check_stmt(n->body);
     held_locks.pop_back();
