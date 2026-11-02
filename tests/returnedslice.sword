@@ -1,0 +1,23 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// A slice a function hands back reaches the memory of the argument it was
+// cut from, so these two tasks write the same four elements.
+
+func head(mut a []i64, n u64) []i64 {
+    return a[0..n]
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut h := head(buf[..], 4)
+    scope {
+        spawn fill(h, 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}

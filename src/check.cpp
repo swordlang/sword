@@ -40,6 +40,215 @@ struct Apart {
 };
 std::map<Symbol *, std::set<Apart>> apart_pairs;
 
+// --- what a call hands back ------------------------------------------------
+//
+// A function cannot return memory that lives in its own frame, so a slice or
+// pointer it returns reaches the memory of some of its parameters, or memory
+// an allocator handed out. Which parameters is read off the body by name:
+// every binding a parameter's memory flows into, until nothing changes, then
+// every `return`. Read by name, a body needs no checking first, which is what
+// lets a caller above the function in the file use it; a name used twice
+// only makes the answer larger. A call inside the body counts as reaching
+// all of its arguments.
+std::map<Node *, std::set<size_t>> result_sources_memo;
+
+// The checker's own question, asked before any body is checked: whether a
+// value of this type can reach memory beyond itself.
+bool carries_memory(const Type *t, int depth = 0) {
+  if (!t || depth > 8) return true;
+  switch (t->kind) {
+  case TY_SLICE: case TY_PTR: case TY_RAWPTR:
+    return true;
+  case TY_ARRAY: case TY_OPT:
+    return carries_memory(t->elem, depth + 1);
+  case TY_STRUCT:
+    if (t->is_interface) return true;
+    for (const Field &f : t->fields)
+      if (carries_memory(f.type, depth + 1)) return true;
+    return false;
+  default:
+    return t->kind != TY_STRING && t->kind != TY_INT && t->kind != TY_BOOL &&
+           t->kind != TY_FLOAT && t->kind != TY_ENUM && t->kind != TY_VOID;
+  }
+}
+
+// The type of a chain that starts at a parameter (`xs[k]`, `b.xs`, `*p`),
+// known from the signatures alone; null when it starts anywhere else.
+const Type *chain_type(Node *e, const std::map<std::string, const Type *> &typed) {
+  if (!e) return nullptr;
+  switch (e->kind) {
+  case ND_IDENT: {
+    auto at = typed.find(e->name);
+    return at == typed.end() ? nullptr : at->second;
+  }
+  case ND_INDEX: {
+    const Type *t = chain_type(e->lhs, typed);
+    if (t && t->kind == TY_PTR) t = t->elem;
+    return t && (t->kind == TY_SLICE || t->kind == TY_ARRAY) ? t->elem : nullptr;
+  }
+  case ND_SLICE_EXPR: {
+    const Type *t = chain_type(e->lhs, typed);
+    if (t && t->kind == TY_PTR) t = t->elem;
+    return t && t->kind == TY_SLICE ? t : nullptr;
+  }
+  case ND_FIELD: {
+    const Type *t = chain_type(e->lhs, typed);
+    if (t && t->kind == TY_PTR) t = t->elem;
+    if (!t || t->kind != TY_STRUCT || t->is_interface) return nullptr;
+    const Field *f = find_field(t, e->name);
+    return f ? f->type : nullptr;
+  }
+  case ND_UNARY: {
+    if (e->op != TK_STAR) return nullptr;
+    const Type *t = chain_type(e->lhs, typed);
+    return t && t->kind == TY_PTR ? t->elem : nullptr;
+  }
+  default:
+    return nullptr;
+  }
+}
+
+void flow(Node *e, const std::map<std::string, std::set<size_t>> &env,
+          const std::map<std::string, const Type *> &typed,
+          std::set<size_t> &out) {
+  if (!e) return;
+  if (const Type *t = chain_type(e, typed))
+    if (!carries_memory(t)) return;
+  switch (e->kind) {
+  case ND_IDENT: {
+    auto at = env.find(e->name);
+    if (at != env.end()) out.insert(at->second.begin(), at->second.end());
+    return;
+  }
+  case ND_INT_LIT: case ND_FLOAT_LIT: case ND_BOOL_LIT: case ND_STRING_LIT:
+  case ND_NIL_LIT: case ND_ERROR_LIT: case ND_TYPE_NAME: case ND_TYPE_PTR:
+  case ND_TYPE_RAWPTR: case ND_TYPE_SLICE: case ND_TYPE_ARRAY: case ND_TYPE_OPT:
+  case ND_TYPE_ERR: case ND_TYPE_INST: case ND_TYPE_FUNC:
+  // Arithmetic, comparisons and a length are numbers: they carry no memory,
+  // and saying so without types keeps the answer the same whichever of the
+  // two functions is checked first.
+  case ND_BINARY:
+    return;
+  case ND_UNARY:
+    if (e->op != TK_STAR && e->op != TK_AMP) return;
+    flow(e->lhs, env, typed, out);
+    return;
+  case ND_FIELD:
+    if (e->name == "len") return;
+    flow(e->lhs, env, typed, out);
+    return;
+  default:
+    for (Node *kid : e->kids) flow(kid, env, typed, out);
+    flow(e->lhs, env, typed, out);
+    flow(e->rhs, env, typed, out);
+    flow(e->cond, env, typed, out);
+  }
+}
+
+const std::set<size_t> &result_sources(Node *decl) {
+  auto known = result_sources_memo.find(decl);
+  if (known != result_sources_memo.end()) return known->second;
+  std::set<size_t> &out = result_sources_memo[decl];
+  if (!decl->body) {
+    for (size_t i = 0; i < decl->kids.size(); i++) out.insert(i);
+    return out;
+  }
+  std::map<std::string, std::set<size_t>> env;
+  std::map<std::string, const Type *> typed;
+  for (size_t i = 0; i < decl->kids.size(); i++) {
+    env[decl->kids[i]->name].insert(i);
+    if (decl->kids[i]->type) typed[decl->kids[i]->name] = decl->kids[i]->type;
+  }
+  std::vector<Node *> binds, returns;
+  std::function<void(Node *)> walk = [&](Node *n) {
+    if (!n) return;
+    if (n->kind == ND_RETURN) returns.push_back(n);
+    if (n->kind == ND_ASSIGN ||
+        (!n->name.empty() && (n->kind == ND_VAR || n->kind == ND_FOR ||
+                              n->kind == ND_IF || n->kind == ND_LOCK ||
+                              n->kind == ND_SELECT_CASE))) {
+      binds.push_back(n);
+      // A name declared again in the body is no longer known to be the
+      // parameter's type.
+      if (n->kind != ND_ASSIGN) typed.erase(n->name);
+    }
+    for (Node *kid : n->kids) walk(kid);
+    walk(n->lhs);
+    walk(n->rhs);
+    walk(n->cond);
+    walk(n->body);
+    walk(n->els);
+  };
+  walk(decl->body);
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (Node *b : binds) {
+      std::string name = b->name;
+      std::set<size_t> in;
+      if (b->kind == ND_ASSIGN) {
+        Node *place = b->lhs;
+        while (place && place->kind != ND_IDENT) place = place->lhs;
+        if (!place) continue;
+        name = place->name;
+        flow(b->rhs, env, typed, in);
+      } else {
+        // The value bound, the slice ranged over, the optional unwrapped,
+        // the shared locked: whichever of them this kind of node has.
+        flow(b->lhs, env, typed, in);
+        flow(b->rhs, env, typed, in);
+        flow(b->cond, env, typed, in);
+        for (Node *kid : b->kids) flow(kid, env, typed, in);
+      }
+      std::set<size_t> &into = env[name];
+      size_t before = into.size();
+      into.insert(in.begin(), in.end());
+      if (into.size() != before) changed = true;
+    }
+  }
+  std::set<size_t> found;
+  for (Node *r : returns) flow(r->lhs, env, typed, found);
+  return result_sources_memo[decl] = found;
+}
+
+bool is_allocator(const Type *t) {
+  return t && t->is_interface && t->name == "std.mem.Allocator";
+}
+
+// The arguments, receiver first, whose memory what a call returns may reach.
+// What comes out of an Allocator is fresh: that is the contract of the
+// interface, and the checker takes it at its word. A call the checker cannot
+// see the body of reaches every argument.
+std::vector<Node *> call_reaches(Node *call) {
+  std::vector<Node *> args;
+  if ((call->form == 1 || call->form == 2) && call->lhs)
+    args.push_back(call->lhs->lhs);
+  for (Node *kid : call->kids) args.push_back(kid);
+  if (call->form == 2) {
+    const Type *owner = args.empty() || !args[0] ? nullptr : args[0]->type;
+    if (owner && owner->kind == TY_PTR) owner = owner->elem;
+    if (is_allocator(owner)) return {};
+    return args;
+  }
+  Symbol *fn = call->form == 4 ? nullptr : call->sym;
+  if (!fn && call->lhs && call->lhs->kind == ND_IDENT) fn = call->lhs->sym;
+  if (!fn || !fn->is_func || !fn->decl || fn->decl->is_extern ||
+      fn->decl->kids.size() != args.size())
+    return args;
+  const std::vector<Type *> *params =
+      fn->type && fn->type->kind == TY_FUNC &&
+              fn->type->params.size() == args.size()
+          ? &fn->type->params
+          : nullptr;
+  std::vector<Node *> out;
+  for (size_t i : result_sources(fn->decl)) {
+    if (i >= args.size()) continue;
+    const Type *param = params ? (*params)[i] : fn->decl->kids[i]->type;
+    if (is_allocator(param)) continue;
+    out.push_back(args[i]);
+  }
+  return out;
+}
+
 struct Checker {
   Program &prog;
   Package &pkg;
@@ -847,6 +1056,10 @@ struct Checker {
       roots_of(value->lhs, out);
       roots_of(value->rhs, out);
       return;
+    case ND_CALL:
+      for (Node *arg : call_reaches(value))
+        if (arg->type && shares_memory(arg->type)) roots_of(arg, out);
+      return;
     default:
       if (Symbol *root = share_root(value))
         if (!root->is_func) canonical(root, out);
@@ -875,7 +1088,25 @@ struct Checker {
     use.writes = writes;
     use.at = value->pos;
     Symbol *root = share_root(value);
-    if (!root) return {use};
+    if (!root) {
+      // `head(xs, 4)` handed straight to a task reaches what the call
+      // returns from.
+      std::vector<Symbol *> roots;
+      if (value->kind == ND_CALL || value->kind == ND_STRUCT_LIT ||
+          value->kind == ND_ARRAY_LIT || value->kind == ND_ORELSE ||
+          value->kind == ND_CATCH || value->kind == ND_TRY)
+        roots_of(value, roots);
+      if (roots.empty()) return {use};
+      std::vector<Access> uses;
+      for (Symbol *r : roots) {
+        const Type *t = r->type;
+        while (t && (t->kind == TY_PTR || t->kind == TY_RAWPTR)) t = t->elem;
+        use.root = r;
+        use.is_synced = ::is_atomic(t) || ::is_shared(t);
+        uses.push_back(use);
+      }
+      return uses;
+    }
     const Type *reached = root->type;
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
@@ -5794,7 +6025,14 @@ struct Overlap {
       for (Symbol *r : from.empty() ? std::vector<Symbol *>{s} : from)
         if (std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
     };
-    if (!root) return out;
+    if (!root) {
+      if (arg && arg->kind == ND_CALL)
+        for (Node *from : call_reaches(arg))
+          for (Symbol *s : reached(from))
+            if (std::find(out.begin(), out.end(), s) == out.end())
+              out.push_back(s);
+      return out;
+    }
     add(root);
     if (root->chunk_of) add(root->chunk_of);
     return out;
@@ -5885,6 +6123,7 @@ struct Overlap {
 } // namespace
 
 bool check(Program &prog, TypeTable &types, DetListing *listing) {
+  result_sources_memo.clear();
   for (Package *pkg : prog.order)
     if (!Checker(prog, *pkg, types).run()) return false;
 
