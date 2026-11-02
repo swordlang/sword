@@ -1,0 +1,20 @@
+// expect-error: this puts memory that lives in this function's frame into 'p'
+// Through another name for the parameter, the store still reaches the caller's
+// box.
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut b *Box) {
+    mut local := [4]i64{}
+    mut p := b
+    p.xs = local[..]
+}
+
+func main() int {
+    mut empty := [4]i64{}
+    mut b := Box{xs: empty[..]}
+    fill(&b)
+    return int(b.xs.len)
+}
