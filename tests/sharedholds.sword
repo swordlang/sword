@@ -1,0 +1,45 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// The slice inside a shared value is still buf's memory: one task writes it
+// under the lock, the other by its own name, and the lock orders only the first.
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func look(a []i64, mut out *i64) {
+    *out = a[0]
+}
+
+func locked(sh *shared[Box], t i64) {
+    lock b := sh {
+        fill(b.xs, t)
+    }
+}
+
+func put(sh *shared[Box], mut a []i64) {
+    lock b := sh {
+        b.xs = a
+    }
+}
+
+func pair(sh *shared[Box], mut a []i64) {
+    scope {
+        spawn locked(sh, 1)
+        spawn fill(a, 2)
+    }
+}
+func main() int {
+    mut buf := [4]i64{}
+    mut sh := shared[Box](Box{xs: buf[..]})
+    scope {
+        spawn locked(&sh, 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}

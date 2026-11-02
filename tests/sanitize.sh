@@ -32,7 +32,8 @@ testparallel files metrics channels chunked graceful signals libcnames tls https
 filepool static clientreply lockpark dialreuse dialrefused lockread httpwritefail
 lockreadmany externblocking boundsprovenmut parallelcontinue floatlanes
 selectlock parallelinvariants parallelunwalked overflowlate parallelshort
-parallelnested parallelpieces parallelpiecesread returnedlegal storedlegal"
+parallelnested parallelpieces parallelpiecesread returnedlegal
+sharedholdslegal storedlegal"
 
 if [ $# -eq 0 ]; then
     if [ "$mode" = thread ]; then
