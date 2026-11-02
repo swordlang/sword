@@ -310,6 +310,33 @@ A binding reassigned keeps everything it was ever given. What a function hands
 back is not followed: `ys := same(xs)` is a new name as far as this goes, so
 keep copies that cross tasks in plain sight.
 
+### One memory, two parameters
+
+Inside a function, two parameters are two names, and the checker has no way
+to know from there whether a caller will hand it the same memory twice. So a
+function whose tasks reach two of its parameters, at least one of them to
+write, needs them to be different memory, and every call is held to that:
+
+```sword
+func two(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, 1000)
+        spawn bump(b, 1000)
+    }
+}
+
+two(&x, &y)     // fine
+two(&x, &x)     // error: 'x' is passed to 'two' as both 'a' and 'b', which must be different memory
+```
+
+The note under the error points at the line inside `two` where the two meet.
+A function that only passes its parameters on to one like this is held to
+the same thing, and so is a call through an interface or a function value,
+by every function it can land in. Where nothing runs at the same time there
+is nothing to rule out: `scale(xs, xs, 2)`, writing each element from
+itself, is fine, and so are two readers given one slice and an atomic given
+twice.
+
 ## Partitions
 
 Handing different pieces of one slice to different tasks is safe, and it is the
