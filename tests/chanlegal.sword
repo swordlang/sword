@@ -1,0 +1,57 @@
+// expect: 42
+// What stays legal: one receiver given a slice while another task writes
+// other memory, and a channel of plain values.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func look(a []i64, mut out *i64) {
+    *out = a[0]
+}
+
+func received(ch chan[Box], t i64) {
+    for mut b := <-ch {
+        fill(b.xs, t)
+    }
+}
+
+func produce(ch chan[Box], mut a []i64) {
+    ch <- Box{xs: a} catch {}
+    close(ch)
+}
+
+func count(nums chan[u64], mut out *i64) {
+    for v := <-nums {
+        *out = *out + i64(v)
+    }
+}
+
+func main() !int {
+    mut buf := [4]i64{}
+    mut other := [4]i64{}
+    mut r := i64(0)
+    mut backing := [2048]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut ch := try chan[Box](&arena, 2)
+    try ch <- Box{xs: buf[..]}
+    close(ch)
+    mut nums := try chan[u64](&arena, 4)
+    try nums <- 7
+    close(nums)
+    scope {
+        spawn received(ch, 1)
+        spawn fill(other[..], 2)
+        spawn count(nums, &r)
+    }
+    r = r + 42 - 7 - 1 - 2
+    return int(buf[0] + other[0] + r)
+}

@@ -317,6 +317,13 @@ void call_stores(Node *call, const std::map<std::string, std::set<size_t>> &env,
         for (size_t f : src)
           if (f != d) out.insert({d, f});
   };
+  // A send stores the value in the channel, whatever the channel's own body
+  // does with it.
+  if (name == "Send" || name == "TrySend") {
+    if (callee && callee->kind == ND_FIELD && !plain.empty())
+      pair_up(callee->lhs, plain[0]);
+    return;
+  }
   auto found = funcs_by_name.find(name);
   if (name.empty() || found == funcs_by_name.end()) {
     for (Node *into : method)
@@ -1288,6 +1295,17 @@ struct Checker {
         if (!root->is_func) alias(root, from, false);
     };
     Symbol *fn = call->form == 2 || call->form == 4 ? nullptr : call->sym;
+    // `ch <- v` is a call to the channel's Send by now: the channel keeps v.
+    if (call->form == 1 && fn && !args.empty() && args[0] && args[0]->type &&
+        (fn->name.find(".Send") != std::string::npos ||
+         fn->name.find(".TrySend") != std::string::npos)) {
+      const Type *on = args[0]->type;
+      if (on->kind == TY_PTR) on = on->elem;
+      if (is_chan_type(on)) {
+        if (args.size() > 1) store(args[0], args[1]);
+        return;
+      }
+    }
     if (call->form == 2) {
       const Type *owner = args.empty() || !args[0] ? nullptr : args[0]->type;
       if (owner && owner->kind == TY_PTR) owner = owner->elem;
@@ -1349,6 +1367,9 @@ struct Checker {
     while (reached && (reached->kind == TY_PTR || reached->kind == TY_RAWPTR))
       reached = reached->elem;
     use.is_synced = ::is_atomic(reached) || ::is_shared(reached);
+    // What was sent on a channel is for whoever receives it to write: a
+    // receiver is handed it the way a task is handed an argument.
+    bool carried = is_chan_type(reached);
     if (root->chunk_of) {
       use.chunk = root;
       root = root->chunk_of;
@@ -1359,7 +1380,9 @@ struct Checker {
     for (Symbol *r : roots) {
       use.root = r;
       use.via = use.chunk ? use.chunk : r != root ? root : nullptr;
-      uses.push_back(use);
+      Access sent = use;
+      if (carried && r != root) sent.writes = true;
+      uses.push_back(sent);
     }
     return uses;
   }

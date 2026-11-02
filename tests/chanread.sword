@@ -1,0 +1,46 @@
+// expect-error: this reads 'buf' while it is already written concurrently
+// The receiver writes what it is sent, so a task that only reads it meets a
+// writer.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func look(a []i64, mut out *i64) {
+    *out = a[0]
+}
+
+func received(ch chan[Box], t i64) {
+    for mut b := <-ch {
+        fill(b.xs, t)
+    }
+}
+
+func produce(ch chan[Box], mut a []i64) {
+    ch <- Box{xs: a} catch {}
+    close(ch)
+}
+
+func main() !int {
+    mut buf := [4]i64{}
+    mut other := [4]i64{}
+    mut r := i64(0)
+    mut backing := [2048]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut ch := try chan[Box](&arena, 2)
+    try ch <- Box{xs: buf[..]}
+    close(ch)
+    scope {
+        spawn received(ch, 1)
+        spawn look(buf[..], &r)
+    }
+    return int(buf[0] + other[0] + r)
+}
