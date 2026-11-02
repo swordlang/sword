@@ -1,0 +1,20 @@
+// expect-error: this writes through 'bs[i]' into the memory it leads to
+// A struct held by value is the element, but a slice in it leads elsewhere.
+
+struct Box {
+    n i64
+    xs []i64
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut bs := [8]Box{}
+    for i in 0..8 {
+        bs[i] = Box{n: 0, xs: inner[..]}
+    }
+    parallel for i in 0..8 {
+        bs[i].n = 1
+        bs[i].xs[0] = bs[i].xs[0] + 1
+    }
+    return int(inner[0])
+}

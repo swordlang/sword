@@ -1,0 +1,18 @@
+// expect-error: 'rows[i]' holds a slice or a pointer, so the 'mut' parameter of 'bump'
+// Handing an element that is a slice to a 'mut' parameter writes through it.
+
+func bump(mut xs []i64) {
+    xs[0] = xs[0] + 1
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [8][]i64{}
+    for i in 0..8 {
+        rows[i] = inner[..]
+    }
+    parallel for i in 0..8 {
+        bump(rows[i])
+    }
+    return int(inner[0])
+}

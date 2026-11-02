@@ -1,0 +1,22 @@
+// expect-error: so a 'mut' parameter given the piece could write memory
+// Handing the whole piece to a 'mut' parameter is writing through its slices.
+
+func bump(mut part [][]i64) {
+    part[0][0] = part[0][0] + 1
+}
+
+func run(mut rows [][]i64) {
+    parallel for off, part in rows.chunks(4) {
+        bump(part)
+    }
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [16][]i64{}
+    for i in 0..16 {
+        rows[i] = inner[..]
+    }
+    run(rows[..])
+    return int(inner[0])
+}
