@@ -172,10 +172,13 @@ answer does not depend on the pool.
 
 Every function is analysed, whether or not it says `det`; writing it asks to be
 told when the property is lost, and the message walks the chain from what was
-claimed to the call that lost it. A pointer is opaque to whoever is handed one,
-so an arena doing arithmetic on addresses to align what it hands out does not
-make its callers depend on the layout — only reading an address as a number
-here does. An interface nothing in the program implements is never called
+claimed to the call that lost it. An address read as a number takes det away
+from every caller too, since the number can be returned or stored. The one
+exception is `mem.Arena`'s `Alloc`, which reads its buffer's address to align
+what it hands out. Anything in a frame that holds an array starts on a
+multiple of 16 on every machine, and a buffer inside it sits at an offset the
+layout fixes, so for any alignment up to 16 the arena hands out the same
+offsets wherever the frame lands. An interface nothing in the program implements is never called
 through, so a call through it takes nothing away. `shield det` lists every
 function and what it was found to be ([Command line](#command-line)).
 
