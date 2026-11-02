@@ -30,13 +30,18 @@ func produce(ch chan[Box], mut a []i64) {
 }
 
 func main() !int {
-    mut buf := [4]i64{}
     mut other := [4]i64{}
     mut r := i64(0)
     mut backing := [2048]u8{}
     mut arena := mem.NewArena(backing[..])
+    // What travels on a channel comes from an allocator: the frame's own
+    // memory would be gone once the frame returns.
+    mut buf := mem.Alloc[i64](&arena, 4) orelse return 1
+    for k in 0..buf.len {
+        buf[k] = 0
+    }
     mut ch := try chan[Box](&arena, 2)
-    try ch <- Box{xs: buf[..]}
+    try ch <- Box{xs: buf}
     close(ch)
     scope {
         for i in 0..2 {
