@@ -146,6 +146,10 @@ struct Fiber {
   int wake_result = 0;
   Fiber *waiting_next = nullptr; // next on a shared value's wait list
   int home = 0; // the worker it last ran on, where a wake puts it back
+  // Under --audit=footprints, the grants of the task or piece running on this
+  // stack. It moves with the stack, which is what keeps it right after a task
+  // resumes on another thread.
+  void *footprint = nullptr;
 #ifdef SWORD_ASAN
   // The sanitizer's token for this stack while it is put down, and where it
   // came from — which is what has to be handed back on the way out.
@@ -1663,6 +1667,14 @@ uint16_t sword_run_main(sword_task_fn fn, const void *args, int64_t size) {
   sword_scope_begin(blob);
   queue_task((Scope *)blob, fn, args, size);
   return sword_scope_end(blob);
+}
+
+// Where the running task keeps its footprint (rt/sword_fp.cpp). Code that runs
+// outside any task has a slot per thread instead.
+void **sword_footprint_slot(void) {
+  static thread_local void *outside = nullptr;
+  Fiber *f = tl_fiber;
+  return f ? &f->footprint : &outside;
 }
 
 // Waits for a descriptor from inside a task, without holding the thread: the
