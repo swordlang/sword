@@ -1078,6 +1078,15 @@ same channel, so it goes to a task by value and no pointer is involved. The memo
 behind it comes from the allocator you pass, like everything else here; there is
 no `make`, because nothing in this language allocates without being asked.
 
+**What a channel carries is handed over.** A value holding a slice or a
+pointer reaches the same memory after it is sent, so every task that receives
+from that channel counts as given that memory, to write, the way a task is
+given what its `spawn` line names. A task writing the slice by its own name
+while another receives it is refused, and so are several receivers of one
+channel that carries a slice, since nothing says each value comes out once. A
+channel of plain values — numbers, structs of numbers — hands over nothing
+but copies, and has none of this.
+
 **Capacity zero is a handover.** Not a queue with no room — a meeting point: the
 sender waits until a receiver has actually taken the value:
 

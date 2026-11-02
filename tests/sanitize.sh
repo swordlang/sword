@@ -35,7 +35,7 @@ filepool static clientreply lockpark dialreuse dialrefused lockread httpwritefai
 lockreadmany externblocking boundsprovenmut parallelcontinue floatlanes
 selectlock parallelinvariants parallelunwalked overflowlate parallelshort
 parallelnested parallelpieces parallelpiecesread returnedlegal
-sharedholdslegal storedlegal"
+sharedholdslegal storedlegal chanlegal"
 
 if [ $# -eq 0 ]; then
     if [ "$mode" = thread ]; then
