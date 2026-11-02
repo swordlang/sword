@@ -4,6 +4,67 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.4.1 — Temper
+
+*2026-11-02.* A patch to Temper that closes five ways memory reached a task
+under a name the race checker did not follow, and one way a function was
+called det when it was not.
+
+### What changes for existing programs
+
+Programs that compiled stop compiling, against what a patch promises, because
+each of them is a data race the race checker was meant to refuse, or claims a
+`det` that does not hold. 0.3.1 did the same for partitions. Everything else
+that compiled still does: the suite, the standard library's tests and the
+documentation's examples pass unchanged. Now refused:
+
+- **One memory handed to two parameters that a function's tasks need apart.**
+  `two(&x, &x)`, whose two tasks write `a` and `b`, and `work(xs[..], xs[..])`,
+  whose tasks write pieces of one and read the other. Where nothing runs at
+  once both may still be one memory: `scale(xs, xs, k)` compiles (#175).
+- **A task writing a slice a function returned, beside one writing what it was
+  cut from.** The result of `head(buf[..], 4)` comes from `buf`; so does a
+  struct returned holding it, or part of a field a method hands back. What an
+  allocator hands out is still new memory (#177).
+- **A task writing by its own name memory a shared value holds.** A slice put
+  into a `shared[T]` is lent to it, and every use of it through the lock
+  counts as a write against any other use (#178).
+- **A task writing a slice it sent on a channel, beside the one that received
+  it**, and several receivers of one channel that carries a slice, since
+  nothing says which of them gets each value. A channel of numbers carries no
+  memory and is unchanged (#179).
+- **A task writing a slice a call stored into another argument**:
+  `store(&bx, buf[..])` makes `bx` reach `buf` (#181).
+- **A `det` function that calls one reading an address as a number.** The
+  number moves with the machine and the run, and only the function that read
+  it lost `det`; now every caller does. `mem.Arena.Alloc` reads its buffer's
+  address only to align, and keeps `det` (#188).
+
+One program that was refused compiles: a `det` function that calls through an
+interface nothing in the program implements, since no value of it can exist.
+
+### Tools
+
+- **`shield det <file | dir>`** lists the functions that are not `det`, each
+  with the chain to what took it away, in the form of a diagnostic; `-all`
+  lists the `det` ones too, and the last line counts them. Given a library, a
+  function that loses `det` only by calling through an interface is listed as
+  `det when its mem.Allocator is`, and counted apart.
+
+### Standard library
+
+- `Request.Cookie(name) ?string` reads one cookie from the request's `Cookie`
+  header, without the quotes around a quoted value, and allocates nothing.
+
+### Fixes
+
+- A local buffer (`[N]u8{}`) starts on a multiple of 16. An arena aligns from
+  its buffer's address, so where the frame put the buffer decided how much
+  padding an aligned allocation took; one byte and then eight aligned to 16,
+  from a buffer of its own and from one inside a struct, took 48 bytes
+  between the two arenas on an M4 and now take 47, the same on every machine.
+- `--without=` names `steady` among the pieces it knows.
+
 ## 0.4.0 — Temper
 
 *2026-11-01.* Tempering takes the brittleness out of hardened steel without
