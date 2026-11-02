@@ -16,8 +16,10 @@ mode=${1:-}
 [ $# -gt 0 ] && shift
 
 case $mode in
-address) flags="-fsanitize=address,undefined -fno-omit-frame-pointer" ;;
-thread)  flags="-fsanitize=thread" ;;
+address) flags="-fsanitize=address,undefined -fno-omit-frame-pointer"
+         attribute=sanitize_address ;;
+thread)  flags="-fsanitize=thread"
+         attribute=sanitize_thread ;;
 *) echo "usage: tests/sanitize.sh address|thread [test...]" >&2; exit 2 ;;
 esac
 
@@ -88,12 +90,17 @@ fail=0
 for name in "$@"; do
     src="$root/tests/$name.sword"
     want=$(sed -n 's|^// expect: *||p' "$src" | head -1)
-    if ! "$shield" "$src" --emit-llvm > "$out/$name.ll" 2> "$out/$name.log"; then
+    if ! "$shield" "$src" --emit-llvm > "$out/$name.raw.ll" 2> "$out/$name.log"; then
         echo "FAIL $name: does not compile"
         sed 's/^/     /' "$out/$name.log" | head -5
         fail=$((fail + 1))
         continue
     fi
+    # Starting from IR, clang instruments only the functions whose attributes
+    # ask for it, and shield writes no such attribute: without this line the
+    # sanitizer would see the runtime and none of the program's own code.
+    sed "s/^attributes #\([0-9]*\) = { /attributes #\1 = { $attribute /" \
+        "$out/$name.raw.ll" > "$out/$name.ll"
     # What shield itself would link against: the runtime's libraries, those the
     # test's extern declarations name, and its weak symbols.
     if ! clang++ -O1 -g $flags -Wno-override-module -x ir "$out/$name.ll" \
