@@ -1,0 +1,15 @@
+// expect-error: this returns memory that lives in this function's frame
+// head() returns a cut of what it was given, which here is the frame.
+
+func head(xs []i64, n u64) []i64 {
+    return xs[0..n]
+}
+
+func make() []i64 {
+    mut local := [4]i64{1, 2, 3, 4}
+    return head(local[..], 2)
+}
+
+func main() int {
+    return int(make()[0])
+}

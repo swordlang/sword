@@ -307,9 +307,10 @@ scope {
 ```
 
 A binding reassigned keeps everything it was ever given. What a function hands
-back is followed too. A function cannot return memory of its own frame, so a
-slice or pointer it returns was cut from something it was given, and the
-checker reads from its body which of its parameters that can be:
+back is followed too. A function cannot return memory of its own frame, store
+it where its caller can reach it, or send it on a channel, so a slice or
+pointer it returns was cut from something it was given, and the checker reads
+from its body which of its parameters that can be:
 
 ```sword
 func head(mut xs []i64, n u64) []i64 {
@@ -1142,6 +1143,18 @@ while another receives it is refused, and so are several receivers of one
 channel that carries a slice, since nothing says each value comes out once. A
 channel of plain values — numbers, structs of numbers — hands over nothing
 but copies, and has none of this.
+
+**Nothing of a frame goes on a channel.** A slice of a local array, or a
+pointer to a local, is refused at the send, even on a channel made in the same
+function: the receiver may be a task that keeps it after the frame has
+returned, and nothing on its `spawn` line would say so. What a channel carries
+comes from an allocator:
+
+```sword
+mut buf := mem.Alloc[i64](&arena, 4) orelse return 1
+try ch <- Box{xs: buf}          // fine
+try ch <- Box{xs: local[..]}    // error: this sends memory that lives in this function's frame on a channel
+```
 
 **Capacity zero is a handover.** Not a queue with no room — a meeting point: the
 sender waits until a receiver has actually taken the value:

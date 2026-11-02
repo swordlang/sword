@@ -1,0 +1,33 @@
+// expect-error: this sends memory that lives in this function's frame on a channel
+// The producer sends a slice of its own frame and keeps writing it, while the
+// receiver writes it too; nothing on either spawn line says so.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+func produce(ch chan[Box]) {
+    mut local := [4]i64{}
+    ch <- Box{xs: local[..]} catch {}
+    local[0] = 1
+    close(ch)
+}
+
+func consume(ch chan[Box]) {
+    for mut b := <-ch {
+        b.xs[0] = 2
+    }
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut ch := try chan[Box](&arena, 2)
+    scope {
+        spawn produce(ch)
+        spawn consume(ch)
+    }
+    return 0
+}

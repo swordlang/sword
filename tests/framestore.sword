@@ -1,0 +1,22 @@
+// expect-error: this puts memory that lives in this function's frame into 'b'
+// Storing through a call is storing: keep() puts its slice into the box.
+
+struct Box {
+    xs []i64
+}
+
+func keep(mut b *Box, mut xs []i64) {
+    b.xs = xs
+}
+
+func fill(mut b *Box) {
+    mut local := [4]i64{}
+    keep(b, local[..])
+}
+
+func main() int {
+    mut empty := [4]i64{}
+    mut b := Box{xs: empty[..]}
+    fill(&b)
+    return int(b.xs.len)
+}

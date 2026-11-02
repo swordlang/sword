@@ -120,6 +120,12 @@ func prows(mut rows [][]i64, t i64) {
 """
 
 
+# How a helper's memory leaves it, and how that memory is named on the way
+# out. The helper is written per program, so its name and shape vary.
+LEAVES = ("send", "keep", "lock", "store")
+NAMES = ("cut", "named", "head", "wrap")
+
+
 class View:
     """A slice expression and the elements of a base it covers."""
 
@@ -145,6 +151,11 @@ class Gen:
         self.holders = []
         self.needs_arena = False
         self.needs_prows = False
+        # buf and oth come from the arena in half of the programs: a channel
+        # may only carry memory that does not live in main's frame.
+        self.heap = self.r.random() < 0.5
+        self.helpers = []
+        self.escapes = None
 
     def fresh(self, p):
         self.n += 1
@@ -238,10 +249,59 @@ class Gen:
         self.results.append(name)
         return name
 
+    def leave(self):
+        """A call to a helper that puts memory where it outlives the helper:
+        its own frame's, which must be refused, or what it was given, which
+        need not be."""
+        r = self.r
+        how, naming = r.choice(LEAVES), r.choice(NAMES)
+        own = r.random() < 0.6
+        fn = self.fresh("leave")
+        src = "local[..]" if own else "given"
+        body = ["    mut local := [4]i64{1, 2, 3, 4}"]
+        if naming == "cut":
+            src = "local[1..3]" if own else "given[0..given.len]"
+        elif naming == "named":
+            body.append("    mut ys := %s" % src)
+            src = "ys"
+        elif naming == "head":
+            src = "head(%s, 2)" % src
+        else:
+            body.append("    mut w := wrap(%s)" % src)
+            src = "w.xs"
+        holder = {"send": "ch chan[Box]", "keep": "mut b *Box",
+                  "lock": "sh *shared[Box]", "store": "mut b *Box"}[how]
+        put = {"send": ["    ch <- Box{xs: %s} catch {}" % src],
+               "keep": ["    b.xs = %s" % src],
+               "lock": ["    lock b := sh {", "        b.xs = %s" % src, "    }"],
+               "store": ["    store(b, %s)" % src]}[how]
+        self.helpers.append("func %s(%s, mut given []i64) {\n%s\n    local[0] = given[0]\n}\n" %
+                            (fn, holder, "\n".join(body + put)))
+        h = self.fresh("hold")
+        given = "oth[0..2]"
+        if how == "send":
+            self.needs_arena = True
+            self.setup.append("mut %s := try chan[Box](&arena, 1)" % h)
+            arg = h
+        elif how == "lock":
+            self.setup.append("mut %s := shared[Box](Box{xs: oth[0..0]})" % h)
+            arg = "&" + h
+        else:
+            self.setup.append("mut %s := Box{xs: oth[0..0]}" % h)
+            arg = "&" + h
+        self.setup.append("%s(%s, %s)" % (fn, arg, given))
+        if own:
+            self.escapes = self.escapes or "%s puts its frame's memory where it outlives the call" % fn
+        elif how == "send" and not self.heap:
+            # What it was given is main's frame, and that goes on no channel.
+            self.escapes = self.escapes or "%s sends main's frame on a channel" % fn
+
     def task(self):
         """One spawn or loop of spawns: (lines, [(reads, writes, inner race)])."""
         r = self.r
         k = r.randrange(13)
+        while k == 10 and not self.heap:
+            k = r.randrange(13)
         t = self.next_tag()
         if k in (11, 12):
             # A slice of slices: the rows are elements of their own, but the
@@ -375,19 +435,27 @@ class Gen:
 
     def program(self):
         body, why = [], None
+        if self.r.random() < 0.3:
+            self.leave()
         for _ in range(self.r.randrange(1, 3)):
             lines, w = self.scope()
             why = why or w
             body.append("scope {")
             body += ["    " + l for l in lines]
             body.append("}")
-        out = [HEADER + (PROWS if self.needs_prows else ""), "func main() !int {",
-               "    mut buf := [%d]i64{}" % N, "    mut oth := [%d]i64{}" % N,
-               "    for i in 0..buf.len {", "        buf[i] = i64(i) +% 1",
+        why = why or self.escapes
+        out = [HEADER + (PROWS if self.needs_prows else "") + "".join("\n" + h for h in self.helpers),
+               "func main() !int {"]
+        if self.heap or self.needs_arena:
+            out += ["    mut backing := [8192]u8{}", "    mut arena := mem.NewArena(backing[..])"]
+        if self.heap:
+            out += ["    mut buf := mem.Alloc[i64](&arena, %d) orelse return 1" % N,
+                    "    mut oth := mem.Alloc[i64](&arena, %d) orelse return 1" % N]
+        else:
+            out += ["    mut buf := [%d]i64{}" % N, "    mut oth := [%d]i64{}" % N]
+        out += ["    for i in 0..buf.len {", "        buf[i] = i64(i) +% 1",
                "        oth[i] = i64(i) *% 3 +% 2", "    }"]
         out += ["    mut %s := i64(0)" % n for n in self.results]
-        if self.needs_arena:
-            out += ["    mut backing := [8192]u8{}", "    mut arena := mem.NewArena(backing[..])"]
         out += ["    " + l for l in self.setup]
         out += ["    " + l for l in body]
         out += ["    mut h := u64(14695981039346656037)",
@@ -403,4 +471,4 @@ class Gen:
 g = Gen(int(sys.argv[1]))
 text, why = g.program()
 open(sys.argv[2], "w").write(text)
-print(json.dumps({"racy": why is not None, "why": why}))
+print(json.dumps({"racy": why is not None, "why": why, "leaves": g.escapes}))

@@ -1,0 +1,12 @@
+// expect-error: this returns memory that lives in this function's frame
+// Another name for the frame's memory is the frame's memory.
+
+func make() []i64 {
+    mut local := [4]i64{1, 2, 3, 4}
+    ys := local[..]
+    return ys
+}
+
+func main() int {
+    return int(make()[0])
+}

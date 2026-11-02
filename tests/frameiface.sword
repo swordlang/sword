@@ -1,0 +1,26 @@
+// expect-error: this puts memory that lives in this function's frame into 'k'
+// Through an interface the call lands in Keep, which holds on to its slice.
+
+interface Keeper {
+    mut Keep(xs []i64)
+}
+
+struct Holder {
+    xs []i64
+}
+
+func (mut h *Holder) Keep(xs []i64) {
+    h.xs = xs
+}
+
+func fill(mut k Keeper) {
+    mut local := [4]i64{}
+    k.Keep(local[..])
+}
+
+func main() int {
+    mut empty := [4]i64{}
+    mut h := Holder{xs: empty[..]}
+    fill(&h)
+    return int(h.xs.len)
+}

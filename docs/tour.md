@@ -1139,9 +1139,12 @@ and it takes them:
 
 - **A task cannot outlive the memory it borrowed.** `scope`'s closing brace joins,
   so lending a task a slice of your own stack is safe by construction.
-- **A function cannot hand back its own frame.** `return &local`, `return local[..]`,
+- **A function's frame stays in the function.** `return &local`, `return local[..]`,
   `return &local[i]` and `return &local.field` are compile errors, because the
-  frame is gone before the caller can look.
+  frame is gone before the caller can look. So is putting a piece of the frame
+  where it outlives the call — into something a parameter points to, into a
+  shared value, or onto a channel — under any name and through any call that
+  stores it.
 
 ```sword
 func leak() []u64 {

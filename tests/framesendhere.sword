@@ -1,0 +1,28 @@
+// expect-error: this sends memory that lives in this function's frame on a channel
+// A channel made in this frame is refused the frame's memory too: what travels
+// on it is out of the checker's sight, wherever the channel came from.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+func consume(ch chan[Box]) {
+    for mut b := <-ch {
+        b.xs[0] = 2
+    }
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut local := [4]i64{}
+    mut ch := try chan[Box](&arena, 2)
+    try ch <- Box{xs: local[..]}
+    close(ch)
+    scope {
+        spawn consume(ch)
+    }
+    return int(local[0])
+}

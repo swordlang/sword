@@ -1,0 +1,86 @@
+// expect: 12
+// What stays legal: lending the frame to calls and tasks, another name for it
+// that stays here, a name rebound, what is read through a frame pointer, a
+// channel carrying memory from an allocator, a shared value made here.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+struct Ctx {
+    data []i64
+}
+
+func sum(xs []i64) i64 {
+    mut s i64 = 0
+    for x in xs {
+        s += x
+    }
+    return s
+}
+
+func fill(mut xs []i64, v i64) {
+    for i in 0..xs.len {
+        xs[i] = v
+    }
+}
+
+// Reads through the pointer it is given: the slice in it is the caller's.
+func dataOf(c *Ctx) []i64 {
+    return c.data
+}
+
+func pick(given []i64) []i64 {
+    mut local := [2]i64{1, 1}
+    mut use := given
+    if given.len == 0 {
+        use = local[..]
+    }
+    mut s := sum(use)
+    use = given
+    s += sum(use)
+    return given
+}
+
+func viaCtx(given []i64) []i64 {
+    mut ctx := Ctx{data: given}
+    return dataOf(&ctx)
+}
+
+func consume(ch chan[Box], mut out *i64) {
+    for b := <-ch {
+        *out += sum(b.xs)
+    }
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut local := [4]i64{}
+    mut view := local[..]
+    scope {
+        for part in view.chunks(2) {
+            spawn fill(part, 1)
+        }
+    }
+    mut total := sum(local[..])
+    mut given := [3]i64{1, 1, 1}
+    total += sum(pick(given[..])) + sum(viaCtx(given[..]))
+    mut heap := mem.Alloc[i64](&arena, 2) orelse return 1
+    fill(heap, 1)
+    mut ch := try chan[Box](&arena, 1)
+    try ch <- Box{xs: heap}
+    close(ch)
+    mut got i64 = 0
+    scope {
+        spawn consume(ch, &got)
+    }
+    total += got
+    mut sh := shared[Box](Box{xs: local[..]})
+    lock b := &sh {
+        total += sum(b.xs) - 6
+    }
+    return int(total + 2)
+}

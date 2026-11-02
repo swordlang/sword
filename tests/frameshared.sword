@@ -1,0 +1,21 @@
+// expect-error: this puts memory that lives in this function's frame into 'sh'
+// A task leaves a slice of its frame in a shared value and returns; the other
+// task then writes a frame that is gone.
+
+struct Box {
+    xs []i64
+}
+
+func put(sh *shared[Box]) {
+    mut local := [4]i64{}
+    lock b := sh {
+        b.xs = local[..]
+    }
+}
+
+func main() int {
+    mut empty := [4]i64{}
+    mut sh := shared[Box](Box{xs: empty[0..0]})
+    put(&sh)
+    return 0
+}
