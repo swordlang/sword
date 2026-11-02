@@ -988,6 +988,61 @@ else
     pass=$((pass + 1))
 fi
 
+# `shield det` lists which functions of the package are det, the chain under
+# each one that is not, and with -all the det ones too. A library listed on
+# its own, with no main, is det on a condition where it calls through an
+# interface; a program knows what implements one, and one nothing implements
+# is never called through.
+want_det='tests/detlist.sword:16:1: Twice.By: det
+tests/detlist.sword:20:1: add: det
+tests/detlist.sword:24:1: counted: not det
+    tests/detlist.sword:26:13: counted reads or writes an atomic
+tests/detlist.sword:30:1: stamped: not det
+    tests/detlist.sword:31:24: stamped calls time.Now, which is not det
+    std/time/time.sword:67:39: time.Now calls out of the language
+tests/detlist.sword:34:1: later: not det
+    tests/detlist.sword:35:23: later calls stamped, which is not det
+    tests/detlist.sword:31:24: stamped calls time.Now, which is not det
+    std/time/time.sword:67:39: time.Now calls out of the language
+tests/detlist.sword:38:1: first: det
+tests/detlist.sword:46:1: scaled: det
+tests/detlist.sword:50:1: grab: det
+tests/detlist.sword:55:1: main: not det
+    tests/detlist.sword:59:23: main calls counted, which is not det
+    tests/detlist.sword:26:13: counted reads or writes an atomic
+5 of 9 functions det; 1 generic function nothing instantiates is not counted'
+want_detlib='tests/detlib/detlib.sword:14:1: Copy: det when its mem.Allocator is
+    tests/detlib/detlib.sword:15:29: Copy calls mem.Alloc$u8
+    std/mem/mem.sword:135:21: mem.Alloc$u8 calls through an interface
+tests/detlib/detlib.sword:22:1: Twice: det when its mem.Allocator is
+    tests/detlib/detlib.sword:23:16: Twice calls Copy
+    tests/detlib/detlib.sword:15:29: Copy calls mem.Alloc$u8
+    std/mem/mem.sword:135:21: mem.Alloc$u8 calls through an interface
+tests/detlib/detlib.sword:27:1: Both: det when its Scale and mem.Allocator are
+    tests/detlib/detlib.sword:28:16: Both calls through an interface
+tests/detlib/detlib.sword:39:1: Stamp: not det
+    tests/detlib/detlib.sword:40:40: Stamp calls time.Now, which is not det
+    std/time/time.sword:67:39: time.Now calls out of the language
+1 of 5 functions det, 3 more when what they are handed is'
+got_det=$(cd "$root" && "$shield" det -all tests/detlist.sword 2>&1 |
+    sed "s|$root/||")
+got_detlib=$(cd "$root" && "$shield" det tests/detlib 2>&1 | sed "s|$root/||")
+got_nomain=$(cd "$root" && "$shield" tests/detlib -o "$tmp/detlib" 2>&1)
+if [ "$got_det" != "$want_det" ]; then
+    echo "FAIL shield det -all:"
+    printf '%s\n' "$got_det" | sed 's/^/     /'
+    fail=$((fail + 1))
+elif [ "$got_detlib" != "$want_detlib" ]; then
+    echo "FAIL shield det on a library:"
+    printf '%s\n' "$got_detlib" | sed 's/^/     /'
+    fail=$((fail + 1))
+elif ! printf '%s\n' "$got_nomain" | grep -qF "no 'main' function"; then
+    echo "FAIL a build of a library still needs main: $got_nomain"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # Each way of dropping a bounds check can be switched off for measuring, and
 # with all of them off every index in a loop is checked on every turn. Under
 # --audit a dropped check stays in as one with a message of its own.

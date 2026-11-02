@@ -1,0 +1,32 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// A struct returned with the slice inside it, and a method handing back part
+// of a field, reach the same memory as the slice they were given.
+
+struct Box {
+    xs []i64
+}
+
+func wrap(mut a []i64) Box {
+    return Box{xs: a[0..2]}
+}
+
+func (b *Box) Head() []i64 {
+    return b.xs[0..1]
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut w := wrap(buf[..])
+    mut h := w.Head()
+    scope {
+        spawn fill(h, 1)
+        spawn fill(buf[2..4], 2)
+    }
+    return int(buf[0])
+}

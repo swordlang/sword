@@ -533,6 +533,23 @@ q := try http.Unescape(req.Query("q"), room[..])   // "ada king"
 contain anything. Both fail with `error.NoSpace` rather than writing past the
 end of what you gave them.
 
+### Cookies
+
+`req.Cookie("session")` reads the `Cookie` header (`name=value; other=value`)
+and returns the value of the first cookie with that name, or nothing when it is
+not there:
+
+```sword
+if session := req.Cookie("session") {
+    res.Printf("welcome back, {}\n", session)
+}
+```
+
+Like `Path` and `Query`, the value is a slice of the header in the connection's
+read buffer, so nothing is allocated. Surrounding double quotes on a value
+(`name="abc"`) are stripped, a space after each `;` is skipped, and a
+pair with no `=` is ignored.
+
 ## The client
 
 ```sword
@@ -663,7 +680,7 @@ writing the same thing".
 
 ## What is missing
 
-There is no cookie or form parsing and no range requests, and the client does not
+There is no form parsing and no range requests, and the client does not
 send chunked itself — the server reads chunked requests but the client does not
 write them. The client keeps one connection rather than a pool, so calls to several
 services in a row still pay for a handshake each time.

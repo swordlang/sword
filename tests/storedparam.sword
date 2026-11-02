@@ -1,0 +1,29 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// After store(&bx, buf[..]), bx reaches buf's memory: the callee's body
+// says so.
+
+struct Box {
+    xs []i64
+}
+
+func store(mut b *Box, mut a []i64) {
+    b.xs = a
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut none := [1]i64{}
+    mut bx := Box{xs: none[..]}
+    store(&bx, buf[..])
+    scope {
+        spawn fill(bx.xs, 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}

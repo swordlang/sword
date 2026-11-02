@@ -1,0 +1,15 @@
+// expect-error: 'xs' is passed to 'shift' as both 'dst' and 'src', which must be different memory
+// Each turn writes dst[i] and reads src at another index: fine for two
+// slices, a race for one.
+
+func shift(mut dst []i64, src []i64) {
+    parallel for i in 0..dst.len {
+        dst[i] = src[(i + 1) % src.len]
+    }
+}
+
+func main() int {
+    mut xs := [8]i64{1, 2, 3, 4, 5, 6, 7, 8}
+    shift(xs[..], xs[..])
+    return xs[0]
+}

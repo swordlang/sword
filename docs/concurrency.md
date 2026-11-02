@@ -219,6 +219,10 @@ back are the operating system's business. The same call is one or the other
 depending on what the program binds into the interface, and the compiler knows
 which because it can see the whole program.
 
+`shield det` asks the same question of every function at once, written `det`
+or not, and prints the chain under each one that is not, so you can see how
+much of a program is det before claiming it anywhere.
+
 ## The race checker
 
 One rule covers it:
@@ -303,8 +307,57 @@ scope {
 ```
 
 A binding reassigned keeps everything it was ever given. What a function hands
-back is not followed: `ys := same(xs)` is a new name as far as this goes, so
-keep copies that cross tasks in plain sight.
+back is followed too. A function cannot return memory of its own frame, so a
+slice or pointer it returns was cut from something it was given, and the
+checker reads from its body which of its parameters that can be:
+
+```sword
+func head(mut xs []i64, n u64) []i64 {
+    return xs[0..n]
+}
+
+mut h := head(buf[..], 4)
+scope {
+    spawn fill(h, 1)
+    spawn fill(buf[..], 2)  // error: this writes 'buf' while it is already written
+}
+```
+
+What a function stores is followed the same way. After `store(&box, xs)`,
+where `store` writes `xs` into `box.xs`, `box` reaches the memory of `xs`, and
+so does it after a call to anything that passes the two on to `store`.
+
+Memory an allocator hands out is new memory, and two allocations are two
+memories, even from one arena: that is what an `Allocator` promises. An
+allocator of your own that handed out memory the program also uses directly
+would be breaking that promise, and the checker would not see it.
+
+### One memory, two parameters
+
+Inside a function, two parameters are two names, and the checker has no way
+to know from there whether a caller will hand it the same memory twice. So a
+function whose tasks reach two of its parameters, at least one of them to
+write, needs them to be different memory, and every call is held to that:
+
+```sword
+func two(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, 1000)
+        spawn bump(b, 1000)
+    }
+}
+
+two(&x, &y)     // fine
+two(&x, &x)     // error: 'x' is passed to 'two' as both 'a' and 'b', which must be different memory
+```
+
+The note under the error points at the line inside `two` where the two meet.
+A function that only passes its parameters on to one like this is held to
+the same thing, and so is a call through an interface or a function value,
+by every function it can land in. Where nothing runs at the same time there
+is nothing to rule out: `scale(xs, xs, 2)`, writing each element from
+itself, is fine, and so are two readers given one slice and an atomic given
+twice.
 
 ## Partitions
 
@@ -840,6 +893,24 @@ is the same one it makes for an atomic, and it rests on the same thing: **there
 is no way to reach the value except through the lock.** `shared[T](v)` builds
 one, `lock` opens one, and the type has no fields you can read.
 
+A value holding a slice or a pointer is where that needs a second look: the
+memory the slice reaches still answers to the name it had before. So what
+goes into a shared value is lent to it, at `shared[T](v)` or stored through
+the lock later. Tasks reaching it through the lock are put in order by the
+lock; a use by the old name while a task holds the shared value is refused,
+a read included, since whoever holds the value may write under the lock:
+
+```sword
+mut sh := shared[Box](Box{xs: buf[..]})
+scope {
+    spawn locked(&sh)
+    spawn fill(buf[..])     // error: this writes 'buf' while it is already written
+}
+```
+
+Memory an allocator handed out has no other name, which is why a shared map
+or table that grows is no trouble.
+
 ### The block is the critical section
 
 ```sword
@@ -1006,6 +1077,15 @@ so it takes nothing.
 same channel, so it goes to a task by value and no pointer is involved. The memory
 behind it comes from the allocator you pass, like everything else here; there is
 no `make`, because nothing in this language allocates without being asked.
+
+**What a channel carries is handed over.** A value holding a slice or a
+pointer reaches the same memory after it is sent, so every task that receives
+from that channel counts as given that memory, to write, the way a task is
+given what its `spawn` line names. A task writing the slice by its own name
+while another receives it is refused, and so are several receivers of one
+channel that carries a slice, since nothing says each value comes out once. A
+channel of plain values — numbers, structs of numbers — hands over nothing
+but copies, and has none of this.
 
 **Capacity zero is a handover.** Not a queue with no room — a meeting point: the
 sender waits until a receiver has actually taken the value:

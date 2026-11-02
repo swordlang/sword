@@ -177,6 +177,9 @@ struct Symbol {
   // whose memory it reaches, so the race checker sees one memory under two
   // names. Empty when the binding's memory is its own.
   std::vector<Symbol *> aliases;
+  // For a `lock` binding: the shared value it opened. A slice stored through
+  // it is held by that value from then on.
+  Symbol *locked = nullptr;
   // For a partition variable: how many loops enclose the body of the loop
   // that made it.
   int chunk_depth = 0;

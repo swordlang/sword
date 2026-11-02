@@ -1,0 +1,50 @@
+// expect: 42
+// What stays legal: two allocations from one arena, one to each task; a
+// function returning one of its parameters, used beside memory it did not
+// return; and a copy into fresh memory, written while the original is.
+
+import "std/mem"
+
+func first(mut a []i64, b []i64) []i64 {
+    if b.len > a.len {
+        return a[0..0]
+    }
+    return a
+}
+
+func copied(mut al mem.Allocator, xs []i64) ?[]i64 {
+    mut out := mem.Alloc[i64](al, xs.len) orelse return nil
+    for k in 0..xs.len {
+        out[k] = xs[k]
+    }
+    return out
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] + t
+    }
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut x := mem.Alloc[i64](&arena, 4) orelse return error.OutOfMemory
+    mut y := mem.Alloc[i64](&arena, 4) orelse return error.OutOfMemory
+    mut buf := [4]i64{}
+    mut other := [4]i64{}
+    mut f := first(buf[..], other[..])
+    mut c := copied(&arena, buf[..]) orelse return error.OutOfMemory
+    scope {
+        spawn fill(x, 10)
+        spawn fill(y, 10)
+        spawn fill(f, 1)
+        spawn fill(other[..], 1)
+        spawn fill(c, 1)
+    }
+    scope {
+        spawn fill(c, 1)
+        spawn fill(buf[..], 1)
+    }
+    return int(x[0] + y[0] + f[0] + other[0] + c[0] + c[1] + c[2] + c[3] + buf[1] + buf[2] + buf[3] + 5)
+}

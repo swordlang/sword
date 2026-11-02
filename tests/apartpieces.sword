@@ -1,0 +1,16 @@
+// expect-error: 'xs' is passed to 'rows' as both 'out' and 'from', which must be different memory
+// A parallel loop over the pieces of out reads all of from on every turn.
+
+func rows(mut out []i64, from []i64) {
+    parallel for off, row in out.chunks(4) {
+        for j in 0..row.len {
+            row[j] = from[from.len - 1 - off - j]
+        }
+    }
+}
+
+func main() int {
+    mut xs := [8]i64{1, 2, 3, 4, 5, 6, 7, 8}
+    rows(xs[..], xs[..])
+    return xs[0]
+}

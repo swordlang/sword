@@ -1,0 +1,65 @@
+// expect: 42
+// What stays legal: the same memory twice where nothing runs at once, two
+// readers, an atomic handed in twice, and two different variables to a
+// function whose tasks need them apart.
+
+func scale(mut out []i64, xs []i64, k i64) {
+    for i in 0..out.len {
+        out[i] = xs[i] * k
+    }
+}
+
+func sum(xs []i64, mut out *i64) {
+    mut s := i64(0)
+    for x in xs {
+        s += x
+    }
+    *out = s
+}
+
+func readers(a []i64, b []i64, mut s *i64, mut t *i64) {
+    scope {
+        spawn sum(a, s)
+        spawn sum(b, t)
+    }
+}
+
+func tick(c *atomic[i64], n i64) {
+    for i in 0..n {
+        c.Add(1)
+    }
+}
+
+func ticks(a *atomic[i64], b *atomic[i64]) {
+    scope {
+        spawn tick(a, 10)
+        spawn tick(b, 10)
+    }
+}
+
+func bump(mut p *i64, n i64) {
+    for i in 0..n {
+        *p = *p + 1
+    }
+}
+
+func two(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, 3)
+        spawn bump(b, 4)
+    }
+}
+
+func main() int {
+    mut xs := [4]i64{1, 2, 3, 4}
+    scale(xs[..], xs[..], 2)
+    mut s := i64(0)
+    mut t := i64(0)
+    readers(xs[..], xs[..], &s, &t)
+    c := atomic[i64](0)
+    ticks(&c, &c)
+    mut x := i64(0)
+    mut y := i64(0)
+    two(&x, &y)
+    return s - t + c.Load() + x + y + 15
+}

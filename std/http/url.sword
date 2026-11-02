@@ -88,14 +88,23 @@ func ParseURL(text string, fromHost string, fromPort i32) !URL {
 // empty when the key is not there. Run it through Unescape if the value can
 // carry spaces or punctuation.
 func QueryValue(query string, name string) string {
-    mut rest := query
+    return pairValue(query, name, 38) orelse "" // '&'
+}
+
+func pairValue(s string, name string, sep u8) ?string {
+    mut rest := s
     for rest.len > 0 {
-        stop := strings.IndexByte(rest, 38) // '&'
+        stop := strings.IndexByte(rest, sep)
         pair := rest[0..stop]
         if stop == rest.len {
             rest = rest[rest.len..rest.len]
         } else {
             rest = rest[stop+1..rest.len]
+            if sep == 59 { // ';'
+                for rest.len > 0 && rest[0] == 32 {
+                    rest = rest[1..rest.len]
+                }
+            }
         }
         eq := strings.IndexByte(pair, 61) // '='
         if eq == pair.len {
@@ -105,7 +114,7 @@ func QueryValue(query string, name string) string {
             return pair[eq+1..pair.len]
         }
     }
-    return ""
+    return nil
 }
 
 func hexDigit(c u8) !u8 {

@@ -1,0 +1,24 @@
+// expect: 47
+// An arena aligns what it hands out by address. A buffer of its own starts on
+// a multiple of 16 on every machine, so one byte and then eight aligned to 16
+// leave it at 24. A buffer one byte into a struct starts one past such a
+// multiple, which the layout fixes, and leaves it at 23. Neither depends on
+// where the frame was put.
+import "std/mem"
+
+struct Holder {
+    tag u8
+    room [64]u8
+}
+
+det func used(mut a mem.Arena) u64 {
+    a.Alloc(1, 1) orelse return 0
+    a.Alloc(8, 16) orelse return 0
+    return a.Used()
+}
+
+func main() !int {
+    mut backing := [64]u8{}
+    mut h := Holder{tag: 1, room: [64]u8{}}
+    return int(used(mem.NewArena(backing[..])) + used(mem.NewArena(h.room[..])))
+}

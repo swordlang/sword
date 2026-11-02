@@ -1,0 +1,51 @@
+// expect: 42
+// What stays legal: copying numbers from one slice into another, storing
+// into a box nothing else reaches, and an allocation kept by a function.
+
+import "std/mem"
+
+struct Box {
+    xs []i64
+}
+
+func store(mut b *Box, mut a []i64) {
+    b.xs = a
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+
+
+func copy(mut into []i64, from []i64) {
+    for k in 0..into.len {
+        into[k] = from[k]
+    }
+}
+
+func grow(mut b *Box, mut al mem.Allocator) {
+    b.xs = mem.Alloc[i64](al, 4) orelse b.xs
+}
+
+func main() !int {
+    mut backing := [4096]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut buf := [4]i64{}
+    mut other := [4]i64{1, 2, 3, 4}
+    mut none := [1]i64{}
+    copy(buf[..], other[..])
+    mut bx := Box{xs: none[..]}
+    store(&bx, other[..])
+    mut spare := [1]i64{}
+    mut fresh := Box{xs: spare[0..0]}
+    grow(&fresh, &arena)
+    scope {
+        spawn fill(buf[..], 1)
+        spawn fill(bx.xs, 2)
+        spawn fill(fresh.xs, 3)
+    }
+    return int(buf[0] + other[0] + fresh.xs[0]) + 16
+}

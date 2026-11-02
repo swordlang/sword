@@ -1,0 +1,16 @@
+// expect-error: caller calls where, which is not det
+// The number an address was read as can leave the function that read it, and
+// then the caller's answer depends on where the memory landed too.
+
+func where(xs []i64) u64 {
+    return u64(xs.ptr) % 4093
+}
+
+det func caller(xs []i64) u64 {
+    return where(xs) + 1
+}
+
+func main() !int {
+    mut room := [4]i64{1, 2, 3, 4}
+    return int(caller(room[..]))
+}

@@ -169,6 +169,16 @@ struct Emitter {
 
   static int align_for(const Type *t) { return (int)align_of(t); }
 
+  static bool holds_array(const Type *t, int depth = 0) {
+    if (!t || depth > 8) return false;
+    if (t->kind == TY_ARRAY) return true;
+    if (t->kind == TY_OPT) return holds_array(t->elem, depth + 1);
+    if (t->kind == TY_STRUCT && !t->is_interface)
+      for (const Field &f : t->fields)
+        if (holds_array(f.type, depth + 1)) return true;
+    return false;
+  }
+
   const char *arith(const IrInst &in) {
     bool sign = in.type->is_signed;
     if (in.type->kind == TY_FLOAT) {
@@ -244,10 +254,15 @@ struct Emitter {
     case IR_FUNCADDR:
       return; // globals are referenced by name
 
-    case IR_ALLOCA:
+    case IR_ALLOCA: {
+      // A buffer is aligned to 16 on every machine, so an arena made from it
+      // aligns what it hands out from the same starting point everywhere.
+      int align = align_for(in.type);
+      if (holds_array(in.type) && align < 16) align = 16;
       fprintf(out, "  %s = alloca %s, align %d\n", val(in.dst).c_str(),
-              ll_type(in.type).c_str(), align_for(in.type));
+              ll_type(in.type).c_str(), align);
       break;
+    }
 
     case IR_LOAD:
       fprintf(out, "  %s = load %s, ptr %s, align %d\n", val(in.dst).c_str(),

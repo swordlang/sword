@@ -6,6 +6,7 @@
 import "std/http"
 import "std/io"
 import "std/mem"
+import "std/net"
 import "std/strings"
 
 struct Router {
@@ -23,7 +24,46 @@ func (r *Router) Serve(req *http.Request, mut res *http.Response) !void {
         res.Status = 200
         return
     }
+    if strings.Equal(req.Path, "/cookie") {
+        theme := req.Cookie("theme") orelse "none"
+        session := req.Cookie("session") orelse "none"
+        spaced := req.Cookie("spaced") orelse "none"
+        empty := req.Cookie("empty") orelse "none"
+        token := req.Cookie("token") orelse "none"
+        quoted := req.Cookie("quoted") orelse "none"
+
+        mut noMissing := "ok"
+        if _ := req.Cookie("absent") {
+            noMissing = "found"
+        }
+        if _ := req.Cookie("flag") {
+            noMissing = "flag"
+        }
+        res.Printf("{}:{}:{}:{}:{}:{}:{}", theme, session, spaced, empty, token, quoted, noMissing)
+        res.Status = 200
+        return
+    }
     res.Text(404, "not found")
+}
+
+func askCookie(port i32, header string, mut buf []u8) !string {
+    mut c := try net.Dial("127.0.0.1", port)
+    try c.WriteString("GET /cookie HTTP/1.1\r\nHost: x\r\n")
+    if header.len > 0 {
+        try c.WriteString(header)
+        try c.WriteString("\r\n")
+    }
+    try c.WriteString("Connection: close\r\n\r\n")
+    mut have u64 = 0
+    for {
+        n := c.Read(buf[have..buf.len]) catch 0
+        if n == 0 {
+            break
+        }
+        have += n
+    }
+    c.Close()
+    return string(buf[0..have])
 }
 
 func drive(port i32, mut a mem.Allocator, mut out []u64) !void {
@@ -49,6 +89,17 @@ func drive(port i32, mut a mem.Allocator, mut out []u64) !void {
                      "text/plain; charset=utf-8") {
         out[7] = 1
     }
+
+    mut room := [2048]u8{}
+    withCookies := try askCookie(port, "Cookie: theme=dark; flag; session=first;   spaced=ok; empty=; token=a=b; quoted=\"hello\"; session=second", room[..])
+    if strings.Contains(withCookies, "dark:first:ok::a=b:hello:ok") {
+        out[8] = 1
+    }
+
+    noCookieHeader := try askCookie(port, "", room[..])
+    if strings.Contains(noCookieHeader, "none:none:none:none:none:none:ok") {
+        out[9] = 1
+    }
 }
 
 func main() !int {
@@ -58,7 +109,7 @@ func main() !int {
     mut srv := try http.Listen(0)
     port := srv.Port()
 
-    mut results := mem.Alloc[u64](&arena, 8) orelse return error.OutOfMemory
+    mut results := mem.Alloc[u64](&arena, 10) orelse return error.OutOfMemory
     mut router := Router{hits: 0}
 
     scope {
@@ -77,6 +128,9 @@ func main() !int {
     }
     if results[5] != 1 || results[6] != 1 || results[7] != 1 {
         return 4
+    }
+    if results[8] != 1 || results[9] != 1 {
+        return 5
     }
     try io.Print("http: all checks passed\n")
     return 0

@@ -1,0 +1,26 @@
+// expect-error: 'scaled' is marked det, but what it answers can depend on more
+// A call through an interface is det when every implementation the program
+// has is, and this one reads the clock.
+
+import "std/time"
+
+interface Scale {
+    By(v i64) i64
+}
+
+struct Jitter {
+    k i64
+}
+
+func (j *Jitter) By(v i64) i64 {
+    return v * j.k + time.Now().AsNanos() % 2
+}
+
+det func scaled(s Scale, v i64) i64 {
+    return s.By(v)
+}
+
+func main() int {
+    j := Jitter{k: 2}
+    return int(scaled(&j, 3))
+}
