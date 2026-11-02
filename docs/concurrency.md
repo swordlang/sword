@@ -323,6 +323,10 @@ scope {
 }
 ```
 
+What a function stores is followed the same way. After `store(&box, xs)`,
+where `store` writes `xs` into `box.xs`, `box` reaches the memory of `xs`, and
+so does it after a call to anything that passes the two on to `store`.
+
 Memory an allocator hands out is new memory, and two allocations are two
 memories, even from one arena: that is what an `Allocator` promises. An
 allocator of your own that handed out memory the program also uses directly

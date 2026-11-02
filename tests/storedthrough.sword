@@ -1,0 +1,37 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// A function that only hands its parameters to one that stores does the
+// same, and so does a method.
+
+struct Box {
+    xs []i64
+}
+
+func store(mut b *Box, mut a []i64) {
+    b.xs = a
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func keep(mut b *Box, mut a []i64) {
+    store(b, a)
+}
+
+func (mut b *Box) Take(mut a []i64) {
+    keep(b, a)
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut none := [1]i64{}
+    mut bx := Box{xs: none[..]}
+    bx.Take(buf[..])
+    scope {
+        spawn fill(bx.xs, 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}
