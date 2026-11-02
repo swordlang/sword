@@ -55,6 +55,7 @@ struct Lowerer {
     Type *args;
     Type *box; // the callee's !void type, or null when it cannot fail
     std::string unit;
+    bool footprint; // the last field of `args` is the task's footprint
   };
   std::vector<Thunk> thunks;
 
@@ -436,6 +437,8 @@ struct Lowerer {
     // Leaving the block is the join, and the checker guarantees this is the
     // only way out.
     int code = call_runtime("sword_scope_end", {blob}, types.error_ty);
+    if (tuning.footprints)
+      call_runtime("sword_fp_join", {blob}, types.void_ty);
     if (n->form != 1) return;
 
     int ok = binop(IR_EQ, code, constant(0, types.error_ty), types.bool_ty);
@@ -460,6 +463,8 @@ struct Lowerer {
     std::vector<Field> fields;
     for (size_t i = 0; i < call->kids.size(); i++)
       fields.push_back(Field{"a" + std::to_string(i), sig->params[i], 0, 0});
+    Type *opaque = types.rawptr(types.u8_ty);
+    if (tuning.footprints) fields.push_back(Field{"fp", opaque, 0, 0});
     types.layout_struct(args, std::move(fields));
     mod.structs.push_back(args);
 
@@ -468,10 +473,24 @@ struct Lowerer {
       assign_into(gep_field(slot, args, (int)i), call->kids[i],
                   sig->params[i]);
 
+    // Granted from the copy the task will get, before it can run: what the
+    // arguments reach, to write where the parameter is `mut`.
+    if (tuning.footprints) {
+      Type *flag = types.named("i32");
+      int parent = call_runtime("sword_fp_current", {}, opaque);
+      int handle = fp_open(scope_blobs.back(), parent, n->pos);
+      for (size_t i = 0; i < call->kids.size(); i++) {
+        bool writes = i < sig->param_mut.size() && sig->param_mut[i];
+        fp_reach(handle, gep_field(slot, args, (int)i), sig->params[i],
+                 constant(writes ? 1 : 0, flag));
+      }
+      store(handle, gep_field(slot, args, (int)call->kids.size()), opaque);
+    }
+
     std::string thunk = "sword.task." + id;
-    thunks.push_back(
-        {thunk, call->name,
-         args, sig->ret->is_error_union ? sig->ret : nullptr, unit});
+    thunks.push_back({thunk, call->name, args,
+                      sig->ret->is_error_union ? sig->ret : nullptr, unit,
+                      tuning.footprints});
 
     call_runtime("sword_scope_spawn",
                  {scope_blobs.back(), func_address(thunk), slot,
@@ -504,10 +523,18 @@ struct Lowerer {
       box = alloca_slot(t.box);
       call_args.push_back(box);
     }
-    for (size_t i = 0; i < t.args->fields.size(); i++) {
+    size_t given = t.args->fields.size() - (t.footprint ? 1 : 0);
+    for (size_t i = 0; i < given; i++) {
       Type *field = t.args->fields[i].type;
       int at = gep_field(argp, t.args, (int)i);
       call_args.push_back(is_aggregate(field) ? at : load(at, field));
+    }
+
+    Type *opaque = types.rawptr(types.u8_ty);
+    int previous = -1;
+    if (t.footprint) {
+      int mine = load(gep_field(argp, t.args, (int)given), opaque);
+      previous = call_runtime("sword_fp_enter", {mine}, opaque);
     }
 
     IrInst in{};
@@ -516,6 +543,7 @@ struct Lowerer {
     in.type = types.void_ty;
     in.args = std::move(call_args);
     emit(in);
+    if (t.footprint) call_runtime("sword_fp_leave", {previous}, types.void_ty);
 
     int code = t.box ? load(gep_named(box, t.box, "code"), types.error_ty)
                      : constant(0, types.error_ty);
@@ -682,6 +710,10 @@ struct Lowerer {
       fields.push_back(Field{"len", types.usize_ty, 0, 0});
       fields.push_back(Field{"size", types.usize_ty, 0, 0});
     }
+    // The footprint of the task running the loop, which every piece's is a
+    // child of: it is the one lending them what they reach.
+    if (tuning.footprints)
+      fields.push_back(Field{"fp", types.rawptr(types.u8_ty), 0, 0});
     types.layout_struct(env, std::move(fields));
     mod.structs.push_back(env);
 
@@ -734,11 +766,18 @@ struct Lowerer {
       lo = to_word(expr(n->lhs));
       hi = to_word(expr(n->rhs));
     }
+    if (tuning.footprints) {
+      Type *opaque = types.rawptr(types.u8_ty);
+      store(call_runtime("sword_fp_current", {}, opaque),
+            gep_field(block, env, (int)env->fields.size() - 1), opaque);
+    }
     int out = reduced ? pieces : constant(0, types.rawptr(types.u8_ty));
     call_runtime("sword_parallel_for",
                  {lo, hi, func_address(name), block, out,
                   constant(most, types.usize_ty)},
                  types.error_ty);
+    if (tuning.footprints)
+      call_runtime("sword_fp_join", {block}, types.void_ty);
     if (reduced) combine_partials(n, partials, pieces, reduced);
   }
 
@@ -1016,6 +1055,15 @@ struct Lowerer {
       sym->slot = load(gep_field(envp, c.env, (int)i), types.ptr(sym->type));
     }
 
+    if (tuning.footprints) {
+      Type *opaque = types.rawptr(types.u8_ty);
+      int parent = load(gep_field(envp, c.env, (int)c.env->fields.size() - 1),
+                        opaque);
+      int handle = fp_open(envp, parent, loop->pos);
+      fp_piece(c, envp, handle, lo, hi);
+      fp_previous = call_runtime("sword_fp_enter", {handle}, opaque);
+    }
+
     // What the body reaches only to read is copied in once. The race checker
     // refuses an assignment to it here and any task that writes it alongside,
     // so it holds still for the whole loop — but LLVM sees a store to `out[i]`
@@ -1057,6 +1105,7 @@ struct Lowerer {
       emit_ret(constant(0, types.error_ty), types.error_ty);
       for (size_t i = 0; i < c.captured.size(); i++)
         c.captured[i]->slot = saved[i];
+      fp_previous = -1;
       auto &entry = out.blocks[0].insts;
       entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
       return;
@@ -1100,9 +1149,264 @@ struct Lowerer {
     loop->sym->slot = outer;
     for (size_t i = 0; i < c.captured.size(); i++)
       c.captured[i]->slot = saved[i];
+    fp_previous = -1;
 
     auto &entry = out.blocks[0].insts;
     entry.insert(entry.begin(), entry_allocas.begin(), entry_allocas.end());
+  }
+
+  // --- footprints (--audit=footprints) ------------------------------------
+
+  // In a piece of a parallel loop, the footprint that was running before it,
+  // put back on every way out of the piece.
+  int fp_previous = -1;
+
+  void fp_restore() {
+    if (fp_previous >= 0 && !terminated())
+      call_runtime("sword_fp_leave", {fp_previous}, types.void_ty);
+  }
+
+  // What a footprint leaves out: memory only its own operations reach, which
+  // the lock or the channel orders (shared, atomic, a channel), and what has
+  // no extent the compiler knows (an interface, a raw pointer, a function).
+  static bool fp_opaque(const Type *t) {
+    if (!t) return true;
+    if (t->kind == TY_ATOMIC || t->kind == TY_FUNC || t->kind == TY_RAWPTR)
+      return true;
+    return t->kind == TY_STRUCT &&
+           (t->is_interface || t->is_any || t->is_shared ||
+            t->is_error_union || t->name.compare(0, 14, "std.chan.Chan$") == 0);
+  }
+
+  // Whether a value of this type leads to memory beyond itself that a
+  // footprint holds.
+  static bool fp_reaches(const Type *t, int depth = 0) {
+    if (depth > 16 || fp_opaque(t)) return false;
+    switch (t->kind) {
+    case TY_SLICE: case TY_STRING:
+      return true;
+    case TY_PTR:
+      return !fp_opaque(t->elem);
+    case TY_OPT: // `?*T`, the pointer itself
+      return t->elem && t->elem->kind == TY_PTR && !fp_opaque(t->elem->elem);
+    case TY_ARRAY:
+      return fp_reaches(t->elem, depth + 1);
+    case TY_STRUCT:
+      for (const Field &f : t->fields)
+        if (fp_reaches(f.type, depth + 1)) return true;
+      return false;
+    default:
+      return false;
+    }
+  }
+
+  int fp_open(int key, int parent, Pos pos) {
+    const std::string &where = source_at(pos.file).path;
+    IrInst data{};
+    data.op = IR_STR_DATA;
+    data.dst = new_value(types.rawptr(types.u8_ty));
+    data.imm = mod.intern(where);
+    emit(data);
+    return call_runtime("sword_fp_open",
+                        {parent, key, data.dst,
+                         constant((int64_t)where.size(), types.usize_ty),
+                         constant((int64_t)pos.line, types.usize_ty)},
+                        types.rawptr(types.u8_ty));
+  }
+
+  // True when the range was new to the footprint.
+  int fp_grant(int fp, int at, int bytes, int write) {
+    Type *flag = types.named("i32");
+    int got = call_runtime("sword_fp_grant", {fp, at, bytes, write}, flag);
+    return binop(IR_NE, got, constant(0, flag), types.bool_ty);
+  }
+
+  // One walk per type and unit, written once and called from every place
+  // that grants a value of it.
+  struct ReachFn {
+    std::string name;
+    Type *type;
+    std::string unit;
+  };
+  std::map<std::pair<std::string, Type *>, std::string> reach_names;
+  std::vector<ReachFn> reach_pending;
+
+  // Grants what the value at `at` leads to; the value's own bytes belong to
+  // whoever holds it.
+  void fp_reach(int fp, int at, Type *t, int write) {
+    if (!fp_reaches(t)) return;
+    auto key = std::make_pair(fn->unit, t);
+    auto known = reach_names.find(key);
+    std::string name;
+    if (known != reach_names.end()) {
+      name = known->second;
+    } else {
+      name = "sword.fp.reach." + fn->unit + std::to_string(reach_names.size());
+      reach_names[key] = name;
+      reach_pending.push_back({name, t, fn->unit});
+    }
+    IrInst in{};
+    in.op = IR_CALL;
+    in.callee = name;
+    in.type = types.void_ty;
+    in.args = {fp, at, write};
+    emit(in);
+  }
+
+  // for k in from..to { body(k) }
+  void fp_loop(int from, int to, const std::function<void(int)> &body) {
+    Type *word = types.usize_ty;
+    int k = alloca_slot(word);
+    store(from, k, word);
+    int head = new_block();
+    int step = new_block();
+    int done = new_block();
+    branch(head);
+    cur = head;
+    int at = load(k, word);
+    cond_branch(binop(IR_LT, at, to, types.bool_ty), step, done);
+    cur = step;
+    body(at);
+    store(binop(IR_ADD, at, constant(1, word), word), k, word);
+    branch(head);
+    cur = done;
+  }
+
+  // Elements from..to of the array at `data`, and what each leads to:
+  // `deep` is the mode for that, which for a piece of a parallel loop is
+  // reading, since writing through an element of a piece is refused.
+  void fp_cells(int fp, int data, Type *elem, int from, int to, int write,
+                int deep) {
+    Type *word = types.usize_ty;
+    int count = binop(IR_SUB, to, from, word);
+    int bytes = binop(IR_MUL, count, constant(size_of(elem), word), word);
+    int fresh = fp_grant(fp, gep_index(data, from, elem), bytes, write);
+    if (!fp_reaches(elem)) return;
+    int deeper = new_block();
+    int done = new_block();
+    cond_branch(fresh, deeper, done);
+    cur = deeper;
+    fp_loop(from, to, [&](int k) {
+      fp_reach(fp, gep_index(data, k, elem), elem, deep);
+    });
+    branch(done);
+    cur = done;
+  }
+
+  // A piece of a parallel loop holds, to write, the cells its turns write —
+  // `x[i]` for i in lo..hi, or the elements of its turns' pieces — and, to
+  // read, what those cells lead to and whatever else the body names.
+  void fp_piece(const Chunk &c, int envp, int fp, int lo, int hi) {
+    Node *loop = c.loop;
+    Type *word = types.usize_ty;
+    Type *flag = types.named("i32");
+    Type *opaque = types.rawptr(types.u8_ty);
+    int yes = constant(1, flag);
+    int no = constant(0, flag);
+    std::set<Symbol *> written(loop->written.begin(), loop->written.end());
+    for (Symbol *sym : c.captured) {
+      if (sym == loop->reduce_sym) continue;
+      Type *t = sym->type;
+      if (loop->is_range && written.count(sym) &&
+          (t->kind == TY_SLICE || t->kind == TY_ARRAY)) {
+        int data = t->kind == TY_SLICE ? load(gep_slice_ptr(sym->slot), opaque)
+                                       : sym->slot;
+        fp_cells(fp, data, t->elem, lo, hi, yes, no);
+        continue;
+      }
+      fp_reach(fp, sym->slot, t, written.count(sym) ? yes : no);
+    }
+    if (loop->is_range) return;
+    int at = (int)c.captured.size();
+    int data = load(gep_field(envp, c.env, at), opaque);
+    int len = load(gep_field(envp, c.env, at + 1), word);
+    int size = load(gep_field(envp, c.env, at + 2), word);
+    int stop = alloca_slot(word);
+    store(binop(IR_MUL, hi, size, word), stop, word);
+    int clamp = new_block();
+    int ready = new_block();
+    cond_branch(binop(IR_GT, load(stop, word), len, types.bool_ty), clamp, ready);
+    cur = clamp;
+    store(len, stop, word);
+    branch(ready);
+    cur = ready;
+    fp_cells(fp, data, loop->type->elem, binop(IR_MUL, lo, size, word),
+             load(stop, word), yes, no);
+  }
+
+  void emit_reach(const ReachFn &r, IrFunc &out) {
+    start(out);
+    Type *opaque = types.rawptr(types.u8_ty);
+    Type *flag = types.named("i32");
+    Type *word = types.usize_ty;
+    out.name = r.name;
+    out.unit = r.unit;
+    out.is_local = true;
+    out.ret = ret = types.void_ty;
+    out.params = {opaque, opaque, flag};
+    int fp = new_value(opaque);
+    int at = new_value(opaque);
+    int write = new_value(flag);
+    new_block();
+
+    Type *t = r.type;
+    switch (t->kind) {
+    case TY_PTR: case TY_OPT: {
+      Type *pointee = (t->kind == TY_PTR ? t : t->elem)->elem;
+      int p = load(at, opaque);
+      int go = new_block();
+      int done = new_block();
+      cond_branch(binop(IR_NE, p, constant(0, opaque), types.bool_ty), go, done);
+      cur = go;
+      int fresh = fp_grant(fp, p, constant(size_of(pointee), word), write);
+      if (fp_reaches(pointee)) {
+        int deeper = new_block();
+        cond_branch(fresh, deeper, done);
+        cur = deeper;
+        fp_reach(fp, p, pointee, write);
+      }
+      branch(done);
+      cur = done;
+      break;
+    }
+    case TY_STRING: {
+      int data = load(gep_slice_ptr(at), opaque);
+      int len = load(gep_slice_len(at), word);
+      fp_grant(fp, data, len, constant(0, flag));
+      break;
+    }
+    case TY_SLICE: {
+      int data = load(gep_slice_ptr(at), opaque);
+      int len = load(gep_slice_len(at), word);
+      fp_cells(fp, data, t->elem, constant(0, word), len, write, write);
+      break;
+    }
+    case TY_ARRAY:
+      fp_loop(constant(0, word), constant(t->count, word), [&](int k) {
+        fp_reach(fp, gep_index(at, k, t->elem), t->elem, write);
+      });
+      break;
+    case TY_STRUCT:
+      if (t->is_optional) {
+        const Field *value = find_field(t, "value");
+        int go = new_block();
+        int done = new_block();
+        cond_branch(load(gep_named(at, t, "has"), types.bool_ty), go, done);
+        cur = go;
+        fp_reach(fp, gep_named(at, t, "value"), value->type, write);
+        branch(done);
+        cur = done;
+        break;
+      }
+      for (const Field &f : t->fields)
+        if (fp_reaches(f.type))
+          fp_reach(fp, gep_named(at, t, f.name.c_str()), f.type, write);
+      break;
+    default:
+      break;
+    }
+    emit_ret(-1, nullptr);
+    finish(out);
   }
 
   // --- deferred statements ------------------------------------------------
@@ -1923,6 +2227,7 @@ struct Lowerer {
   void finish_with_error(int code) {
     emit_defers(0, true);
     store(code, gep_named(sret, ret, "code"), types.error_ty);
+    fp_restore();
     IrInst in{};
     in.op = IR_RET;
     emit(in);
@@ -3061,6 +3366,7 @@ struct Lowerer {
   }
 
   void emit_ret(int value, Type *type) {
+    fp_restore();
     IrInst in{};
     in.op = IR_RET;
     if (value >= 0) {
@@ -3476,5 +3782,11 @@ void lower(Program &prog, TypeTable &types, Mode mode, IrModule &mod,
     lowerer.emit_blocking_wrapper(decl, mod.funcs.back());
     mod.funcs.emplace_back();
     lowerer.emit_blocking_job(decl, mod.funcs.back());
+  }
+  // Last, because writing one walk can ask for the walks of what it reaches.
+  for (size_t i = 0; i < lowerer.reach_pending.size(); i++) {
+    Lowerer::ReachFn r = lowerer.reach_pending[i];
+    mod.funcs.emplace_back();
+    lowerer.emit_reach(r, mod.funcs.back());
   }
 }

@@ -1742,6 +1742,7 @@ struct Checker {
     };
 
     each_write(loop->body, note_write);
+    loop->written.assign(written.begin(), written.end());
 
     // Once a name is written by the loop, every other mention of it has to be
     // indexed too, or one iteration would read what another is writing.
