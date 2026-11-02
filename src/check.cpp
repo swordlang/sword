@@ -1333,7 +1333,7 @@ struct Checker {
   // `ys := xs`, `p := &n`, `h := H{xs: xs}`: the new binding reaches memory
   // another one names, and a task given one is touching the other. A binding
   // reassigned keeps every memory it was ever given, its own included. A call
-  // answers with something of its own and is not followed.
+  // reaches the arguments its result can come from (call_reaches).
   void alias(Symbol *sym, Node *value, bool declared) {
     if (!sym || !sym->type || !shares_memory(sym->type)) return;
     std::vector<Symbol *> roots;
