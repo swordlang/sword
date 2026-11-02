@@ -1,0 +1,48 @@
+// expect: 42
+// What stays legal: two tasks reaching what a shared value holds through its
+// lock, and other memory beside it, there and through a function.
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func look(a []i64, mut out *i64) {
+    *out = a[0]
+}
+
+func locked(sh *shared[Box], t i64) {
+    lock b := sh {
+        fill(b.xs, t)
+    }
+}
+
+func put(sh *shared[Box], mut a []i64) {
+    lock b := sh {
+        b.xs = a
+    }
+}
+
+func pair(sh *shared[Box], mut a []i64) {
+    scope {
+        spawn locked(sh, 1)
+        spawn fill(a, 2)
+    }
+}
+func main() int {
+    mut buf := [4]i64{}
+    mut other := [4]i64{}
+    mut sh := shared[Box](Box{xs: buf[..]})
+    scope {
+        spawn locked(&sh, 1)
+        spawn locked(&sh, 1)
+        spawn fill(other[..], 2)
+    }
+    pair(&sh, other[..])
+    return int(buf[0] + other[0] - 91)
+}
