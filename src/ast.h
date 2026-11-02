@@ -154,6 +154,10 @@ struct Node {
   std::vector<Node *> tparams; // type parameters of a generic function
   Symbol *sym = nullptr;
   Symbol *reduce_sym = nullptr; // the variable a parallel loop accumulates
+  // A parallel loop over a range: the names its turns write, each only as
+  // `x[i]`, as the race checker found them. --audit=footprints grants each
+  // piece its own cells of these and nothing more.
+  std::vector<Symbol *> written;
   Symbol *index_sym = nullptr;  // partition loop: where the piece starts
 };
 

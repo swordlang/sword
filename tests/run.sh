@@ -1066,6 +1066,32 @@ else
     pass=$((pass + 1))
 fi
 
+# Under --audit=footprints two live tasks reaching one byte, one of them to
+# write, abort with both places, on every run: here through C, which the race
+# checker cannot see into. Memory handed out apart runs to the end.
+fp="$tmp/footprints"
+mkdir -p "$fp"
+"$shield" --audit=footprints "$root/tests/footprints/overlap.sword" -o "$fp/overlap" 2> "$fp/log"
+"$shield" --audit=footprints "$root/tests/footprints/apart.sword" -o "$fp/apart" 2>> "$fp/log"
+SWORD_THREADS=1 "$fp/overlap" > /dev/null 2> "$fp/said"
+overlap=$?
+apart1=$(SWORD_THREADS=1 "$fp/apart" > /dev/null 2>&1; echo $?)
+apart4=$(SWORD_THREADS=4 "$fp/apart" > /dev/null 2>&1; echo $?)
+unknown=$("$shield" --audit=nothing "$root/tests/footprints/apart.sword" -o "$fp/x" 2>&1)
+if [ "$overlap" != 134 ] ||
+    ! grep -qE 'footprint overlap: the task at .*overlap.sword:31 and the task at .*overlap.sword:32 both reach \[0x[0-9a-f]+, 0x[0-9a-f]+\), and one writes' "$fp/said"; then
+    echo "FAIL --audit=footprints: exit $overlap from the overlap, saying: $(cat "$fp/said" "$fp/log")"
+    fail=$((fail + 1))
+elif [ "$apart1" != 56 ] || [ "$apart4" != 56 ]; then
+    echo "FAIL --audit=footprints: memory handed out apart gave $apart1 and $apart4, want 56"
+    fail=$((fail + 1))
+elif ! printf '%s\n' "$unknown" | grep -qF "nothing called 'nothing' to audit (bounds, footprints)"; then
+    echo "FAIL --audit=nothing: $unknown"
+    fail=$((fail + 1))
+else
+    pass=$((pass + 1))
+fi
+
 # Both programs say the version the source says, and the same one.
 want_version=$(sed -n 's/^#define SWORD_VERSION "\(.*\)"/\1/p' "$root/src/version.h")
 for program in shield swordls; do

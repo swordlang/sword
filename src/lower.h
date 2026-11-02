@@ -21,7 +21,10 @@ inline bool mode_checks(Mode mode) {
 // (`--audit`), which keeps every bounds check that was dropped as one that
 // aborts with a message of its own: a program that runs the same with it
 // never needed one of them. Neither is part of the language; they are there
-// for measuring the compiler.
+// for measuring the compiler. `footprints` (`--audit=footprints`) grants every
+// task and every piece of a parallel loop what its arguments reach, and aborts
+// where two live ones reach one byte and one of them writes: the race
+// checker's promise, checked as the program runs.
 struct Tuning {
   bool walked = true;     // `xs[i]` in `for i in a..xs.len`, `xs` immutable
   bool walked_mut = true; // the same in a `parallel for` with `xs` `mut`
@@ -32,6 +35,7 @@ struct Tuning {
   bool lanes = true;      // a float `reduce(+)` in sixteen sums
   bool steady = true;     // a `mut` piece of `xs.chunks(n)` its turn never reshapes
   bool audit = false;
+  bool footprints = false;
 };
 
 // Sets the piece `name` names off; false when no piece is called that.

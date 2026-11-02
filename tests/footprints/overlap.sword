@@ -1,0 +1,35 @@
+// Built with --audit=footprints by tests/run.sh, which expects it to abort.
+// localtime() answers the same static struct whatever it is given, which is
+// beyond what the race checker can see: to it, `a` and `b` come from `t1`
+// and `t2`. The two tasks write one struct, and the audit says so on every
+// run, on one thread as on many.
+
+struct Tm {
+    sec i32
+    min i32
+    hour i32
+    mday i32
+    mon i32
+    year i32
+    wday i32
+    yday i32
+    isdst i32
+}
+
+extern func localtime(t *i64) *Tm
+
+func bump(mut tm *Tm, by i32) {
+    tm.sec = tm.sec + by
+}
+
+func main() int {
+    mut t1 := i64(0)
+    mut t2 := i64(86400)
+    mut a := localtime(&t1)
+    mut b := localtime(&t2)
+    scope {
+        spawn bump(a, 1)
+        spawn bump(b, 2)
+    }
+    return 0
+}

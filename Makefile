@@ -18,7 +18,7 @@ RT       := libsword_rt.a
 RTFLAGS  := libsword_rt.flags
 RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
             rt/sword_fs.o rt/sword_proc.o rt/sword_chan.o rt/sword_tls.o \
-            rt/sword_dl.o rt/sword_ctx.o
+            rt/sword_dl.o rt/sword_fp.o rt/sword_ctx.o
 
 # A section per function, so that a linker outside Apple's can drop what a
 # program never calls (ld64 does it by symbol, and the objects come out the same).
