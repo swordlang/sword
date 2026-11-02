@@ -1,0 +1,37 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// A function that stores a slice into a shared value through its lock lends
+// the slice to that shared value, as storing it there directly would.
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func locked(sh *shared[Box], t i64) {
+    lock b := sh {
+        fill(b.xs, t)
+    }
+}
+
+func put(sh *shared[Box], mut a []i64) {
+    lock b := sh {
+        b.xs = a
+    }
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut none := [1]i64{}
+    mut sh := shared[Box](Box{xs: none[0..0]})
+    put(&sh, buf[..])
+    scope {
+        spawn locked(&sh, 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}
