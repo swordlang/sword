@@ -889,6 +889,24 @@ is the same one it makes for an atomic, and it rests on the same thing: **there
 is no way to reach the value except through the lock.** `shared[T](v)` builds
 one, `lock` opens one, and the type has no fields you can read.
 
+A value holding a slice or a pointer is where that needs a second look: the
+memory the slice reaches still answers to the name it had before. So what
+goes into a shared value is lent to it, at `shared[T](v)` or stored through
+the lock later. Tasks reaching it through the lock are put in order by the
+lock; a use by the old name while a task holds the shared value is refused,
+a read included, since whoever holds the value may write under the lock:
+
+```sword
+mut sh := shared[Box](Box{xs: buf[..]})
+scope {
+    spawn locked(&sh)
+    spawn fill(buf[..])     // error: this writes 'buf' while it is already written
+}
+```
+
+Memory an allocator handed out has no other name, which is why a shared map
+or table that grows is no trouble.
+
 ### The block is the critical section
 
 ```sword

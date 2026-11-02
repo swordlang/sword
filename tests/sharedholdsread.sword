@@ -1,0 +1,47 @@
+// expect-error: this reads 'buf' while it is already written concurrently
+// Holding the shared value is enough to write what it holds, so a task that
+// only reads buf meets one that writes it.
+
+struct Box {
+    xs []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func look(a []i64, mut out *i64) {
+    *out = a[0]
+}
+
+func locked(sh *shared[Box], t i64) {
+    lock b := sh {
+        fill(b.xs, t)
+    }
+}
+
+func put(sh *shared[Box], mut a []i64) {
+    lock b := sh {
+        b.xs = a
+    }
+}
+
+func pair(sh *shared[Box], mut a []i64) {
+    scope {
+        spawn locked(sh, 1)
+        spawn fill(a, 2)
+    }
+}
+func main() int {
+    mut buf := [4]i64{}
+    mut r := i64(0)
+    bx := Box{xs: buf[..]}
+    mut sh := shared[Box](bx)
+    scope {
+        spawn locked(&sh, 1)
+        spawn look(buf[..], &r)
+    }
+    return int(r)
+}
