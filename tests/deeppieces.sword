@@ -1,0 +1,18 @@
+// expect-error: this writes through an element of 'part' into the memory it leads to
+// A turn's piece is its own, but the slices in it can be another piece's.
+
+func run(mut rows [][]i64) {
+    parallel for off, part in rows.chunks(4) {
+        part[0][0] = part[0][0] + 1
+    }
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [16][]i64{}
+    for i in 0..16 {
+        rows[i] = inner[..]
+    }
+    run(rows[..])
+    return int(inner[0])
+}

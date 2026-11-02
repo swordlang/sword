@@ -1,0 +1,41 @@
+// expect: 192
+// Replacing an element that holds a slice, and reading through it, stay legal:
+// only writing through the element is refused.
+
+struct P {
+    n i64
+    xs []i64
+}
+
+func fill(mut rows [][]i64, mut ps []P) {
+    parallel for i in 0..rows.len {
+        rows[i] = rows[i][0..i % 4]
+        ps[i].n = i64(i)
+        ps[i] = P{n: ps[i].n + ps[i].xs[0], xs: ps[i].xs[1..]}
+    }
+}
+
+func pieces(mut rows [][]i64) {
+    parallel for off, part in rows.chunks(8) {
+        for k in 0..part.len {
+            part[k] = part[k][0..(off + k) % 2]
+        }
+    }
+}
+
+func main() int {
+    mut a := [4]i64{1, 2, 3, 4}
+    mut rows := [64][]i64{}
+    mut ps := [64]P{}
+    for i in 0..64 {
+        rows[i] = a[..]
+        ps[i] = P{n: 0, xs: a[..]}
+    }
+    fill(rows[..], ps[..])
+    pieces(rows[..])
+    mut total i64 = 0
+    parallel for i in 0..64 reduce(+: total) {
+        total += i64(rows[i].len) + ps[i].xs[0] + ps[i].n
+    }
+    return int(total % 256)
+}

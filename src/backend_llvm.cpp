@@ -785,6 +785,13 @@ struct Emitter {
         {"sword_offload", "declare i64 @sword_offload(ptr, ptr)"},
         {"sword_errno", "declare i32 @sword_errno()"},
         {"sword_set_errno", "declare void @sword_set_errno(i32)"},
+        {"sword_fp_current", "declare ptr @sword_fp_current()"},
+        {"sword_fp_open",
+         "declare ptr @sword_fp_open(ptr, ptr, ptr, i64, i64)"},
+        {"sword_fp_grant", "declare i32 @sword_fp_grant(ptr, ptr, i64, i32)"},
+        {"sword_fp_enter", "declare ptr @sword_fp_enter(ptr)"},
+        {"sword_fp_leave", "declare void @sword_fp_leave(ptr)"},
+        {"sword_fp_join", "declare void @sword_fp_join(ptr)"},
     };
     bool any = false;
     for (const auto &entry : runtime) {

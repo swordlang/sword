@@ -1,0 +1,121 @@
+// Built with --audit=footprints by tests/run.sh, which expects it to run to
+// the end at one thread and at four. Every way a task or a piece is handed
+// memory apart from its siblings, so none of them may be taken for an
+// overlap: pieces of a partition, a parallel loop's own cells, a struct
+// reached through a pointer, a list, rows written as elements, tasks of a
+// task, and memory only read by several.
+
+import "std/mem"
+
+struct Node {
+    value i64
+    next ?*Node
+}
+
+struct Acc {
+    total i64
+    seen []i64
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] *% 31 +% t
+    }
+}
+
+func sum(a []i64, mut out *i64) {
+    mut s := i64(0)
+    for k in 0..a.len {
+        s = s +% a[k]
+    }
+    *out = s
+}
+
+func walk(head *Node, mut out *i64) {
+    mut s := head.value
+    mut at := head.next
+    for at != nil {
+        if p := at {
+            s = s + p.value
+            at = p.next
+        }
+    }
+    *out = s
+}
+
+func into(mut acc *Acc, words []string) {
+    for w in words {
+        acc.total = acc.total + i64(w.len)
+    }
+    acc.total = acc.total + acc.seen[0]
+}
+
+// Tasks of a task: each gets a piece of what this one was given.
+func halves(mut a []i64) {
+    scope {
+        for part in a.chunks(a.len / 2) {
+            spawn fill(part, 5)
+        }
+    }
+}
+
+func setrows(mut rows [][]i64, mut spare [][]i64) {
+    parallel for i in 0..rows.len {
+        rows[i] = spare[i]
+    }
+}
+
+func main() !int {
+    mut backing := [65536]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut buf := [64]i64{}
+    mut other := [64]i64{}
+    for i in 0..buf.len {
+        buf[i] = i64(i)
+        other[i] = i64(i) * 2
+    }
+
+    mut whole := buf[..]
+    mut r1 := i64(0)
+    mut r2 := i64(0)
+    scope {
+        for part in whole.chunks(10) {
+            spawn fill(part, 1)
+        }
+        spawn sum(other[..], &r1)
+        spawn sum(other[..], &r2)
+    }
+
+    mut out := mem.Alloc[i64](&arena, 64) orelse return 1
+    parallel for i in 0..out.len {
+        out[i] = buf[i] +% other[i]
+    }
+    mut view := out
+    parallel for off, row in view.chunks(8) {
+        for j in 0..row.len {
+            row[j] = row[j] +% i64(off)
+        }
+    }
+
+    mut n3 := Node{value: 3, next: nil}
+    mut n2 := Node{value: 2, next: &n3}
+    n1 := Node{value: 1, next: &n2}
+    mut listed := i64(0)
+    words := [3]string{"one", "two", "three"}
+    mut acc := Acc{total: 0, seen: other[0..1]}
+    scope {
+        spawn walk(&n1, &listed)
+        spawn into(&acc, words[..])
+        for half in whole.chunks(32) {
+            spawn halves(half)
+        }
+    }
+
+    mut a := [2]i64{1, 2}
+    mut b := [2]i64{3, 4}
+    mut rows := [2][]i64{a[..], b[..]}
+    mut spare := [2][]i64{b[..], a[..]}
+    setrows(rows[..], spare[..])
+
+    return int((buf[0] +% out[63] +% r1 +% r2 +% listed +% acc.total +% rows[0][0]) % 200)
+}

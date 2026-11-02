@@ -1,0 +1,14 @@
+// expect-error: this writes through 'ps[i]' into the memory it leads to
+// A slice of pointers: the pointers are apart, what they point at need not be.
+
+func main() int {
+    mut n i64 = 0
+    mut ps := [8]*i64{}
+    for i in 0..8 {
+        ps[i] = &n
+    }
+    parallel for i in 0..8 {
+        *ps[i] = *ps[i] + 1
+    }
+    return int(n)
+}

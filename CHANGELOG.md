@@ -4,6 +4,49 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.4.2 — Temper
+
+*2026-11-02.* A patch to Temper that closes two more ways a program with a
+race compiled: pieces of a slice whose elements lead to the same memory, and
+a function's frame left behind where a task could still write it.
+
+### What changes for existing programs
+
+Programs that compiled stop compiling, under the same exception as 0.4.1:
+each is a race the checker was meant to refuse, or a write into a frame that
+has returned. The suite, the standard library's tests and the
+documentation's examples pass, with five tests that sent a local buffer on a
+channel now taking it from the arena. Now refused:
+
+- **Writing through a piece whose elements lead elsewhere.** The rows of a
+  `[][]i64` are elements of their own, but two rows can be the same slice, so
+  `rows[i][0] = v` in a `parallel for`, or a piece of `rows.chunks(n)` handed
+  to a `mut` parameter of a task, counts as writing everything the slice
+  reaches. Writing `rows[i]` itself is still a piece (#195).
+- **A function's frame stored where it outlives the call.** Returning
+  `local[..]` was refused; now so is storing it into what a parameter
+  reaches, into a shared value under a `lock`, or through a call or an
+  interface method that keeps it, and returning it under another name
+  (`ys := local[..]; return ys`) or through a call (`head(local[..], 2)`)
+  (#198).
+- **A function's frame sent on a channel**, on any channel, including one
+  made in the same function: the receiver is out of the checker's sight.
+  What travels on a channel comes from an allocator (#198).
+
+### Tools
+
+- **`--audit=footprints`** builds a program that checks, as it runs, what
+  the race checker promises: every task and every piece of a parallel loop
+  is granted what its arguments reach, and two live ones reaching one byte,
+  one of them to write, abort with both places, on every run and at any
+  number of threads. It catches what the checker cannot see, such as two
+  tasks writing one struct a C function hands back from two calls. The
+  suite, the generated programs the checker accepts and the evaluation's
+  programs run under it with no overlap. `--audit=bounds` is the old
+  `--audit`, and the two combine (#197).
+
+Nothing else that compiled stops compiling.
+
 ## 0.4.1 — Temper
 
 *2026-11-02.* A patch to Temper that closes five ways memory reached a task

@@ -46,6 +46,29 @@ enum { SWORD_CHUNKS = 64 };
 uint16_t sword_parallel_for(int64_t lo, int64_t hi, sword_chunk_fn fn,
                             void *env, int64_t *pieces, int64_t most);
 
+// --audit=footprints: what each live task was handed, checked as it is
+// handed. A footprint is opened for a task or a piece before it runs, with
+// the footprint of the task opening it as its parent, and every range the
+// arguments reach is granted to it, to read or to write. A grant that meets a
+// write of a footprint that is not an ancestor, or a write that meets any
+// access, aborts with both places. Footprints opened under one key (a scope,
+// a parallel for) are released together when that key is joined, not when
+// their task ends: a task that finished before its sibling began still held
+// what it was given until the closing brace, and the check has to see that on
+// one thread as on sixteen.
+void *sword_fp_current(void);
+void *sword_fp_open(void *parent, void *key, const char *where, int64_t len,
+                    int64_t line);
+// 1 when the range was not already granted this way, so a walk through
+// memory that points back at itself stops.
+int32_t sword_fp_grant(void *fp, const void *at, int64_t bytes, int32_t write);
+void *sword_fp_enter(void *fp);
+void sword_fp_leave(void *previous);
+void sword_fp_join(void *key);
+// Where the running task keeps its footprint, in rt/sword_rt.cpp because the
+// task is.
+void **sword_footprint_slot(void);
+
 // Brackets a call that parks the thread in the kernel. A parked thread is not
 // scheduler capacity, so the pool hires a replacement for as long as it is
 // gone: blocking I/O then costs a thread instead of a core. Cheap and safe to

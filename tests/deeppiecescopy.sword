@@ -1,0 +1,19 @@
+// expect-error: 'r' reaches the elements of 'part'
+// Another name for an element of the piece writes where the piece's slice leads.
+
+func run(mut rows [][]i64) {
+    parallel for off, part in rows.chunks(4) {
+        mut r := part[0]
+        r[0] = r[0] + 1
+    }
+}
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [16][]i64{}
+    for i in 0..16 {
+        rows[i] = inner[..]
+    }
+    run(rows[..])
+    return int(inner[0])
+}

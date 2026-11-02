@@ -1,0 +1,14 @@
+// expect-error: this writes through 'rows[i]' into the memory it leads to
+// Each iteration has its own rows[i], but every rows[i] is the same slice.
+
+func main() int {
+    mut inner := [1]i64{0}
+    mut rows := [8][]i64{}
+    for i in 0..8 {
+        rows[i] = inner[..]
+    }
+    parallel for i in 0..8 {
+        rows[i][0] = rows[i][0] + 1
+    }
+    return int(inner[0])
+}

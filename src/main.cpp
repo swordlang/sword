@@ -709,6 +709,23 @@ int main(int argc, char **argv) {
       }
     }
     else if (!strcmp(arg, "--audit")) tuning.audit = true;
+    else if (!strncmp(arg, "--audit=", 8)) {
+      std::string list = arg + 8;
+      for (size_t at = 0; at <= list.size();) {
+        size_t comma = list.find(',', at);
+        if (comma == std::string::npos) comma = list.size();
+        std::string name = list.substr(at, comma - at);
+        if (name == "bounds") tuning.audit = true;
+        else if (name == "footprints") tuning.footprints = true;
+        else {
+          fprintf(stderr,
+                  "shield: nothing called '%s' to audit (bounds, footprints)\n",
+                  name.c_str());
+          return 1;
+        }
+        at = comma + 1;
+      }
+    }
     else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) { usage(); return 0; }
     else if (!strcmp(arg, "--version")) {
       printf("shield %s (%s)\n", SWORD_VERSION, SWORD_RELEASE_NAME);
