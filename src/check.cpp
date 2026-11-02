@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 
 #include <unordered_map>
@@ -4855,7 +4856,10 @@ struct Checker {
     return true;
   }
 
-  bool run() {
+  // Everything a package declares, signatures included; its bodies come after
+  // every package has done this, so that what a body reads of another
+  // package's functions — their summaries, by name — has the types.
+  bool declare() {
     push_scope();
     if (!declare_errors()) return false;
     // Constants come first: a struct field may be an array whose length is
@@ -4992,6 +4996,16 @@ struct Checker {
       }
     }
 
+    declared = true;
+    return error_count() == 0;
+  }
+
+  // Set when declare() got as far as the signatures: before that there are no
+  // types for a body to be checked against.
+  bool declared = false;
+
+  bool bodies() {
+    if (!declared) return false;
     for (Node *fn : pkg.unit->kids)
       if (fn->kind == ND_FUNC && fn->tparams.empty()) check_func(fn);
 
@@ -6441,8 +6455,18 @@ bool check(Program &prog, TypeTable &types, DetListing *listing) {
   result_sources_memo.clear();
   struct_args.clear();
   index_funcs(prog);
-  for (Package *pkg : prog.order)
-    if (!Checker(prog, *pkg, types).run()) return false;
+  std::vector<std::unique_ptr<Checker>> checkers;
+  for (Package *pkg : prog.order) {
+    checkers.push_back(std::make_unique<Checker>(prog, *pkg, types));
+    if (!checkers.back()->declare()) {
+      // As when each package was checked whole: the bodies of this one and
+      // those before it still report what is wrong in them.
+      for (auto &c : checkers) c->bodies();
+      return false;
+    }
+  }
+  for (auto &c : checkers)
+    if (!c->bodies()) return false;
 
   Package *main = prog.main();
   if (main && !listing && !main->globals.count("main"))
