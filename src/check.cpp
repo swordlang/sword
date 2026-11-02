@@ -26,6 +26,20 @@ const Field *called_method(const Node *call) {
   return &owner->methods[call->ival];
 }
 
+// Two parameters of one function that its tasks need to be different memory,
+// by position: inside the body they are two names, and the race checker
+// compares names. Only a caller knows whether they are, so each body leaves
+// its pairs here and the calls are checked once the whole program has been.
+struct Apart {
+  size_t a, b;
+  Pos at;               // where the two meet
+  std::string through;  // the call they go on to, when not in this body
+  bool operator<(const Apart &o) const {
+    return a != o.a ? a < o.a : b < o.b;
+  }
+};
+std::map<Symbol *, std::set<Apart>> apart_pairs;
+
 struct Checker {
   Program &prog;
   Package &pkg;
@@ -88,6 +102,20 @@ struct Checker {
     return false;
   }
   std::vector<std::vector<Access>> scope_uses;
+
+  // The function whose body is being checked, and its parameters by position.
+  Symbol *body_of = nullptr;
+  std::map<Symbol *, size_t> body_params;
+
+  // Two different names met where one memory under both would be a race. When
+  // both are this function's parameters, the race is the caller's to rule out.
+  void need_apart(Symbol *x, Symbol *y, Pos at) {
+    if (!body_of || x == y) return;
+    auto i = body_params.find(x), j = body_params.find(y);
+    if (i == body_params.end() || j == body_params.end()) return;
+    size_t a = std::min(i->second, j->second), b = std::max(i->second, j->second);
+    apart_pairs[body_of].insert(Apart{a, b, at, ""});
+  }
 
   // The `lock` blocks that are open, innermost last, and the lock depth each
   // open `scope` was entered at.
@@ -926,6 +954,11 @@ struct Checker {
 
     for (auto &level : scope_uses) {
       for (const Access &other : level) {
+        if (other.root && other.root != use.root) {
+          Access same = other;
+          same.root = use.root;
+          if (clashes(use, same)) need_apart(use.root, other.root, use.at);
+        }
         if (!clashes(use, other)) continue;
         const char *mine = use.writes ? "writes" : "reads";
         const char *theirs = other.writes ? "written" : "read";
@@ -1118,7 +1151,23 @@ struct Checker {
               "'%s' reaches the memory this loop writes, so it can only be "
               "reached as '%s[%s]'",
               n->sym->name.c_str(), n->sym->name.c_str(), loop->name.c_str());
+      else
+        apart_from(n, memory);
     });
+  }
+
+  // A name a parallel body reaches whole, beside memory its turns write: it
+  // must not be that memory under another name.
+  void apart_from(Node *n, const std::vector<Symbol *> &memory) {
+    const Type *t = n->sym->type;
+    while (t && (t->kind == TY_PTR || t->kind == TY_RAWPTR)) t = t->elem;
+    if (!n->sym->type || !shares_memory(n->sym->type) || ::is_atomic(t) ||
+        ::is_shared(t))
+      return;
+    std::vector<Symbol *> mine;
+    canonical(n->sym, mine);
+    for (Symbol *r : mine)
+      for (Symbol *w : memory) need_apart(w, r, n->pos);
   }
 
   // A parallel loop over a partition gives each turn one piece. The piece is
@@ -1175,6 +1224,8 @@ struct Checker {
               "pieces; a turn reaches it only through its own piece, '%s'",
               n->sym->name.c_str(), whole->name.c_str(), piece);
         named = true;
+      } else if (whole->is_mut) {
+        apart_from(n, memory);
       }
     });
     if (!named) each_write(loop->body, note_write);
@@ -3982,9 +4033,15 @@ struct Checker {
     if (fn->is_extern || !fn->sym) return;
     ret_type = fn->sym->type->ret;
     push_scope();
-    for (Node *p : fn->kids)
+    body_of = fn->sym;
+    body_params.clear();
+    for (size_t i = 0; i < fn->kids.size(); i++) {
+      Node *p = fn->kids[i];
       p->sym = declare(p->name, p->type, p->is_mut, p->pos);
+      body_params[p->sym] = i;
+    }
     check_stmt(fn->body);
+    body_of = nullptr;
     pop_scope();
 
     // A fallible function carrying no value can fall off the end: that path is
@@ -5600,6 +5657,231 @@ struct Copies {
   }
 };
 
+// --- one memory under two parameters ---------------------------------------
+//
+// Inside a function the race checker sees names, and two parameters are two
+// names. `two(&x, &x)` gives both to the same `x`, and two tasks that were
+// fine apart now write one integer. Each body left behind the pairs of its
+// parameters that meet in tasks running at once (apart_pairs); a call passes
+// such a pair on to its own caller when both arguments are the caller's
+// parameters, and is refused when both reach the same memory. A call where
+// nothing runs at once, `scale(xs, xs, k)`, has no pair and stays legal.
+
+struct Overlap {
+  Program &prog;
+  std::vector<Symbol *> order;
+  std::map<Symbol *, Node *> decls;
+  std::map<std::string, Symbol *> by_name;
+  std::set<Symbol *> by_value;
+  // An interface's implementations of each of its methods, by method index:
+  // a vtable lists them in the order the interface declares them.
+  std::map<std::string, std::map<size_t, std::set<Symbol *>>> by_method;
+
+  explicit Overlap(Program &p) : prog(p) {}
+
+  static void each(Node *n, const std::function<void(Node *)> &see) {
+    if (!n) return;
+    see(n);
+    for (Node *kid : n->kids) each(kid, see);
+    each(n->lhs, see);
+    each(n->rhs, see);
+    each(n->cond, see);
+    each(n->body, see);
+    each(n->els, see);
+  }
+
+  void take(Node *decl) {
+    if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern || !decl->body)
+      return;
+    if (!decl->tparams.empty()) return;
+    if (decls.count(decl->sym)) return;
+    decls[decl->sym] = decl;
+    by_name[decl->sym->name] = decl->sym;
+    order.push_back(decl->sym);
+  }
+
+  void collect(TypeTable &types) {
+    for (Package *pkg : prog.order) {
+      for (Node *decl : pkg->unit->kids) take(decl);
+      for (Node *decl : pkg->instances) take(decl);
+    }
+    for (const TypeTable::VTable &table : types.vtables()) {
+      size_t cut = table.key.find('>');
+      if (cut == std::string::npos) continue;
+      for (size_t k = 0; k < table.entries.size(); k++)
+        if (by_name.count(table.entries[k]))
+          by_method[table.key.substr(cut + 1)][k].insert(
+              by_name[table.entries[k]]);
+    }
+    for (Symbol *fn : order) {
+      std::set<Node *> called;
+      each(decls[fn]->body, [&](Node *n) {
+        if (n->kind == ND_CALL && n->lhs && n->lhs->kind == ND_IDENT)
+          called.insert(n->lhs);
+      });
+      each(decls[fn]->body, [&](Node *n) {
+        if (n->kind == ND_IDENT && n->sym && n->sym->is_func &&
+            !called.count(n))
+          by_value.insert(n->sym);
+      });
+    }
+  }
+
+  // What a call can land in. Through an interface, any implementation; through
+  // a function value, any function of that type the program names as a value.
+  std::vector<Symbol *> targets(Node *call) {
+    std::vector<Symbol *> out;
+    if (call->form == 2) {
+      Type *base = call->lhs && call->lhs->lhs ? call->lhs->lhs->type : nullptr;
+      if (base && base->kind == TY_PTR) base = base->elem;
+      if (!base || !base->is_interface) return out;
+      auto at = by_method.find(base->name);
+      if (at == by_method.end()) return out;
+      auto impls = at->second.find(call->ival);
+      if (impls != at->second.end())
+        out.assign(impls->second.begin(), impls->second.end());
+      return out;
+    }
+    if (call->form == 4) {
+      const Type *sig = call->lhs ? call->lhs->type : nullptr;
+      for (Symbol *fn : by_value)
+        if (sig && fn->type && type_eq(fn->type, sig)) out.push_back(fn);
+      return out;
+    }
+    if (call->sym && call->sym->is_func) out.push_back(call->sym);
+    return out;
+  }
+
+  // The arguments by parameter position: a method's receiver comes first.
+  static std::vector<Node *> arguments(Node *call) {
+    std::vector<Node *> args;
+    if ((call->form == 1 || call->form == 2) && call->lhs)
+      args.push_back(call->lhs->lhs);
+    for (Node *kid : call->kids) args.push_back(kid);
+    return args;
+  }
+
+  static Symbol *root_of(Node *n) {
+    while (n) {
+      switch (n->kind) {
+      case ND_IDENT:
+        return n->sym && !n->sym->is_func ? n->sym : nullptr;
+      case ND_FIELD: case ND_INDEX: case ND_SLICE_EXPR:
+        n = n->lhs;
+        break;
+      case ND_UNARY:
+        if (n->op != TK_STAR && n->op != TK_AMP) return nullptr;
+        n = n->lhs;
+        break;
+      case ND_CONVERT:
+        n = n->kids.empty() ? nullptr : n->kids[0];
+        break;
+      default:
+        return nullptr;
+      }
+    }
+    return nullptr;
+  }
+
+  // The bindings whose memory an argument reaches, the way the race checker
+  // counts them: a copy reaches what it was copied from, and a piece of a
+  // partition reaches the slice it was cut from.
+  static std::vector<Symbol *> reached(Node *arg) {
+    std::vector<Symbol *> out;
+    Symbol *root = root_of(arg);
+    auto add = [&](Symbol *s) {
+      const std::vector<Symbol *> &from = s->aliases;
+      for (Symbol *r : from.empty() ? std::vector<Symbol *>{s} : from)
+        if (std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+    };
+    if (!root) return out;
+    add(root);
+    if (root->chunk_of) add(root->chunk_of);
+    return out;
+  }
+
+  static Symbol *common(const std::vector<Symbol *> &x,
+                        const std::vector<Symbol *> &y) {
+    for (Symbol *s : x)
+      if (std::find(y.begin(), y.end(), s) != y.end()) return s;
+    return nullptr;
+  }
+
+  static std::string param_name(Node *decl, size_t i) {
+    return decl && i < decl->kids.size() ? decl->kids[i]->name : "?";
+  }
+
+  // Walks one body: passes pairs on to `fn` while summarising, refuses calls
+  // while reporting. Answers whether anything was added.
+  bool walk(Symbol *fn, bool reporting) {
+    Node *decl = decls[fn];
+    std::map<Symbol *, size_t> params;
+    for (size_t i = 0; i < decl->kids.size(); i++)
+      if (decl->kids[i]->sym) params[decl->kids[i]->sym] = i;
+    bool grew = false;
+    each(decl->body, [&](Node *call) {
+      if (call->kind != ND_CALL) return;
+      std::vector<Node *> args = arguments(call);
+      for (Symbol *target : targets(call)) {
+        auto pairs = apart_pairs.find(target);
+        if (pairs == apart_pairs.end()) continue;
+        Node *callee = decls.count(target) ? decls[target] : nullptr;
+        for (const Apart &pair : std::set<Apart>(pairs->second)) {
+          if (pair.b >= args.size() || !args[pair.a] || !args[pair.b]) continue;
+          std::vector<Symbol *> ra = reached(args[pair.a]);
+          std::vector<Symbol *> rb = reached(args[pair.b]);
+          if (reporting) {
+            Symbol *same = common(ra, rb);
+            if (!same) continue;
+            std::string a = param_name(callee, pair.a);
+            std::string b = param_name(callee, pair.b);
+            std::string name = call->lhs && !call->lhs->name.empty()
+                                   ? call->lhs->name
+                                   : callee ? callee->name : target->name;
+            error(args[pair.b]->pos,
+                  "'%s' is passed to '%s' as both '%s' and '%s', which must be "
+                  "different memory",
+                  same->name.c_str(), name.c_str(), a.c_str(), b.c_str());
+            if (!pair.through.empty())
+              note(pair.at, "'%s' hands them on here, to '%s'", name.c_str(),
+                   pair.through.c_str());
+            else
+              note(pair.at,
+                   "here '%s' and '%s' are reached by work that runs at the "
+                   "same time",
+                   a.c_str(), b.c_str());
+            return;
+          }
+          for (Symbol *x : ra)
+            for (Symbol *y : rb) {
+              auto i = params.find(x), j = params.find(y);
+              if (i == params.end() || j == params.end() || x == y) continue;
+              std::string to = call->lhs && !call->lhs->name.empty()
+                                   ? call->lhs->name
+                                   : target->name;
+              Apart passed{std::min(i->second, j->second),
+                           std::max(i->second, j->second), call->pos, to};
+              if (apart_pairs[fn].insert(passed).second) grew = true;
+            }
+        }
+      }
+    });
+    return grew;
+  }
+
+  void run(TypeTable &types) {
+    if (apart_pairs.empty()) return;
+    collect(types);
+    // Pairs only grow, and only from what the program says, so this ends.
+    for (bool changed = true; changed;) {
+      changed = false;
+      for (Symbol *fn : order)
+        if (walk(fn, false)) changed = true;
+    }
+    for (Symbol *fn : order) walk(fn, true);
+  }
+};
+
 } // namespace
 
 bool check(Program &prog, TypeTable &types, DetListing *listing) {
@@ -5623,6 +5905,8 @@ bool check(Program &prog, TypeTable &types, DetListing *listing) {
 
   // Last, over the whole program: whether a function answers the same thing
   // every time is not a question about one package.
+  Overlap(prog).run(types);
+  if (error_count() > 0) return false;
   Determinism(prog, types).run(listing);
   Copies(prog).run();
   return error_count() == 0;

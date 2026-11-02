@@ -1,0 +1,26 @@
+// expect-error: 'n' is passed to 'f' as both 'a' and 'b', which must be different memory
+// A call through a function value can land in any function of its type the
+// program names as a value, and is held to what each of them needs.
+
+func bump(mut p *i64, n i64) {
+    for i in 0..n {
+        *p = *p + 1
+    }
+}
+
+func two(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, 1000)
+        spawn bump(b, 1000)
+    }
+}
+
+func run(f func(mut *i64, mut *i64)) i64 {
+    mut n := i64(0)
+    f(&n, &n)
+    return n
+}
+
+func main() int {
+    return run(two) % 7
+}

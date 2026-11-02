@@ -1,0 +1,29 @@
+// expect-error: 'xs' is passed to 'outer' as both 'p' and 'q', which must be different memory
+// outer runs nothing at once itself; it hands its two parameters to work,
+// which does, so the caller of outer is held to the same thing. ys reaches
+// xs, so the two arguments are one memory under two names.
+
+func reversed(mut dst []i64, src []i64) {
+    for i in 0..dst.len {
+        dst[i] = src[src.len - 1 - i]
+    }
+}
+
+func work(mut a []i64, b []i64) {
+    scope {
+        for part in a.chunks(2) {
+            spawn reversed(part, b)
+        }
+    }
+}
+
+func outer(mut p []i64, q []i64) {
+    work(p, q)
+}
+
+func main() int {
+    mut xs := [8]i64{1, 2, 3, 4, 5, 6, 7, 8}
+    mut ys := xs[..]
+    outer(ys, xs[..])
+    return xs[0]
+}

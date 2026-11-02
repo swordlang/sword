@@ -166,7 +166,8 @@ What is *not* on that list is the point: `scope`, `spawn` and `parallel for`
 are all fine, and so is a channel with one sender and one receiver in each
 scope that only ever waits for the next value — Kahn's condition, under which a
 network of tasks computes a function of its inputs. Two tasks cannot touch the same memory — the race checker says
-so — and a reduction combines its pieces in the order they were cut, so the
+so, and a call that hands one memory to two parameters its tasks need apart
+is refused — and a reduction combines its pieces in the order they were cut, so the
 answer does not depend on the pool.
 
 Every function is analysed, whether or not it says `det`; writing it asks to be
