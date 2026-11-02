@@ -1,0 +1,35 @@
+// expect-error: 'n' is passed to 'Both' as both 'a' and 'b', which must be different memory
+// The call goes through an interface; what the implementation does with its
+// parameters still decides what the caller may pass.
+
+interface Pair {
+    mut Both(mut a *i64, mut b *i64)
+}
+
+struct Racer {
+    rounds i64
+}
+
+func bump(mut p *i64, n i64) {
+    for i in 0..n {
+        *p = *p + 1
+    }
+}
+
+func (mut r *Racer) Both(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, r.rounds)
+        spawn bump(b, r.rounds)
+    }
+}
+
+func run(mut p Pair) i64 {
+    mut n := i64(0)
+    p.Both(&n, &n)
+    return n
+}
+
+func main() int {
+    mut r := Racer{rounds: 1000}
+    return run(&r) % 7
+}

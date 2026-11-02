@@ -1,0 +1,22 @@
+// expect-error: 'x' is passed to 'two' as both 'a' and 'b', which must be different memory
+// Inside two, a and b are two names, and two tasks writing two names do not
+// race. Handed one variable twice, they write the same integer.
+
+func bump(mut p *i64, n i64) {
+    for i in 0..n {
+        *p = *p + 1
+    }
+}
+
+func two(mut a *i64, mut b *i64) {
+    scope {
+        spawn bump(a, 1000)
+        spawn bump(b, 1000)
+    }
+}
+
+func main() int {
+    mut x := i64(0)
+    two(&x, &x)
+    return x % 7
+}
