@@ -1,0 +1,25 @@
+// expect-error: this writes 'buf' while it is already written concurrently
+// The call can be the argument of the spawn itself.
+
+func head(mut a []i64, n u64) ?[]i64 {
+    if n > a.len {
+        return nil
+    }
+    return a[0..n]
+}
+
+func fill(mut a []i64, t i64) {
+    for k in 0..a.len {
+        a[k] = a[k] * 10 + t
+    }
+}
+
+func main() int {
+    mut buf := [4]i64{}
+    mut none := [1]i64{}
+    scope {
+        spawn fill(head(buf[..], 2) orelse none[..], 1)
+        spawn fill(buf[..], 2)
+    }
+    return int(buf[0])
+}
