@@ -51,6 +51,20 @@ std::map<Symbol *, std::set<Apart>> apart_pairs;
 // only makes the answer larger. A call inside the body counts as reaching
 // all of its arguments.
 std::map<Node *, std::set<size_t>> result_sources_memo;
+// The type arguments each generic struct was made from: a channel's type
+// says what it carries only through them.
+std::map<const Type *, std::vector<Type *>> struct_args;
+
+bool is_chan_type(const Type *t) {
+  return t && t->kind == TY_STRUCT &&
+         t->name.compare(0, 14, "std.chan.Chan$") == 0;
+}
+
+const Type *chan_elem(const Type *t) {
+  auto at = struct_args.find(t);
+  return at == struct_args.end() || at->second.empty() ? nullptr
+                                                       : at->second[0];
+}
 
 // The checker's own question, asked before any body is checked: whether a
 // value of this type can reach memory beyond itself.
@@ -66,9 +80,11 @@ bool carries_memory(const Type *t, int depth = 0) {
     for (const Field &f : t->fields)
       if (carries_memory(f.type, depth + 1)) return true;
     return false;
+  case TY_STRING: case TY_INT: case TY_BOOL: case TY_FLOAT: case TY_ENUM:
+  case TY_VOID: case TY_ATOMIC: case TY_FUNC:
+    return false;
   default:
-    return t->kind != TY_STRING && t->kind != TY_INT && t->kind != TY_BOOL &&
-           t->kind != TY_FLOAT && t->kind != TY_ENUM && t->kind != TY_VOID;
+    return true;
   }
 }
 
@@ -114,6 +130,17 @@ void flow(Node *e, const std::map<std::string, std::set<size_t>> &env,
   if (!e) return;
   if (const Type *t = chain_type(e, typed))
     if (!carries_memory(t)) return;
+  // A value received is what was sent, and a channel of numbers sends none.
+  Node *from = e->kind == ND_RECV ? e->lhs : nullptr;
+  if (e->kind == ND_CALL && e->lhs && e->lhs->kind == ND_FIELD &&
+      (e->lhs->name == "Recv" || e->lhs->name == "TryRecv"))
+    from = e->lhs->lhs;
+  if (from) {
+    const Type *t = chain_type(from, typed);
+    if (t && t->kind == TY_PTR) t = t->elem;
+    if (is_chan_type(t) && chan_elem(t) && !carries_memory(chan_elem(t)))
+      return;
+  }
   switch (e->kind) {
   case ND_IDENT: {
     auto at = env.find(e->name);
@@ -212,6 +239,179 @@ const std::set<size_t> &result_sources(Node *decl) {
 
 bool is_allocator(const Type *t) {
   return t && t->is_interface && t->name == "std.mem.Allocator";
+}
+
+// --- what a call stores ---------------------------------------------------
+//
+// `store(&box, xs)` can leave `box` reaching `xs`'s memory, and the caller
+// has to know. Each function's body says which of its parameters' memory can
+// end up inside what another parameter points at: an assignment through it,
+// a send on it, or a call that does the same, found by the callee's name
+// (every function or method so named in the program, since the body has not
+// been checked). A call nothing is known about stores every argument into
+// every other one that could hold it. Only a parameter whose type can hold
+// memory beyond itself is a place to store into; an Allocator is not, by
+// its contract.
+std::map<std::string, std::vector<Node *>> funcs_by_name;
+std::map<Node *, std::set<std::pair<size_t, size_t>>> store_pairs_memo;
+
+void index_funcs(Program &prog) {
+  funcs_by_name.clear();
+  store_pairs_memo.clear();
+  for (Package *pkg : prog.order)
+    for (Node *decl : pkg->unit->kids)
+      if (decl->kind == ND_FUNC && decl->tparams.empty() && !decl->is_extern) {
+        std::string name = decl->name;
+        size_t dot = name.rfind('.');
+        if (dot != std::string::npos) name = name.substr(dot + 1);
+        funcs_by_name[name].push_back(decl);
+      }
+}
+
+// The parameters, receiver first, whether or not the signature pass has put
+// the receiver among them yet.
+std::vector<Node *> params_of(Node *decl) {
+  std::vector<Node *> out;
+  if (decl->lhs && (decl->kids.empty() || decl->kids[0] != decl->lhs))
+    out.push_back(decl->lhs);
+  for (Node *kid : decl->kids) out.push_back(kid);
+  return out;
+}
+
+// Whether a value of this type can be made to reach other memory by writing
+// through it: a pointer or slice to something that holds memory, a channel,
+// an interface. Unknown is yes.
+bool can_hold(const Type *t) {
+  if (!t) return true;
+  if (t->is_interface) return t->name != "std.mem.Allocator";
+  if (t->kind == TY_PTR || t->kind == TY_SLICE || t->kind == TY_RAWPTR)
+    return carries_memory(t->elem);
+  if (is_chan_type(t)) return !chan_elem(t) || carries_memory(chan_elem(t));
+  return false;
+}
+
+const std::set<std::pair<size_t, size_t>> &store_pairs(Node *decl);
+
+// What one call inside a body stores, in terms of the body's own parameters.
+void call_stores(Node *call, const std::map<std::string, std::set<size_t>> &env,
+                 const std::map<std::string, const Type *> &typed,
+                 const std::vector<bool> &holder,
+                 std::set<std::pair<size_t, size_t>> &out) {
+  std::vector<Node *> plain(call->kids.begin(), call->kids.end());
+  std::vector<Node *> method = plain;
+  std::string name;
+  Node *callee = call->lhs;
+  while (callee && callee->kind == ND_INDEX) callee = callee->lhs;  // f[T](...)
+  if (callee && callee->kind == ND_IDENT) name = callee->name;
+  if (callee && callee->kind == ND_FIELD) {
+    name = callee->name;
+    method.insert(method.begin(), callee->lhs);
+  }
+  auto pair_up = [&](Node *into, Node *from) {
+    if (!into || !from) return;
+    std::set<size_t> dst, src;
+    flow(into, env, typed, dst);
+    flow(from, env, typed, src);
+    for (size_t d : dst)
+      if (d < holder.size() && holder[d])
+        for (size_t f : src)
+          if (f != d) out.insert({d, f});
+  };
+  auto found = funcs_by_name.find(name);
+  if (name.empty() || found == funcs_by_name.end()) {
+    for (Node *into : method)
+      for (Node *from : method)
+        if (into != from) pair_up(into, from);
+    return;
+  }
+  for (Node *target : found->second) {
+    bool is_method = target->lhs != nullptr;
+    const std::vector<Node *> &args = is_method ? method : plain;
+    for (const auto &pr : store_pairs(target))
+      if (pr.first < args.size() && pr.second < args.size())
+        pair_up(args[pr.first], args[pr.second]);
+  }
+}
+
+const std::set<std::pair<size_t, size_t>> &store_pairs(Node *decl) {
+  auto known = store_pairs_memo.find(decl);
+  if (known != store_pairs_memo.end()) return known->second;
+  // A function met again while its own answer is being worked out adds
+  // nothing it has not already said.
+  store_pairs_memo[decl];
+  std::vector<Node *> params = params_of(decl);
+  std::set<std::pair<size_t, size_t>> out;
+  if (!decl->body) return store_pairs_memo[decl];
+  std::map<std::string, std::set<size_t>> env;
+  std::map<std::string, const Type *> typed;
+  std::vector<bool> holder;
+  for (size_t i = 0; i < params.size(); i++) {
+    env[params[i]->name].insert(i);
+    if (params[i]->type) typed[params[i]->name] = params[i]->type;
+    holder.push_back(can_hold(params[i]->type));
+  }
+  // The same flow of names as for what a function returns.
+  std::vector<Node *> binds, stores;
+  std::function<void(Node *)> walk = [&](Node *n) {
+    if (!n) return;
+    if (n->kind == ND_ASSIGN || n->kind == ND_SEND || n->kind == ND_CALL)
+      stores.push_back(n);
+    if (n->kind == ND_ASSIGN ||
+        (!n->name.empty() && (n->kind == ND_VAR || n->kind == ND_FOR ||
+                              n->kind == ND_IF || n->kind == ND_LOCK ||
+                              n->kind == ND_SELECT_CASE))) {
+      binds.push_back(n);
+      if (n->kind != ND_ASSIGN) typed.erase(n->name);
+    }
+    for (Node *kid : n->kids) walk(kid);
+    walk(n->lhs);
+    walk(n->rhs);
+    walk(n->cond);
+    walk(n->body);
+    walk(n->els);
+  };
+  walk(decl->body);
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (Node *b : binds) {
+      std::string name = b->name;
+      std::set<size_t> in;
+      if (b->kind == ND_ASSIGN) {
+        Node *place = b->lhs;
+        while (place && place->kind != ND_IDENT) place = place->lhs;
+        if (!place) continue;
+        name = place->name;
+        flow(b->rhs, env, typed, in);
+      } else {
+        flow(b->lhs, env, typed, in);
+        flow(b->rhs, env, typed, in);
+        flow(b->cond, env, typed, in);
+        for (Node *kid : b->kids) flow(kid, env, typed, in);
+      }
+      std::set<size_t> &into = env[name];
+      size_t before = into.size();
+      into.insert(in.begin(), in.end());
+      if (into.size() != before) changed = true;
+    }
+  }
+  for (Node *n : stores) {
+    if (n->kind == ND_CALL) {
+      call_stores(n, env, typed, holder, out);
+      continue;
+    }
+    Node *place = n->lhs;
+    // `a = b` only moves the local copy; a store goes through something.
+    if (n->kind == ND_ASSIGN && (!place || place->kind == ND_IDENT)) continue;
+    if (n->kind == ND_ASSIGN && n->op != TK_ASSIGN) continue;
+    std::set<size_t> dst, src;
+    flow(place, env, typed, dst);
+    flow(n->rhs, env, typed, src);
+    for (size_t d : dst)
+      if (d < holder.size() && holder[d])
+        for (size_t f : src)
+          if (f != d) out.insert({d, f});
+  }
+  return store_pairs_memo[decl] = out;
 }
 
 // The arguments, receiver first, whose memory what a call returns may reach.
@@ -669,6 +869,7 @@ struct Checker {
       std::vector<Type *> args;
       for (Node *arg : n->kids) args.push_back(resolve(arg));
       Type *made = instantiate_struct(decl, owner, args, n->pos);
+      if (made) struct_args[made] = args;
       return made ? made : types.void_ty;
     }
 
@@ -1064,6 +1265,43 @@ struct Checker {
       if (Symbol *root = share_root(value))
         if (!root->is_func) canonical(root, out);
     }
+  }
+
+  // After `store(&box, xs)`, `box` reaches what `xs` does: the callee's body
+  // said so, or nothing is known about the callee and it may have.
+  void apply_stores(Node *call) {
+    std::vector<Node *> args;
+    if ((call->form == 1 || call->form == 2) && call->lhs)
+      args.push_back(call->lhs->lhs);
+    for (Node *kid : call->kids) args.push_back(kid);
+    // A method's receiver is passed by its address even when it is written
+    // as a value.
+    Node *receiver = call->form == 1 && !args.empty() ? args[0] : nullptr;
+    auto store = [&](Node *into, Node *from) {
+      if (!into || !from || !from->type || !shares_memory(from->type)) return;
+      if (!into->type) return;
+      if (!can_hold(into->type) &&
+          !(into == receiver && into->type->kind == TY_STRUCT &&
+            carries_memory(into->type)))
+        return;
+      if (Symbol *root = share_root(into))
+        if (!root->is_func) alias(root, from, false);
+    };
+    Symbol *fn = call->form == 2 || call->form == 4 ? nullptr : call->sym;
+    if (call->form == 2) {
+      const Type *owner = args.empty() || !args[0] ? nullptr : args[0]->type;
+      if (owner && owner->kind == TY_PTR) owner = owner->elem;
+      if (owner && owner->name == "std.mem.Allocator") return;
+    }
+    if (!fn || !fn->decl || fn->decl->is_extern || !fn->decl->body) {
+      for (Node *into : args)
+        for (Node *from : args)
+          if (into != from) store(into, from);
+      return;
+    }
+    for (const auto &pr : store_pairs(fn->decl))
+      if (pr.first < args.size() && pr.second < args.size())
+        store(args[pr.first], args[pr.second]);
   }
 
   // `ys := xs`, `p := &n`, `h := H{xs: xs}`: the new binding reaches memory
@@ -3348,7 +3586,11 @@ struct Checker {
     }
     case ND_BINARY: return check_binary(n);
     case ND_UNARY: return check_unary(n);
-    case ND_CALL: return check_call(n);
+    case ND_CALL: {
+      Type *t = check_call(n);
+      if (t) apply_stores(n);
+      return t;
+    }
     case ND_FIELD: return check_field(n);
     case ND_INDEX: return check_index(n);
     case ND_SLICE_EXPR: return check_slice_expr(n);
@@ -6124,6 +6366,8 @@ struct Overlap {
 
 bool check(Program &prog, TypeTable &types, DetListing *listing) {
   result_sources_memo.clear();
+  struct_args.clear();
+  index_funcs(prog);
   for (Package *pkg : prog.order)
     if (!Checker(prog, *pkg, types).run()) return false;
 
