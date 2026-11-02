@@ -485,6 +485,9 @@ struct Checker {
     Symbol *root = nullptr;  // the binding the memory hangs off
     Symbol *via = nullptr;   // the name it was reached by, when that is another
     Symbol *chunk = nullptr; // set when the value is a piece of a partition
+    // A piece written whose elements hold slices or pointers: the piece is its
+    // own, what its elements reach need not be, so it counts as the whole.
+    Symbol *deep = nullptr;
     bool writes = false;
     // A spawn inside a loop happens once per iteration, so its accesses have
     // to be compared against themselves.
@@ -1347,6 +1350,16 @@ struct Checker {
         sym->aliases.push_back(r);
   }
 
+  // Whether the elements of a slice (or what a pointer leads to, for an array)
+  // reach memory beyond themselves: a slice of slices, of pointers, of structs
+  // holding one.
+  static bool elems_carry_memory(Symbol *s) {
+    const Type *t = s ? s->type : nullptr;
+    while (t && (t->kind == TY_PTR || t->kind == TY_RAWPTR)) t = t->elem;
+    return t && (t->kind == TY_SLICE || t->kind == TY_ARRAY) &&
+           carries_memory(t->elem);
+  }
+
   std::vector<Access> access_of(Node *value, bool writes) {
     Access use;
     use.writes = writes;
@@ -1380,7 +1393,10 @@ struct Checker {
     // receiver is handed it the way a task is handed an argument.
     bool carried = is_chan_type(reached);
     if (root->chunk_of) {
-      use.chunk = root;
+      if (writes && elems_carry_memory(root))
+        use.deep = root;
+      else
+        use.chunk = root;
       root = root->chunk_of;
     }
     std::vector<Symbol *> roots;
@@ -1388,7 +1404,10 @@ struct Checker {
     std::vector<Access> uses;
     for (Symbol *r : roots) {
       use.root = r;
-      use.via = use.chunk ? use.chunk : r != root ? root : nullptr;
+      use.via = use.chunk  ? use.chunk
+                : use.deep ? use.deep
+                : r != root ? root
+                            : nullptr;
       // What a shared value was given is not its own: the lock orders the
       // uses through it, not a use of that memory by its first name. Whoever
       // holds the value may write under the lock, `mut` or not.
@@ -1465,6 +1484,12 @@ struct Checker {
              "'%s' is a piece of its own on each turn of this loop, and of no "
              "other",
              use.chunk->name.c_str());
+      else if (use.deep)
+        note(use.deep->pos,
+             "'%s' is a piece of its own, but its elements hold slices or "
+             "pointers that may reach the same memory as another piece's, so "
+             "handing it to a 'mut' parameter hands over all of '%s'",
+             use.deep->name.c_str(), use.root->name.c_str());
       else
         sharing_note(use.root);
       return;
@@ -1566,10 +1591,10 @@ struct Checker {
   // different. What the callee may write is in its signature, which is the
   // same thing `mut` on a parameter means everywhere else.
   void each_write(Node *body,
-                  const std::function<void(Node *, const char *)> &note) {
+                  const std::function<void(Node *, const char *, bool)> &note) {
     walk(body, [&](Node *n) {
       if (n->kind == ND_ASSIGN) {
-        note(n->lhs, nullptr);
+        note(n->lhs, nullptr, false);
         return;
       }
       if (n->kind != ND_CALL) return;
@@ -1583,19 +1608,47 @@ struct Checker {
       const char *how = n->lhs && !n->lhs->name.empty() ? n->lhs->name.c_str()
                                                         : nullptr;
       size_t skip = 0;
-      if (dynamic && dynamic->writes) note(n->lhs->lhs, how);
+      if (dynamic && dynamic->writes) note(n->lhs->lhs, how, true);
       if (n->form == CALL_METHOD) {
         skip = 1;
         if (!sig->param_mut.empty() && sig->param_mut[0] && n->lhs &&
             n->lhs->lhs)
-          note(n->lhs->lhs, how);
+          note(n->lhs->lhs, how, true);
       }
       for (size_t i = 0; i < n->kids.size(); i++) {
         size_t at = i + skip;
         if (at < sig->param_mut.size() && sig->param_mut[at])
-          note(n->kids[i], how);
+          note(n->kids[i], how, true);
       }
     });
+  }
+
+  // Whether a place goes on past `cell` into memory the cell's value leads to:
+  // `rows[i][0]`, `*ptrs[i]`, `recs[i].xs[k]`. An array or a struct held by
+  // value is still the cell; a slice or a pointer leads somewhere else.
+  static bool past_cell(Node *place, Node *cell) {
+    for (Node *n = place; n && n != cell; n = n->lhs) {
+      if (n->kind == ND_UNARY && n->op == TK_STAR) return true;
+      if ((n->kind == ND_INDEX || n->kind == ND_SLICE_EXPR ||
+           n->kind == ND_FIELD) &&
+          n->lhs && n->lhs->type &&
+          (n->lhs->type->kind == TY_SLICE || n->lhs->type->kind == TY_PTR ||
+           n->lhs->type->kind == TY_RAWPTR))
+        return true;
+    }
+    return false;
+  }
+
+  // The element a place starts from: the `x[k]` nearest the name, where `k` is
+  // `index` or, with no index given, anything.
+  static Node *cell_of(Node *place, Symbol *index) {
+    Node *cell = nullptr;
+    for (Node *n = place; n; n = n->lhs)
+      if (n->kind == ND_INDEX &&
+          (!index || (n->rhs && n->rhs->kind == ND_IDENT &&
+                      n->rhs->sym == index)))
+        cell = n;
+    return cell;
   }
 
   // Iterations run on different workers at the same time, so whatever the
@@ -1626,7 +1679,7 @@ struct Checker {
     std::set<Symbol *> written;
     // `place` is written once per iteration; `how` names the call it was
     // written through, when it was not written by an assignment.
-    auto note_write = [&](Node *place, const char *how) {
+    auto note_write = [&](Node *place, const char *how, bool call) {
       Symbol *root = share_root(place);
       if (!root || root == loop->reduce_sym) return;
       if (local.count(root)) {
@@ -1657,6 +1710,33 @@ struct Checker {
                 "write 'reduce(+: %s)' on the loop",
                 root->name.c_str(), through.c_str(), root->name.c_str());
         return;
+      }
+      // Each iteration has its own element; what an element that is a slice
+      // or a pointer leads to can be another element's too.
+      if (Node *cell = cell_of(place, loop->sym)) {
+        std::string at = root->name + "[" + loop->name + "]";
+        if (past_cell(place, cell)) {
+          error(place->pos,
+                "this writes through '%s' into the memory it leads to, which "
+                "another iteration's element may lead to as well",
+                at.c_str());
+          note(place->pos,
+               "each iteration has its own element, but a slice or a pointer "
+               "in it can point where another one does; replacing the element "
+               "itself, '%s = …', is fine",
+               at.c_str());
+          return;
+        }
+        if (call && cell->type && carries_memory(cell->type)) {
+          std::string through =
+              how ? std::string(" '") + how + "'" : std::string();
+          error(place->pos,
+                "'%s' holds a slice or a pointer, so the 'mut' parameter of%s "
+                "could write memory another iteration's element leads to as "
+                "well",
+                at.c_str(), how ? through.c_str() : " this call");
+          return;
+        }
       }
       written.insert(root);
     };
@@ -1719,12 +1799,15 @@ struct Checker {
 
     Symbol *whole = loop->sym->chunk_of;
     const char *piece = loop->name.c_str();
-    auto note_write = [&](Node *place, const char *how) {
+    auto note_write = [&](Node *place, const char *how, bool call) {
       Symbol *root = share_root(place);
       if (!root || root == whole) return;
       if (local.count(root)) {
         Symbol *outer = outside_alias(root, local);
-        if (!outer) return;
+        if (!outer) {
+          through_piece(loop, place, root, call);
+          return;
+        }
         root = outer;
       }
       std::string through = how ? std::string(" through '") + how + "'" : "";
@@ -1761,6 +1844,44 @@ struct Checker {
       }
     });
     if (!named) each_write(loop->body, note_write);
+  }
+
+  // The piece is the turn's own, but when its elements hold slices or
+  // pointers, what they lead to can be another piece's: a turn may replace its
+  // elements, not write through them.
+  void through_piece(Node *loop, Node *place, Symbol *root, bool call) {
+    Symbol *piece = loop->sym;
+    if (!elems_carry_memory(piece)) return;
+    const char *name = piece->name.c_str();
+    if (root != piece) {
+      if (std::find(root->aliases.begin(), root->aliases.end(), piece) ==
+          root->aliases.end())
+        return;
+      error(place->pos,
+            "'%s' reaches the elements of '%s', which hold slices or pointers "
+            "another piece's elements may lead to as well; write '%s[k] = …' "
+            "to replace an element instead",
+            root->name.c_str(), name, name);
+      return;
+    }
+    Node *cell = cell_of(place, nullptr);
+    if (cell && past_cell(place, cell)) {
+      error(place->pos,
+            "this writes through an element of '%s' into the memory it leads "
+            "to, which another piece's element may lead to as well",
+            name);
+      note(place->pos,
+           "the piece is this turn's own, but a slice or a pointer in it can "
+           "point where another one does; replacing the element itself is "
+           "fine");
+      return;
+    }
+    if (call)
+      error(place->pos,
+            "the elements of '%s' hold slices or pointers, so a 'mut' "
+            "parameter given %s could write memory another piece's elements "
+            "lead to as well",
+            name, cell ? "an element" : "the piece");
   }
 
   // Everything the parent itself touches inside the block races with the
