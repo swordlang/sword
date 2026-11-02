@@ -307,8 +307,26 @@ scope {
 ```
 
 A binding reassigned keeps everything it was ever given. What a function hands
-back is not followed: `ys := same(xs)` is a new name as far as this goes, so
-keep copies that cross tasks in plain sight.
+back is followed too. A function cannot return memory of its own frame, so a
+slice or pointer it returns was cut from something it was given, and the
+checker reads from its body which of its parameters that can be:
+
+```sword
+func head(mut xs []i64, n u64) []i64 {
+    return xs[0..n]
+}
+
+mut h := head(buf[..], 4)
+scope {
+    spawn fill(h, 1)
+    spawn fill(buf[..], 2)  // error: this writes 'buf' while it is already written
+}
+```
+
+Memory an allocator hands out is new memory, and two allocations are two
+memories, even from one arena: that is what an `Allocator` promises. An
+allocator of your own that handed out memory the program also uses directly
+would be breaking that promise, and the checker would not see it.
 
 ### One memory, two parameters
 
