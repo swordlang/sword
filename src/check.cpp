@@ -5056,10 +5056,11 @@ struct Determinism {
   Program &prog;
   TypeTable &types;
   std::map<Symbol *, Why> lost;             // functions known not to be det
-  // An address turned into a number is a reason of its own: it is not carried
-  // to the callers. A pointer is opaque to whoever gets it, so a library that
-  // does arithmetic on one — an arena aligning what it hands out — does not
-  // make its callers depend on the layout. Doing it *here* does.
+  // A reason that stays with the function and is not carried to its callers.
+  // Only the arena's Alloc has one: it reads the buffer's address to align
+  // what it hands out, and the backend aligns every buffer to 16, so for any
+  // alignment up to that the offsets come out the same wherever the buffer
+  // lands. Its callers get a pointer, which is opaque, and Used().
   std::map<Symbol *, Why> local_lost;
   // A library's functions that are det when what they are handed through
   // these interfaces is. Only a library listed on its own has any: a program
@@ -5171,12 +5172,17 @@ struct Determinism {
              nullptr);
         return;
       case ND_CONVERT: {
-        // An address turned into a number is the layout reaching the answer.
+        // An address turned into a number is the layout reaching the answer,
+        // and the number can be returned or stored, so the callers lose det
+        // too. A number that reaches neither, nor a branch, is dead code.
         Type *from = n->kids.empty() ? nullptr : n->kids[0]->type;
         bool address = from && (from->kind == TY_PTR || from->kind == TY_RAWPTR ||
                                 from->kind == TY_FUNC);
-        if (address && n->type && n->type->kind == TY_INT)
+        if (!address || !n->type || n->type->kind != TY_INT) return;
+        if (fn->name == "std.mem.Arena.Alloc")
           mark_local(fn, n->pos, "turns an address into a number");
+        else
+          mark(fn, n->pos, "turns an address into a number", nullptr);
         return;
       }
       case ND_CALL:
