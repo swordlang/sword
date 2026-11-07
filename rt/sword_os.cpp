@@ -1,7 +1,6 @@
 #include "sword_os.h"
 #include "sword_rt.h"
 
-#include <atomic>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>

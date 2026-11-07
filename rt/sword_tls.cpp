@@ -3,7 +3,9 @@
 #include "sword_net.h"
 #include "sword_rt.h"
 
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef SWORD_HAVE_TLS
@@ -76,11 +78,8 @@ struct Conn {
 // The library initialises itself on first use in OpenSSL 3, so all this has to
 // do is make sure it happens once.
 void ensure_library(void) {
-  static bool done = [] {
-    SSL_library_init();
-    return true;
-  }();
-  (void)done;
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, [] { SSL_library_init(); });
 }
 
 // What OpenSSL wants next. A socket that is not ready is not a failure: the task
@@ -158,10 +157,13 @@ Conn *wrap(void *ctx, int fd, const char *host, int64_t host_len,
     }
   }
 
-  Conn *c = new Conn{ssl, fd};
+  Conn *c = (Conn *)malloc(sizeof(Conn));
+  c->ssl = ssl;
+  c->fd = fd;
+
   if (!handshake(c, as_client)) {
     SSL_free(ssl);
-    delete c;
+    free(c);
     return nullptr;
   }
   return c;
@@ -316,7 +318,7 @@ void sword_tls_close(void *conn) {
   ERR_clear_error();
   SSL_shutdown(c->ssl);
   SSL_free(c->ssl);
-  delete c;
+  free(c);
 }
 
 const char *sword_tls_version(void *conn, int64_t *len) {

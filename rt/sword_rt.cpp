@@ -1,21 +1,15 @@
 #include "sword_rt.h"
 #include "sword_poll.h"
 
-#include <atomic>
-#include <cerrno>
-#include <chrono>
-#include <condition_variable>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <map>
-#include <mutex>
+#include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
-#include <thread>
 #include <unistd.h>
-#include <vector>
 
 // Written in assembly, one per architecture. `switch` saves the callee-saved
 // registers on the stack it is leaving and resumes the one it is given;
@@ -174,8 +168,8 @@ size_t round_up(size_t bytes, size_t to) { return (bytes + to - 1) / to * to; }
 // atomic and why nothing is ever taken out of the array: a slab lives as long
 // as the process, so an address in one can be recognised without the lock.
 struct Slabs {
-  std::mutex lock;
-  std::vector<char *> spare; // the low end of each free stack's guard
+  Mutex lock;
+  Vec<char *> spare; // the low end of each free stack's guard
   std::atomic<char *> base[kMaxSlabs];
   std::atomic<int> count{0};
   std::atomic<size_t> stride{0}; // guard plus stack, set before the first slab
@@ -227,7 +221,7 @@ bool add_slab(Slabs &s) {
 
 bool map_stack(Fiber *f) {
   Slabs &s = g_slabs;
-  std::lock_guard<std::mutex> held(s.lock);
+  Lock held(s.lock);
   if (s.spare.empty() && !add_slab(s)) return false;
   f->base = s.spare.back();
   f->size = s.stride.load(std::memory_order_relaxed);
@@ -247,7 +241,7 @@ void unmap_stack(Fiber *f) {
 #else
   madvise(stack, s.stack, MADV_DONTNEED);
 #endif
-  std::lock_guard<std::mutex> held(s.lock);
+  Lock held(s.lock);
   s.spare.push_back(f->base);
 }
 
@@ -327,31 +321,37 @@ void on_fault(int sig, siginfo_t *info, void *ctx) {
 struct AltStack {
   void *base = nullptr;
   size_t size = 0;
-
-  ~AltStack() {
-    if (!base) return;
-    stack_t off;
-    memset(&off, 0, sizeof(off));
-    off.ss_flags = SS_DISABLE;
-    sigaltstack(&off, nullptr);
-    munmap(base, size);
-  }
 };
 
 thread_local AltStack tl_alt;
+pthread_key_t g_alt_key;
+
+void destroy_alt_stack(void *ptr) {
+  AltStack *alt = (AltStack *)ptr;
+  if (!alt || !alt->base) return;
+  stack_t off;
+  memset(&off, 0, sizeof(off));
+  off.ss_flags = SS_DISABLE;
+  sigaltstack(&off, nullptr);
+  munmap(alt->base, alt->size);
+  alt->base = nullptr;
+}
+
+void install_fault_handlers() {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = on_fault;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGSEGV, &sa, &g_was_segv);
+  sigaction(SIGBUS, &sa, &g_was_bus);
+  pthread_key_create(&g_alt_key, destroy_alt_stack);
+}
 
 // Called by every thread that may run a task, before it runs one.
 void watch_for_overflow() {
-  static std::once_flag once;
-  std::call_once(once, [] {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = on_fault;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, &g_was_segv);
-    sigaction(SIGBUS, &sa, &g_was_bus);
-  });
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, install_fault_handlers);
   if (tl_alt.base) return;
   // A thread may already have one, and then it belongs to somebody else: ASan
   // gives each of its threads an alternate stack and, when the thread ends, takes
@@ -379,6 +379,7 @@ void watch_for_overflow() {
   s.ss_sp = mem;
   s.ss_size = size;
   sigaltstack(&s, nullptr);
+  pthread_setspecific(g_alt_key, &tl_alt);
 }
 
 // Lays out a frame the context switch can resume into: zeroed callee-saved
@@ -414,18 +415,18 @@ void prepare(Fiber *f) {
 }
 
 struct Worker {
-  std::mutex lock;
-  std::vector<Task *> queue; // back is the owner's end, front is stolen from
-  std::vector<Fiber *> ready; // parked tasks the poller has woken
-  std::vector<Task *> spare;
-  std::vector<Fiber *> stacks; // mapped once, reused
+  Mutex lock;
+  Vec<Task *> queue; // back is the owner's end, front is stolen from
+  Vec<Fiber *> ready; // parked tasks the poller has woken
+  Vec<Task *> spare;
+  Vec<Fiber *> stacks; // mapped once, reused
 };
 
 struct Pool {
-  std::vector<Worker *> workers;
-  std::vector<std::thread> threads;
-  std::mutex sleep_lock;
-  std::condition_variable wake;
+  Vec<Worker *> workers;
+  Vec<pthread_t> threads;
+  Mutex sleep_lock;
+  Cond wake;
   std::atomic<bool> stopping{false};
   std::atomic<int64_t> ready{0};
 
@@ -438,12 +439,12 @@ struct Pool {
   std::atomic<int64_t> stacks{0};
   std::atomic<int64_t> started{0};
   std::atomic<int64_t> finished{0};
-  std::mutex hire_lock;
+  Mutex hire_lock;
   // The workers past the one that started the pool are not there from the
   // beginning: `main` is a task, so every program has a pool, and a program
   // that never spawns has exactly one thing to run.
   std::atomic<bool> workers_up{false};
-  std::mutex start_lock;
+  Mutex start_lock;
 };
 
 Pool &pool();
@@ -480,7 +481,25 @@ int64_t g_sim_now = kSimStart;
 uint64_t g_sim_timer_seq = 0;
 // (deadline, arrival) -> the task asleep until then. The arrival order breaks
 // ties, so two tasks due at the same instant wake in the order they slept.
-std::map<std::pair<int64_t, uint64_t>, Fiber *> g_sim_timers;
+struct SimTimer {
+  int64_t deadline;
+  uint64_t seq;
+  Fiber *fiber;
+};
+Vec<SimTimer> g_sim_timers;
+
+void sim_insert_timer(int64_t deadline, uint64_t seq, Fiber *f) {
+  size_t pos = g_sim_timers.size();
+  while (pos > 0 && (g_sim_timers[pos - 1].deadline > deadline ||
+                     (g_sim_timers[pos - 1].deadline == deadline &&
+                      g_sim_timers[pos - 1].seq > seq))) {
+    pos--;
+  }
+  g_sim_timers.push_back(SimTimer{deadline, seq, f});
+  for (size_t i = g_sim_timers.size() - 1; i > pos; i--)
+    g_sim_timers[i] = g_sim_timers[i - 1];
+  g_sim_timers[pos] = SimTimer{deadline, seq, f};
+}
 
 // splitmix64: small, fast, and the whole of its state is one word.
 uint64_t splitmix(uint64_t &state) {
@@ -495,7 +514,7 @@ uint64_t sim_next() { return splitmix(g_sim_rng); }
 uint64_t sim_below(uint64_t n) { return n <= 1 ? 0 : sim_next() % n; }
 
 Task *take_task(Worker &w) {
-  std::lock_guard<std::mutex> held(w.lock);
+  Lock held(w.lock);
   if (w.queue.empty()) return nullptr;
   Task *task = w.queue.back();
   w.queue.pop_back();
@@ -503,7 +522,7 @@ Task *take_task(Worker &w) {
 }
 
 Task *steal_task(Worker &w) {
-  std::lock_guard<std::mutex> held(w.lock);
+  Lock held(w.lock);
   if (w.queue.empty()) return nullptr;
   Task *task = w.queue.front();
   w.queue.erase(w.queue.begin());
@@ -519,7 +538,7 @@ Fiber *find_ready(int me) {
   for (size_t i = 0; i < count; i++) {
     size_t at = (me >= 0 ? (size_t)me + i : i) % count;
     Worker &w = *p.workers[at];
-    std::lock_guard<std::mutex> held(w.lock);
+    Lock held(w.lock);
     if (w.ready.empty()) continue;
     Fiber *f = w.ready.back();
     w.ready.pop_back();
@@ -557,9 +576,9 @@ void recycle(Task *task) {
   Pool &p = pool();
   int me = tl_worker >= 0 ? tl_worker : 0;
   Worker &w = *p.workers[me];
-  std::lock_guard<std::mutex> held(w.lock);
+  Lock held(w.lock);
   if (w.spare.size() < 256) w.spare.push_back(task);
-  else delete task;
+  else free(task);
 }
 
 void make_runnable(Fiber *f);
@@ -663,7 +682,7 @@ void make_runnable(Fiber *f) {
   Pool &p = pool();
   Worker &w = *p.workers[f->home < (int)p.workers.size() ? f->home : 0];
   {
-    std::lock_guard<std::mutex> held(w.lock);
+    Lock held(w.lock);
     w.ready.push_back(f);
   }
   p.pending.fetch_add(1, std::memory_order_relaxed);
@@ -720,9 +739,9 @@ void worker_loop(int me) {
       run_task(task);
       continue;
     }
-    std::unique_lock<std::mutex> held(p.sleep_lock);
+    Lock held(p.sleep_lock);
     if (p.stopping.load(std::memory_order_acquire)) break;
-    p.wake.wait_for(held, std::chrono::milliseconds(1));
+    p.wake.wait_ns(p.sleep_lock, 1000000);
   }
 }
 
@@ -745,9 +764,9 @@ void helper_loop() {
       continue;
     }
     if (++idle > kHelperIdleMillis) break;
-    std::unique_lock<std::mutex> held(p.sleep_lock);
+    Lock held(p.sleep_lock);
     if (p.stopping.load(std::memory_order_acquire)) break;
-    p.wake.wait_for(held, std::chrono::milliseconds(1));
+    p.wake.wait_ns(p.sleep_lock, 1000000);
   }
   p.hired.fetch_sub(1, std::memory_order_release);
 }
@@ -761,7 +780,7 @@ void cover_for_parked(Pool &p) {
   if (p.parked.load(std::memory_order_relaxed) == 0) return;
   if (p.pending.load(std::memory_order_relaxed) <= 0) return;
 
-  std::lock_guard<std::mutex> held(p.hire_lock);
+  Lock held(p.hire_lock);
   int64_t live = p.target + p.hired.load(std::memory_order_acquire);
   int64_t runnable = live - p.parked.load(std::memory_order_acquire);
   if (runnable >= p.target) return;
@@ -771,7 +790,12 @@ void cover_for_parked(Pool &p) {
   if (live >= p.ceiling && runnable > 0) return;
   p.hired.fetch_add(1, std::memory_order_release);
   // Detached: a helper only touches the pool, which outlives the process.
-  std::thread(helper_loop).detach();
+  pthread_t t;
+  if (pthread_create(&t, nullptr, [](void *) -> void * {
+    helper_loop();
+    return nullptr;
+  }, nullptr) == 0)
+    pthread_detach(t);
 }
 
 int64_t env_count(const char *name, int64_t fallback) {
@@ -783,15 +807,22 @@ int64_t env_count(const char *name, int64_t fallback) {
 }
 
 int thread_count() {
-  unsigned n = std::thread::hardware_concurrency();
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
   return (int)env_count("SWORD_THREADS", n == 0 ? 1 : (int64_t)n);
 }
 
 void stop_pool();
 
+Pool *g_pool = nullptr;
+pthread_once_t g_pool_once = PTHREAD_ONCE_INIT;
+
 Pool &pool() {
-  static Pool *instance = [] {
-    Pool *p = new Pool();
+  pthread_once(&g_pool_once, [] {
+    Pool *p = (Pool *)calloc(1, sizeof(Pool));
+    p->sleep_lock.init();
+    p->wake.init();
+    p->hire_lock.init();
+    p->start_lock.init();
     if (const char *seed = getenv("SWORD_SIM_SEED")) {
       g_sim = true;
       g_sim_seed = strtoull(seed, nullptr, 10);
@@ -802,14 +833,18 @@ Pool &pool() {
     p->target = n;
     p->ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
     if (p->ceiling < p->target) p->ceiling = p->target;
-    for (int i = 0; i < n; i++) p->workers.push_back(new Worker());
+    for (int i = 0; i < n; i++) {
+      Worker *w = (Worker *)calloc(1, sizeof(Worker));
+      w->lock.init();
+      p->workers.push_back(w);
+    }
     tl_worker = 0; // the thread that starts the pool owns queue 0
     watch_for_overflow();
     atexit(stop_pool);
     running.store(p, std::memory_order_release);
-    return p;
-  }();
-  return *instance;
+    g_pool = p;
+  });
+  return *g_pool;
 }
 
 // The queues exist from the start; the threads that serve them are started by
@@ -819,11 +854,17 @@ Pool &pool() {
 void start_workers(Pool &p) {
   if (g_sim) return;
   if (p.workers_up.load(std::memory_order_acquire)) return;
-  std::lock_guard<std::mutex> held(p.start_lock);
+  Lock held(p.start_lock);
   if (p.workers_up.load(std::memory_order_relaxed)) return;
   if (p.stopping.load(std::memory_order_acquire)) return;
-  for (size_t i = 1; i < p.workers.size(); i++)
-    p.threads.emplace_back(worker_loop, (int)i);
+  for (size_t i = 1; i < p.workers.size(); i++) {
+    pthread_t t;
+    pthread_create(&t, nullptr, [](void *arg) -> void * {
+      worker_loop((int)(intptr_t)arg);
+      return nullptr;
+    }, (void *)(intptr_t)i);
+    p.threads.push_back(t);
+  }
   p.workers_up.store(true, std::memory_order_release);
 }
 
@@ -834,15 +875,15 @@ void stop_pool() {
   p.wake.notify_all();
   // Against a spawn landing at the same moment as the exit: whoever holds this
   // has either started the threads already or will see `stopping` and not.
-  std::lock_guard<std::mutex> held(p.start_lock);
-  for (std::thread &t : p.threads)
-    if (t.joinable()) t.join();
+  Lock held(p.start_lock);
+  for (pthread_t t : p.threads) pthread_join(t, nullptr);
+  p.threads.clear();
   // Hired threads are detached, so give them a moment to notice. One that is
   // still parked in a syscall stays there; everything it can reach outlives
   // the process anyway.
   for (int i = 0; i < 100 && p.hired.load(std::memory_order_acquire) > 0; i++) {
     p.wake.notify_all();
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    sleep_ns(1000000);
   }
 }
 
@@ -851,14 +892,14 @@ Fiber *fresh_fiber(Task *task) {
   Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
   Fiber *f = nullptr;
   {
-    std::lock_guard<std::mutex> held(w.lock);
+    Lock held(w.lock);
     if (!w.stacks.empty()) {
       f = w.stacks.back();
       w.stacks.pop_back();
     }
   }
   if (!f) {
-    f = new Fiber();
+    f = (Fiber *)calloc(1, sizeof(Fiber));
     if (!map_stack(f)) {
       fprintf(stderr, "sword: no room for another task stack. The limit is %zu"
                       " live tasks, or the kernel refused the mapping.\n",
@@ -879,7 +920,7 @@ void retire_fiber(Fiber *f) {
   Pool &p = pool();
   Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
   p.finished.fetch_add(1, std::memory_order_relaxed);
-  std::lock_guard<std::mutex> held(w.lock);
+  Lock held(w.lock);
   if (w.stacks.size() < 64) {
     w.stacks.push_back(f);
     return;
@@ -889,7 +930,7 @@ void retire_fiber(Fiber *f) {
   if (f->tsan) __tsan_destroy_fiber(f->tsan);
 #endif
   unmap_stack(f);
-  delete f;
+  free(f);
 }
 
 Task *fresh_task() {
@@ -897,14 +938,14 @@ Task *fresh_task() {
   int me = tl_worker >= 0 ? tl_worker : 0;
   Worker &w = *p.workers[me];
   {
-    std::lock_guard<std::mutex> held(w.lock);
+    Lock held(w.lock);
     if (!w.spare.empty()) {
       Task *task = w.spare.back();
       w.spare.pop_back();
       return task;
     }
   }
-  return new Task();
+  return (Task *)calloc(1, sizeof(Task));
 }
 
 // --- the guard inside a shared -------------------------------------------
@@ -1010,11 +1051,11 @@ struct LockWaiter {
 };
 
 struct LockBucket {
-  std::mutex lock;
+  Mutex lock;
   LockWaiter *head = nullptr;
 };
 
-// A std::mutex on Darwin starts with a signature in it, so 256 buckets laid out
+// A Mutex on Darwin starts with a signature in it, so 256 buckets laid out
 // as data were 18 KB of every program's file. Zeroed storage costs nothing
 // there; the buckets are built on the first contended lock, the only path that
 // reaches them.
@@ -1029,7 +1070,10 @@ pthread_once_t g_lock_once = PTHREAD_ONCE_INIT;
 
 void build_buckets() {
   LockBucket *buckets = (LockBucket *)g_lock_storage;
-  for (int i = 0; i < 256; i++) new (&buckets[i]) LockBucket();
+  for (int i = 0; i < 256; i++) {
+    buckets[i].lock.init();
+    buckets[i].head = nullptr;
+  }
 }
 
 LockBucket &bucket_of(Guard *g) {
@@ -1046,7 +1090,7 @@ bool park_behind(Guard *g, Fiber *f, bool writer, bool woken) {
   LockBucket &b = bucket_of(g);
   LockWaiter node{g, f, writer, nullptr};
   {
-    std::lock_guard<std::mutex> held(b.lock);
+    Lock held(b.lock);
     int32_t s = __atomic_load_n(&g->held, __ATOMIC_ACQUIRE);
     for (;;) {
       if (writer ? writable(s) : readable(s, woken)) return false;
@@ -1069,7 +1113,7 @@ bool park_behind(Guard *g, Fiber *f, bool writer, bool woken) {
   // the select finds itself running, not parking, and sweeps once more.
   for (;;) {
     leave(f, false);
-    std::lock_guard<std::mutex> held(b.lock);
+    Lock held(b.lock);
     bool queued = false;
     for (LockWaiter *w = b.head; w && !queued; w = w->next) queued = w == &node;
     if (!queued) return true;
@@ -1085,7 +1129,7 @@ void unpark(Guard *g) {
   LockWaiter *woken = nullptr;
   LockWaiter **tail = &woken;
   {
-    std::lock_guard<std::mutex> held(b.lock);
+    Lock held(b.lock);
     bool readers = false;
     bool first = true;
     for (LockWaiter **at = &b.head; *at;) {
@@ -1166,7 +1210,7 @@ void contend(Guard *g, uint64_t me, bool writer) {
   };
   if (Fiber *f = tl_fiber) {
     for (int spins = 0; !g_sim && spins < 64; spins++) {
-      std::this_thread::yield();
+      sched_yield();
       if (take(false)) return;
     }
     bool woken = false;
@@ -1179,10 +1223,10 @@ void contend(Guard *g, uint64_t me, bool writer) {
   int64_t nap = 1000; // nanoseconds, doubling to a millisecond
   for (int spins = 0; !take(false); spins++) {
     if (spins < 64) {
-      std::this_thread::yield();
+      sched_yield();
       continue;
     }
-    std::this_thread::sleep_for(std::chrono::nanoseconds(nap));
+    sleep_ns(nap);
     if (nap < 1000000) nap *= 2;
   }
   sword_blocking_exit();
@@ -1266,7 +1310,7 @@ void sword_mutex_wait(void *blob) {
     // Nothing to put down: let go, wait a moment, take it back. Coarse, but
     // only code outside any task ends up here.
     sword_mutex_unlock(blob);
-    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    sleep_ns(200000);
     sword_mutex_lock(blob);
     return;
   }
@@ -1354,7 +1398,7 @@ void sword_mutex_park(void) {
     // Outside a task there is nothing to put down, so this is a short sleep and
     // the caller looks again — which is what a `select` outside the scheduler is.
     sword_blocking_enter();
-    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    sleep_ns(200000);
     sword_blocking_exit();
     return;
   }
@@ -1442,15 +1486,15 @@ void drain_until(Scope *scope) {
     } else if (Task *task = find_task(tl_worker)) {
       run_task(task);
     } else if (idle++ < 64) {
-      std::this_thread::yield();
+      sched_yield();
       continue;
     } else {
       // Waiting on the pool rather than sleeping on the clock: whatever makes
       // a task runnable notifies it, and this may be the only thread there is —
       // `main` is a task, and a program that never spawns has nobody else to
       // pick it up when the poller wakes it. The nap stays as the ceiling.
-      std::unique_lock<std::mutex> held(p.sleep_lock);
-      p.wake.wait_for(held, std::chrono::nanoseconds(nap));
+      Lock held(p.sleep_lock);
+      p.wake.wait_ns(p.sleep_lock, nap);
       if (nap < 1000000) nap *= 2;
       continue;
     }
@@ -1485,10 +1529,10 @@ bool sim_run_one() {
 // then wakes. False when no task is waiting on the clock either.
 bool sim_advance() {
   if (g_sim_timers.empty()) return false;
-  int64_t due = g_sim_timers.begin()->first.first;
+  int64_t due = g_sim_timers[0].deadline;
   if (due > g_sim_now) g_sim_now = due;
-  while (!g_sim_timers.empty() && g_sim_timers.begin()->first.first <= g_sim_now) {
-    Fiber *f = g_sim_timers.begin()->second;
+  while (!g_sim_timers.empty() && g_sim_timers[0].deadline <= g_sim_now) {
+    Fiber *f = g_sim_timers[0].fiber;
     g_sim_timers.erase(g_sim_timers.begin());
     if (f->state.exchange(FIBER_READY, std::memory_order_acq_rel) == FIBER_PARKED)
       make_runnable(f);
@@ -1531,17 +1575,25 @@ struct Job {
 };
 
 struct Offload {
-  std::mutex lock;
-  std::condition_variable wake;
-  std::vector<Job *> queue;
+  Mutex lock;
+  Cond wake;
+  Vec<Job *> queue;
   int64_t threads = 0; // started and not yet retired
   int64_t idle = 0;    // of those, waiting for something to do
   int64_t ceiling = 0; // 0 until the first call decides it
 };
 
+Offload *g_offload = nullptr;
+pthread_once_t g_offload_once = PTHREAD_ONCE_INIT;
+
 Offload &offload_pool() {
-  static Offload *instance = new Offload();
-  return *instance;
+  pthread_once(&g_offload_once, [] {
+    Offload *o = (Offload *)calloc(1, sizeof(Offload));
+    o->lock.init();
+    o->wake.init();
+    g_offload = o;
+  });
+  return *g_offload;
 }
 
 // Long enough that a program reading a directory of files keeps its threads,
@@ -1553,11 +1605,22 @@ void offload_loop() {
   while (true) {
     Job *job = nullptr;
     {
-      std::unique_lock<std::mutex> held(o.lock);
+      Lock held(o.lock);
       o.idle++;
-      bool got = o.wake.wait_for(held,
-                                 std::chrono::milliseconds(kOffloadIdleMillis),
-                                 [&o] { return !o.queue.empty(); });
+      timespec deadline;
+      clock_gettime(CLOCK_REALTIME, &deadline);
+      deadline.tv_sec += kOffloadIdleMillis / 1000;
+      deadline.tv_nsec += (kOffloadIdleMillis % 1000) * 1000000;
+      if (deadline.tv_nsec >= 1000000000) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000;
+      }
+      while (o.queue.empty()) {
+        if (pthread_cond_timedwait(&o.wake.c, &o.lock.m, &deadline) ==
+            ETIMEDOUT)
+          break;
+      }
+      bool got = !o.queue.empty();
       o.idle--;
       if (!got) {
         o.threads--;
@@ -1578,9 +1641,9 @@ void offload_loop() {
 
 void submit(Job *job) {
   Offload &o = offload_pool();
-  std::lock_guard<std::mutex> held(o.lock);
+  Lock held(o.lock);
   if (o.ceiling == 0) {
-    unsigned cores = std::thread::hardware_concurrency();
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
     int64_t fallback = cores > 4 ? (int64_t)cores : 4;
     o.ceiling = env_count("SWORD_IO_THREADS", fallback);
     if (o.ceiling > 256) o.ceiling = 256;
@@ -1590,14 +1653,19 @@ void submit(Job *job) {
   // disk is cheaper than a thread nobody needed.
   if (o.idle == 0 && o.threads < o.ceiling) {
     o.threads++;
-    std::thread(offload_loop).detach();
+    pthread_t t;
+    if (pthread_create(&t, nullptr, [](void *) -> void * {
+      offload_loop();
+      return nullptr;
+    }, nullptr) == 0)
+      pthread_detach(t);
   }
   o.wake.notify_one();
 }
 
 int64_t offload_threads() {
   Offload &o = offload_pool();
-  std::lock_guard<std::mutex> held(o.lock);
+  Lock held(o.lock);
   return o.threads;
 }
 
@@ -1623,7 +1691,7 @@ void queue_task(Scope *scope, sword_task_fn fn, const void *args,
   Pool &p = pool();
   Worker &w = *p.workers[tl_worker >= 0 ? tl_worker : 0];
   {
-    std::lock_guard<std::mutex> held(w.lock);
+    Lock held(w.lock);
     w.queue.push_back(task);
   }
   p.pending.fetch_add(1, std::memory_order_relaxed);
@@ -1635,7 +1703,7 @@ void queue_task(Scope *scope, sword_task_fn fn, const void *args,
 extern "C" {
 
 void sword_scope_begin(void *blob) {
-  Scope *scope = new (blob) Scope();
+  Scope *scope = (Scope *)blob;
   scope->outstanding.store(0, std::memory_order_relaxed);
   scope->failed.store(kNoFailure, std::memory_order_relaxed);
   scope->spawned = 0;
@@ -1705,7 +1773,7 @@ int sword_park_timer(int64_t deadline_ns) {
   if (g_sim) {
     f->wake_result = SWORD_POLL_TIMEOUT;
     f->state.store(FIBER_PARKING, std::memory_order_release);
-    g_sim_timers[{deadline_ns, g_sim_timer_seq++}] = f;
+    sim_insert_timer(deadline_ns, g_sim_timer_seq++, f);
     leave(f, false);
     return 0;
   }

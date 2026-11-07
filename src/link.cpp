@@ -37,8 +37,8 @@ bool exists(const std::string &path) {
 // library that each think they own the process.
 bool from_the_system(const std::string &name) {
   static const char *names[] = {"c",     "m",     "pthread", "dl",  "rt",
-                                "util",  "c++",   "c++abi",  "stdc++",
-                                "gcc",   "gcc_s", "System",  "resolv"};
+                                "util",  "gcc",   "gcc_s", "System",
+                                "resolv"};
   for (const char *n : names)
     if (name == n) return true;
   return false;

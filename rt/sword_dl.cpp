@@ -8,9 +8,9 @@
 
 #include "sword_rt.h"
 
-#include <climits>
-#include <cstring>
 #include <dlfcn.h>
+#include <limits.h>
+#include <string.h>
 
 namespace {
 

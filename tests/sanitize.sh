@@ -60,17 +60,10 @@ case " $linkflags " in
     done ;;
 esac
 
-# Where the C++ library is GCC's, clang uses the newest GCC it can find, which
-# on Ubuntu 24.04 is a GCC 14 with no libstdc++ headers beside it. The GCC that
-# c++ names is the one that has them.
-if ${CXX:-c++} --version 2>/dev/null | grep -q "Free Software Foundation"; then
-    flags="$flags --gcc-install-dir=$(dirname "$(${CXX:-c++} -print-libgcc-file-name)")"
-fi
-
 objs=""
 for src in "$root"/rt/*.cpp; do
     o="$out/$(basename "$src" .cpp).o"
-    clang++ -std=c++17 -O1 -g $flags $tls -c "$src" -o "$o" || exit 1
+    clang++ -std=c++17 -O1 -g -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ $flags $tls -c "$src" -o "$o" || exit 1
     objs="$objs $o"
 done
 clang -c "$root/rt/sword_ctx.S" -o "$out/sword_ctx.o" || exit 1
@@ -103,7 +96,7 @@ for name in "$@"; do
         "$out/$name.raw.ll" > "$out/$name.ll"
     # What shield itself would link against: the runtime's libraries, those the
     # test's extern declarations name, and its weak symbols.
-    if ! clang++ -O1 -g $flags -Wno-override-module -x ir "$out/$name.ll" \
+    if ! clang -O1 -g $flags -pthread -Wno-override-module -x ir "$out/$name.ll" \
             -x none $objs $("$shield" "$src" --emit-link) -o "$out/$name" \
             2> "$out/$name.log"; then
         echo "FAIL $name: does not link"
