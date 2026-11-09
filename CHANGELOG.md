@@ -4,6 +4,38 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.4.3 — Temper
+
+*2026-11-09.* A patch to Temper that closes three more ways a wrong program
+compiled: memory stored through one name of a slice and missed by its other
+names, the same through two parameters given one array, both of which let a
+race through, and the address of a local slice left behind after its frame
+returned.
+
+### What changes for existing programs
+
+Programs that compiled stop compiling, under the same exception as 0.4.1:
+each is a race the checker was meant to refuse, or a read of a frame that has
+returned. The suite, the standard library's tests and the documentation's
+examples pass unchanged. Now refused:
+
+- **A store through one name, missed by another.** After
+  `mut ps := rows[..]; ps[0] = z[..]`, a task handed `rows[..]` reaches `z`,
+  and so does a copy of `rows` taken before the store, or a second parameter
+  given the same array. A task writing `z` beside it is a race and is refused
+  (#204). A name rebound with `ps = other[..]` keeps all it was given, so a
+  store through it afterwards counts for the memory it named before as well.
+- **A block stored through one parameter, read through another.** When a
+  function stores memory from an allocator through one parameter and a task
+  races on it through another, the two parameters must be different memory,
+  and a caller handing both the same array is refused (#206).
+- **The address of a local slice, pointer or string leaving its frame.** The
+  cell of every local is in the frame, whatever its type, so
+  `mut local := xs; return &local`, or storing `&local` where the caller can
+  reach it, is refused like `&local` of an array (#205).
+
+Nothing else that compiled stops compiling.
+
 ## 0.4.2 — Temper
 
 *2026-11-02.* A patch to Temper that closes two more ways a program with a
