@@ -1,0 +1,37 @@
+// expect-error: 'rows' is passed to 'f' as both 'ps' and 'qs', which must be different memory
+// A block stored through one parameter is reached by the other when the caller
+// hands both the same array, and a task reads it there while another writes it.
+import "std/mem"
+
+func reader(ps [][]i64, mut out []i64) {
+    mut k i64 = 0
+    for i in 0..3000000 {
+        k = k +% i64(i)
+    }
+    out[0] = ps[0][0] + (k - k)
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+det func f(mut ps [][]i64, qs [][]i64, mut o []i64, mut a mem.Allocator) {
+    mut w := mem.Alloc[i64](a, 1) orelse return
+    w[0] = 0
+    ps[0] = w
+    scope {
+        spawn reader(qs, o)
+        spawn writer(w)
+    }
+}
+
+func main() int {
+    mut backing := [256]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    mut a := rows[..]
+    b := rows[..]
+    f(a, b, o[..], &arena)
+    return int(o[0])
+}
