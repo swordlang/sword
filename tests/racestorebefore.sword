@@ -1,0 +1,23 @@
+// expect-error: this writes 'z' while it is already read concurrently
+// A copy taken before the store reaches what the store put there.
+
+func reader(ps [][]i64, mut out []i64) {
+    out[0] = ps[0][0]
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+func main() int {
+    mut z := [1]i64{0}
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    ps := rows[..]
+    rows[0] = z[..]
+    scope {
+        spawn reader(ps, o[..])
+        spawn writer(z[..])
+    }
+    return int(o[0])
+}
