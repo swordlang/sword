@@ -1,0 +1,26 @@
+// expect: 9
+// The address of a local slice or pointer used inside its frame: handed to a
+// call, read through, rebound.
+
+func grow(mut p *[]i64, mut xs []i64) {
+    *p = xs
+}
+
+func total(p *[]i64) i64 {
+    mut s i64 = 0
+    for x in *p {
+        s += x
+    }
+    return s
+}
+
+func main() int {
+    mut a := [2]i64{1, 2}
+    mut b := [3]i64{1, 2, 3}
+    mut local := a[..]
+    grow(&local, b[..])
+    mut n := 5
+    mut pn := &n
+    pp := &pn
+    return int(total(&local)) + int(**pp) - 2
+}
