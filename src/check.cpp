@@ -1657,7 +1657,7 @@ struct Checker {
         }
       }
       if (Symbol *root = share_root(into))
-        if (!root->is_func) alias(root, from, false);
+        if (!root->is_func) alias_through(root, from);
     };
     Symbol *fn = call->form == 2 || call->form == 4 ? nullptr : call->sym;
     // `ch <- v` is a call to the channel's Send by now: the channel keeps v.
@@ -1707,6 +1707,27 @@ struct Checker {
       if (std::find(sym->aliases.begin(), sym->aliases.end(), r) ==
           sym->aliases.end())
         sym->aliases.push_back(r);
+    named_copies.insert(sym);
+  }
+
+  // The bindings of the function being checked that name other memory.
+  std::set<Symbol *> named_copies;
+
+  // `ps[0] = z[..]`, or a call that stores into what `ps` reaches, writes the
+  // memory `ps` was copied from: every name of that memory reaches `z` now,
+  // the ones bound before as much as the ones bound after.
+  void alias_through(Symbol *into, Node *value) {
+    std::vector<Symbol *> memory;
+    canonical(into, memory);
+    std::vector<Symbol *> names(memory);
+    for (Symbol *s : named_copies)
+      for (Symbol *r : s->aliases)
+        if (std::find(memory.begin(), memory.end(), r) != memory.end()) {
+          if (std::find(names.begin(), names.end(), s) == names.end())
+            names.push_back(s);
+          break;
+        }
+    for (Symbol *s : names) alias(s, value, false);
   }
 
   // Whether the elements of a slice (or what a pointer leads to, for an array)
@@ -4177,7 +4198,10 @@ struct Checker {
           return;
         }
       }
-      alias(into, n->rhs, false);
+      if (n->lhs->kind == ND_IDENT)
+        alias(into, n->rhs, false);
+      else if (into)
+        alias_through(into, n->rhs);
     }
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
@@ -5062,6 +5086,7 @@ struct Checker {
     body_of = fn->sym;
     body_params.clear();
     frame_held.clear();
+    named_copies.clear();
     for (size_t i = 0; i < fn->kids.size(); i++) {
       Node *p = fn->kids[i];
       p->sym = declare(p->name, p->type, p->is_mut, p->pos);

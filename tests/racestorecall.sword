@@ -1,0 +1,28 @@
+// expect-error: this writes 'z' while it is already read concurrently
+// A call that stores into what one name reaches stores into every name of it.
+
+func put(mut ps [][]i64, mut zs []i64) {
+    ps[0] = zs
+}
+
+func reader(ps [][]i64, mut out []i64) {
+    out[0] = ps[0][0]
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+func main() int {
+    mut z := [1]i64{0}
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    qs := rows[..]
+    mut ps := rows[..]
+    put(ps, z[..])
+    scope {
+        spawn reader(qs, o[..])
+        spawn writer(z[..])
+    }
+    return int(o[0])
+}
