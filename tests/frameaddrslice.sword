@@ -1,0 +1,14 @@
+// expect-error: this returns memory that lives in this function's frame
+// The address of a local slice is the address of a cell of the frame, wherever
+// the slice itself points.
+
+func leak(xs []i64) *[]i64 {
+    mut local := xs
+    return &local
+}
+
+func main() int {
+    mut data := [2]i64{1, 2}
+    p := leak(data[..])
+    return int(p.len)
+}

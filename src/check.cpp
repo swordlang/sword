@@ -4218,15 +4218,11 @@ struct Checker {
   bool in_this_frame(Node *place) {
     if (!place || !place->type) return false;
     switch (place->kind) {
-    case ND_IDENT: {
-      if (!place->sym || place->sym->is_func) return false;
-      Type *t = place->sym->type;
-      if (!t) return false;
-      // A binding whose own value is a reference holds the reference here and
-      // the thing itself elsewhere.
-      return t->kind != TY_PTR && t->kind != TY_RAWPTR && t->kind != TY_SLICE &&
-             t->kind != TY_STRING && t->kind != TY_FUNC;
-    }
+    case ND_IDENT:
+      // Every binding's own cell is here, a slice's or a pointer's too: what
+      // it points at lives elsewhere, but `&local` is the address of the cell.
+      // The walk reaches a name only through arrays and fields held by value.
+      return place->sym && !place->sym->is_func;
     case ND_FIELD:
       // Reaching a field through a pointer crosses out of the frame.
       if (place->lhs && place->lhs->type &&

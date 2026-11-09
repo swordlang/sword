@@ -1,0 +1,15 @@
+// expect-error: this puts memory that lives in this function's frame into 'out'
+// Stored where the caller can reach it, the address of a local slice outlives
+// the frame as well.
+
+func keep(mut out []*[]i64, mut xs []i64) {
+    mut local := xs
+    out[0] = &local
+}
+
+func main() int {
+    mut data := [2]i64{1, 2}
+    mut box := [1]*[]i64{}
+    keep(box[..], data[..])
+    return int(box[0].len)
+}
