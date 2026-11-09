@@ -760,6 +760,22 @@ struct Checker {
   // both are this function's parameters, the race is the caller's to rule out.
   void need_apart(Symbol *x, Symbol *y, Pos at) {
     if (!body_of || x == y) return;
+    // A block stored through parameter `p` is reached by every parameter that
+    // is `p`'s memory, so a race with it through another parameter is one
+    // between those two.
+    if (!body_params.count(x))
+      for (Symbol *p : stored_through[x]) params_apart(p, y, at);
+    if (!body_params.count(y))
+      for (Symbol *p : stored_through[y]) params_apart(x, p, at);
+    params_apart(x, y, at);
+  }
+
+  // The locals of the function being checked that were stored into memory a
+  // parameter reaches, with those parameters.
+  std::map<Symbol *, std::set<Symbol *>> stored_through;
+
+  void params_apart(Symbol *x, Symbol *y, Pos at) {
+    if (x == y) return;
     auto i = body_params.find(x), j = body_params.find(y);
     if (i == body_params.end() || j == body_params.end()) return;
     size_t a = std::min(i->second, j->second), b = std::max(i->second, j->second);
@@ -1728,6 +1744,12 @@ struct Checker {
           break;
         }
     for (Symbol *s : names) alias(s, value, false);
+    std::vector<Symbol *> stored;
+    roots_of(value, stored);
+    for (Symbol *s : names)
+      if (body_params.count(s))
+        for (Symbol *r : stored)
+          if (!body_params.count(r)) stored_through[r].insert(s);
   }
 
   // Whether the elements of a slice (or what a pointer leads to, for an array)
@@ -5087,6 +5109,7 @@ struct Checker {
     body_params.clear();
     frame_held.clear();
     named_copies.clear();
+    stored_through.clear();
     for (size_t i = 0; i < fn->kids.size(); i++) {
       Node *p = fn->kids[i];
       p->sym = declare(p->name, p->type, p->is_mut, p->pos);

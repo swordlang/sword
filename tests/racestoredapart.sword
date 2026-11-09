@@ -1,0 +1,40 @@
+// expect: 7
+// The same function, given two different arrays: the block stored through one
+// is not reached through the other, and the tasks do not meet.
+import "std/mem"
+
+func reader(ps [][]i64, mut out []i64) {
+    mut k i64 = 0
+    for i in 0..3000000 {
+        k = k +% i64(i)
+    }
+    out[0] = ps[0][0] + (k - k)
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+det func f(mut ps [][]i64, qs [][]i64, mut o []i64, mut a mem.Allocator) {
+    mut w := mem.Alloc[i64](a, 1) orelse return
+    w[0] = 0
+    ps[0] = w
+    scope {
+        spawn reader(qs, o)
+        spawn writer(w)
+    }
+}
+
+func main() int {
+    mut backing := [256]u8{}
+    mut arena := mem.NewArena(backing[..])
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    mut other := [1][]i64{}
+    mut a := rows[..]
+    mut seen := [1]i64{0}
+    other[0] = seen[..]
+    b := other[..]
+    f(a, b, o[..], &arena)
+    return int(o[0]) + int(rows[0][0])
+}
