@@ -6,7 +6,7 @@ also named for a step in making a blade, in the order they happen.
 
 ## 0.4.3 — Temper
 
-*2026-11-09.* A patch to Temper that closes three more ways a wrong program
+*2026-11-10.* A patch to Temper that closes three more ways a wrong program
 compiled: memory stored through one name of a slice and missed by its other
 names, the same through two parameters given one array, both of which let a
 race through, and the address of a local slice left behind after its frame
