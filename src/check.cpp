@@ -5653,6 +5653,8 @@ struct Determinism {
   std::set<Symbol *> by_value;
   std::map<std::string, std::set<Symbol *>> by_interface;
 
+  std::set<Symbol *> in_num;
+
   void take(Node *decl) {
     if (decl->kind != ND_FUNC || !decl->sym || decl->is_extern) return;
     if (!decl->tparams.empty()) return; // only instances are compiled
@@ -5664,7 +5666,13 @@ struct Determinism {
 
   void collect() {
     for (Package *pkg : prog.order) {
-      for (Node *decl : pkg->unit->kids) take(decl);
+      for (Node *decl : pkg->unit->kids) {
+        take(decl);
+        // Found by where the package is: `shield test std/num` loads it as
+        // the program's own package, beside the copy its tests import.
+        if (pkg->is_num && decl->kind == ND_FUNC && decl->sym)
+          in_num.insert(decl->sym);
+      }
       // A generic's instances live beside the package rather than in it, and
       // a channel is one of those: without them a `chan` looked like a call to
       // something nobody had ever heard of.
@@ -5689,6 +5697,18 @@ struct Determinism {
     Type *base = call->lhs->lhs->type;
     if (base && base->kind == TY_PTR) base = base->elem;
     return base && base->is_interface ? base->name : "";
+  }
+
+  // Whether a value of this type keeps a float in its own bytes.
+  static bool holds_float(const Type *t) {
+    if (!t) return false;
+    if (is_float(t)) return true;
+    if (t->kind == TY_ARRAY) return holds_float(t->elem);
+    if (t->kind == TY_STRUCT && !t->is_interface) {
+      for (const Field &f : t->fields)
+        if (holds_float(f.type)) return true;
+    }
+    return false;
   }
 
   void scan(Symbol *fn, Node *body) {
@@ -5720,10 +5740,27 @@ struct Determinism {
              nullptr);
         return;
       case ND_CONVERT: {
+        // The memory of a float read as something else gives a NaN's bits,
+        // which IEEE leaves to the machine: x86-64 sets the sign that arm64
+        // does not. num.Bits reads them with every NaN made one, and in the
+        // rest of num a NaN's sign only ever leads to another NaN; chan and
+        // mem move the bytes without looking at them.
+        Type *from = n->kids.empty() ? nullptr : n->kids[0]->type;
+        if (from && (from->kind == TY_PTR || from->kind == TY_RAWPTR) &&
+            holds_float(from->elem) && n->type &&
+            n->type->kind == TY_RAWPTR && !is_float(n->type->elem) &&
+            !in_num.count(fn) && fn->name.rfind("std.chan.", 0) != 0 &&
+            fn->name.rfind("std.mem.", 0) != 0) {
+          mark(fn, n->pos,
+               "reads the memory of a float as a number, and a NaN's bits "
+               "differ between machines; num.Bits gives them with every NaN "
+               "the same",
+               nullptr);
+          return;
+        }
         // An address turned into a number is the layout reaching the answer,
         // and the number can be returned or stored, so the callers lose det
         // too. A number that reaches neither, nor a branch, is dead code.
-        Type *from = n->kids.empty() ? nullptr : n->kids[0]->type;
         bool address = from && (from->kind == TY_PTR || from->kind == TY_RAWPTR ||
                                 from->kind == TY_FUNC);
         if (!address || !n->type || n->type->kind != TY_INT) return;
