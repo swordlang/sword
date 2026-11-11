@@ -1,0 +1,24 @@
+// expect-error: this writes 'z' while it is already read concurrently
+// A slice stored through one name of an array of slices is reached by every
+// other name of that array: `rows` holds `z` once `ps[0] = z[..]` runs.
+
+func reader(ps [][]i64, mut out []i64) {
+    out[0] = ps[0][0]
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+func main() int {
+    mut z := [1]i64{0}
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    mut ps := rows[..]
+    ps[0] = z[..]
+    scope {
+        spawn reader(rows[..], o[..])
+        spawn writer(z[..])
+    }
+    return int(o[0])
+}

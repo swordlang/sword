@@ -760,6 +760,22 @@ struct Checker {
   // both are this function's parameters, the race is the caller's to rule out.
   void need_apart(Symbol *x, Symbol *y, Pos at) {
     if (!body_of || x == y) return;
+    // A block stored through parameter `p` is reached by every parameter that
+    // is `p`'s memory, so a race with it through another parameter is one
+    // between those two.
+    if (!body_params.count(x))
+      for (Symbol *p : stored_through[x]) params_apart(p, y, at);
+    if (!body_params.count(y))
+      for (Symbol *p : stored_through[y]) params_apart(x, p, at);
+    params_apart(x, y, at);
+  }
+
+  // The locals of the function being checked that were stored into memory a
+  // parameter reaches, with those parameters.
+  std::map<Symbol *, std::set<Symbol *>> stored_through;
+
+  void params_apart(Symbol *x, Symbol *y, Pos at) {
+    if (x == y) return;
     auto i = body_params.find(x), j = body_params.find(y);
     if (i == body_params.end() || j == body_params.end()) return;
     size_t a = std::min(i->second, j->second), b = std::max(i->second, j->second);
@@ -1657,7 +1673,7 @@ struct Checker {
         }
       }
       if (Symbol *root = share_root(into))
-        if (!root->is_func) alias(root, from, false);
+        if (!root->is_func) alias_through(root, from);
     };
     Symbol *fn = call->form == 2 || call->form == 4 ? nullptr : call->sym;
     // `ch <- v` is a call to the channel's Send by now: the channel keeps v.
@@ -1707,6 +1723,33 @@ struct Checker {
       if (std::find(sym->aliases.begin(), sym->aliases.end(), r) ==
           sym->aliases.end())
         sym->aliases.push_back(r);
+    named_copies.insert(sym);
+  }
+
+  // The bindings of the function being checked that name other memory.
+  std::set<Symbol *> named_copies;
+
+  // `ps[0] = z[..]`, or a call that stores into what `ps` reaches, writes the
+  // memory `ps` was copied from: every name of that memory reaches `z` now,
+  // the ones bound before as much as the ones bound after.
+  void alias_through(Symbol *into, Node *value) {
+    std::vector<Symbol *> memory;
+    canonical(into, memory);
+    std::vector<Symbol *> names(memory);
+    for (Symbol *s : named_copies)
+      for (Symbol *r : s->aliases)
+        if (std::find(memory.begin(), memory.end(), r) != memory.end()) {
+          if (std::find(names.begin(), names.end(), s) == names.end())
+            names.push_back(s);
+          break;
+        }
+    for (Symbol *s : names) alias(s, value, false);
+    std::vector<Symbol *> stored;
+    roots_of(value, stored);
+    for (Symbol *s : names)
+      if (body_params.count(s))
+        for (Symbol *r : stored)
+          if (!body_params.count(r)) stored_through[r].insert(s);
   }
 
   // Whether the elements of a slice (or what a pointer leads to, for an array)
@@ -4177,7 +4220,10 @@ struct Checker {
           return;
         }
       }
-      alias(into, n->rhs, false);
+      if (n->lhs->kind == ND_IDENT)
+        alias(into, n->rhs, false);
+      else if (into)
+        alias_through(into, n->rhs);
     }
 
     bool bitwise = n->op == TK_AND_ASSIGN || n->op == TK_OR_ASSIGN ||
@@ -4218,15 +4264,11 @@ struct Checker {
   bool in_this_frame(Node *place) {
     if (!place || !place->type) return false;
     switch (place->kind) {
-    case ND_IDENT: {
-      if (!place->sym || place->sym->is_func) return false;
-      Type *t = place->sym->type;
-      if (!t) return false;
-      // A binding whose own value is a reference holds the reference here and
-      // the thing itself elsewhere.
-      return t->kind != TY_PTR && t->kind != TY_RAWPTR && t->kind != TY_SLICE &&
-             t->kind != TY_STRING && t->kind != TY_FUNC;
-    }
+    case ND_IDENT:
+      // Every binding's own cell is here, a slice's or a pointer's too: what
+      // it points at lives elsewhere, but `&local` is the address of the cell.
+      // The walk reaches a name only through arrays and fields held by value.
+      return place->sym && !place->sym->is_func;
     case ND_FIELD:
       // Reaching a field through a pointer crosses out of the frame.
       if (place->lhs && place->lhs->type &&
@@ -5066,6 +5108,8 @@ struct Checker {
     body_of = fn->sym;
     body_params.clear();
     frame_held.clear();
+    named_copies.clear();
+    stored_through.clear();
     for (size_t i = 0; i < fn->kids.size(); i++) {
       Node *p = fn->kids[i];
       p->sym = declare(p->name, p->type, p->is_mut, p->pos);

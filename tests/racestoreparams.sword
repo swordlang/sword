@@ -1,0 +1,32 @@
+// expect-error: 'zz' is passed to 'f' as both 'qs' and 'z', which must be different memory
+// Two copies of one array handed to two parameters: the store through one
+// reaches the other, which a task reads while another writes what was stored.
+func reader(ps [][]i64, mut out []i64) {
+    mut k i64 = 0
+    for i in 0..3000000 {
+        k = k +% i64(i)
+    }
+    out[0] = ps[0][0] + (k - k)
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+func f(mut ps [][]i64, qs [][]i64, mut z []i64, mut o []i64) {
+    ps[0] = z
+    scope {
+        spawn reader(qs, o)
+        spawn writer(z)
+    }
+}
+
+det func main() int {
+    mut zz := [1]i64{0}
+    mut rows := [1][]i64{}
+    mut o := [1]i64{0}
+    mut a := rows[..]
+    b := rows[..]
+    f(a, b, zz[..], o[..])
+    return int(o[0])
+}

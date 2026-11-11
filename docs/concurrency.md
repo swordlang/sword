@@ -306,7 +306,10 @@ scope {
 }
 ```
 
-A binding reassigned keeps everything it was ever given. What a function hands
+A binding reassigned keeps everything it was ever given. Memory stored through
+one name is reached by every name of it: once `ps := rows[..]` and
+`ps[0] = z[..]`, a task handed `rows[..]` reaches `z`, and so does a copy of
+`rows` made before the store. What a function hands
 back is followed too. A function cannot return memory of its own frame, store
 it where its caller can reach it, or send it on a channel, so a slice or
 pointer it returns was cut from something it was given, and the checker reads
