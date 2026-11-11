@@ -833,6 +833,18 @@ would fabricate a non-null guarantee. A raw pointer and an `extern func` convert
 both ways; a `func` converts to an `extern func` of the same signature and to
 nothing else.
 
+A float converts to an integer by dropping its fraction: `i64(-2.7)` is `-2`.
+A NaN, an infinity, or a value whose whole part the type cannot hold panics in
+a mode with checks, since the processors disagree on what to give instead —
+x86-64 answers the most negative value for all of them, arm64 the nearest one.
+In `fast` and `small` it gives the nearest value of the type, and `0` for a
+NaN, on every machine.
+
+```sword
+n := i64(1.0e30)    // panics; in fast, 9223372036854775807
+b := u8(255.9)      // 255
+```
+
 `p[a..b]` on a `[*]T`, with both bounds written, produces a `[]T`. It is the
 crossing from unchecked memory to checked.
 
@@ -2263,8 +2275,8 @@ simulator does not simulate yet. See [Simulation](testing.md#simulation).
 | `fast` | no | full |
 | `small` | no | for size |
 
-Shift checks go with bounds and overflow checks. A division is checked in every
-mode.
+Shift checks and the range of a float converted to an integer go with bounds
+and overflow checks. A division is checked in every mode.
 
 `shield checks` lists the bounds checks a program still pays for, one line
 each in the form of a compiler diagnostic, so an editor can go to it:
