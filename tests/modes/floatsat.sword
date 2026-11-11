@@ -1,0 +1,13 @@
+// Built with --mode=fast by tests/run.sh: without checks, a float past an
+// integer's range gives the nearest value of the type, and a NaN zero.
+
+import "std/io"
+import "std/os"
+
+func main() !int {
+    zero := f64(os.Argc() - 1)
+    big := 1.0e30 + zero
+    try io.Printf("{} {} {} {} {} {}\n", i64(zero / zero), i64(big), i64(-big),
+                  u8(300.0 + zero), u8(-5.0 + zero), u32(1.0 / zero))
+    return 0
+}

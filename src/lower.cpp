@@ -2,6 +2,7 @@
 #include "lexer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <set>
@@ -1513,6 +1514,42 @@ struct Lowerer {
     return binop(op, a, b, type);
   }
 
+  // A NaN, an infinity or a float past the integer's range is poison to LLVM,
+  // and the machines answer differently: x86-64 gives the most negative value
+  // for all of them, arm64 the nearest one and 0 for a NaN. Checked, it
+  // panics. Unchecked, it saturates as arm64 does, which costs nothing there
+  // and a few instructions on x86-64. The comparisons are ordered, so a NaN
+  // fails both.
+  int float_to_int(int value, Type *from, Type *to, Pos pos) {
+    IrInst in{};
+    in.op = IR_CAST;
+    in.type = to;
+    if (mode_checks(mode)) {
+      Type *wide = types.named("f64");
+      int x = from->bits == 64 ? value : widen(value, wide);
+      double top = std::ldexp(1.0, to->is_signed ? to->bits - 1 : to->bits);
+      // Below: -2^63 is the one bound a double holds exactly and the type
+      // reaches, so it is included; the others are one past the type.
+      int above;
+      if (to->is_signed && to->bits == 64)
+        above = binop(IR_GE, x, float_constant(-top, wide), types.bool_ty);
+      else
+        above = binop(IR_GT, x,
+                      float_constant(to->is_signed ? -top - 1.0 : -1.0, wide),
+                      types.bool_ty);
+      int ok = binop(IR_AND, above,
+                     binop(IR_LT, x, float_constant(top, wide), types.bool_ty),
+                     types.bool_ty);
+      guard(ok, "panic: float out of range for the integer at line ", pos.line);
+    } else {
+      in.imm = 1; // saturating
+    }
+    in.dst = new_value(to);
+    in.a = value;
+    emit(in);
+    return in.dst;
+  }
+
   // Dividing by zero, and the most negative value by -1, are undefined in LLVM
   // and trap on some machines but not others. Checked in every mode: next to a
   // division the comparison costs next to nothing, and there is no answer that
@@ -2667,6 +2704,8 @@ struct Lowerer {
       };
       if (counts(from) && counts(n->type) && from->bits == n->type->bits)
         return value;
+      if (from->kind == TY_FLOAT && n->type->kind == TY_INT)
+        return float_to_int(value, from, n->type, n->pos);
       IrInst in{};
       in.op = IR_CAST;
       in.dst = new_value(n->type);

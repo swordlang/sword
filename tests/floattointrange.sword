@@ -1,0 +1,12 @@
+// expect: 134
+// expect-panic: panic: float out of range for the integer at line 10
+// -1.0 is below every unsigned integer, though dropping the fraction of -0.5
+// would not be.
+
+import "std/os"
+
+func main() !int {
+    zero := f64(os.Argc() - 1)
+    n := u64(zero - 1.0)
+    return int(n)
+}
