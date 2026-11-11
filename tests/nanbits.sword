@@ -1,0 +1,86 @@
+// expect: 42
+// The bits of a NaN made at run time are the same on every machine through
+// num.Bits, which x86-64 and arm64 would not give by themselves: the first
+// sets the sign of an invalid operation's NaN and the second does not. Floats
+// still travel through channels and come from an allocator inside a det
+// function, which move their bytes without reading them. Reading a number's
+// memory as a float, or the bytes of a struct with no float in it, stays det.
+
+import "std/mem"
+import "std/num"
+import "std/os"
+
+func send(xs []f64, out chan[f64]) !void {
+    for x in xs {
+        try out <- x
+    }
+    close(out)
+}
+
+func total(from chan[f64], mut into *f64) {
+    mut acc f64 = 0.0
+    for v := <-from {
+        acc += v
+    }
+    *into = acc
+}
+
+det func invalid(zero f64) u64 {
+    inf := 1.0 / zero
+    return num.Bits(zero / zero) ^ num.Bits(inf - inf)
+}
+
+struct Pair {
+    a u32
+    b u32
+}
+
+det func fromBits(b u64) f64 {
+    mut x := b
+    p := [*]f64(&x)
+    return p[0]
+}
+
+det func firstByte(v Pair) u8 {
+    mut x := v
+    p := [*]u8(&x)
+    return p[0]
+}
+
+det func carried(n u64, mut a mem.Allocator) !f64 {
+    mut xs := mem.Alloc[f64](a, n) orelse return error.OutOfMemory
+    for i in 0..n {
+        xs[i] = f64(i)
+    }
+    ch := try chan[f64](a, 4)
+    mut got f64 = 0.0
+    scope {
+        spawn send(xs, ch)
+        spawn total(ch, &got)
+    }
+    return got
+}
+
+func main() !int {
+    // Zero from the command line, so that the divisions happen on the
+    // machine and not in the compiler.
+    zero := f64(os.Argc() - 1)
+    if invalid(zero) != 0 {
+        return 1
+    }
+    if num.Bits(-0.0) != 0x8000000000000000 || num.Bits(1.0) != 0x3FF0000000000000 {
+        return 2
+    }
+    if num.Bits(zero / zero) != 0x7FF8000000000000 {
+        return 3
+    }
+    if fromBits(0x3FF0000000000000) != 1.0 || firstByte(Pair{a: 7, b: 9}) != 7 {
+        return 5
+    }
+    mut room := [4096]u8{}
+    mut arena := mem.NewArena(room[..])
+    if try carried(10, &arena) != 45.0 {
+        return 4
+    }
+    return 42
+}
