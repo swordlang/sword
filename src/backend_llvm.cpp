@@ -308,6 +308,17 @@ struct Emitter {
         return x->kind == TY_PTR || x->kind == TY_RAWPTR ||
                x->kind == TY_FUNC || x->kind == TY_OPT;
       };
+      if (from->kind == TY_FLOAT && to->kind == TY_INT && in.imm == 1) {
+        std::string name = std::string("llvm.fpto") +
+                           (to->is_signed ? "si" : "ui") + ".sat.i" +
+                           std::to_string(to->bits) +
+                           (from->bits == 64 ? ".f64" : ".f32");
+        intrinsics.insert("declare " + ll_type(to) + " @" + name + "(" +
+                          ll_type(from) + ")");
+        fprintf(out, "  %s = call %s @%s(%s)\n", val(in.dst).c_str(),
+                ll_type(to).c_str(), name.c_str(), typed(in.a).c_str());
+        break;
+      }
       const char *how;
       if (is_address(from) && to->kind == TY_INT)
         how = "ptrtoint";
