@@ -30,6 +30,20 @@ package num
 
 // --- bits --------------------------------------------------------------------
 
+// The bits of a double. IEEE says what an invalid operation gives is a NaN,
+// not which one, and machines differ on its sign; here every NaN is the one
+// NaN() makes, so the bits are the same everywhere.
+func Bits(v f64) u64 {
+    if v != v {
+        return 0x7FF8000000000000
+    }
+    mut x := v
+    p := [*]u64(&x)
+    return p[0]
+}
+
+// The same without the NaN test, for the functions here: whichever sign a NaN
+// comes with, what they answer for it is a NaN.
 func bitsOf(v f64) u64 {
     mut x := v
     p := [*]u64(&x)

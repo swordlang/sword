@@ -1,0 +1,14 @@
+// expect-error: reads the memory of a float as a number
+// The bits of a float read through a raw pointer include a NaN's sign, which
+// the machine chooses; num.Bits is the way to read them inside det.
+
+det func bits(v f64) u64 {
+    mut x := v
+    p := [*]u64(&x)
+    return p[0]
+}
+
+func main() int {
+    zero := 0.0
+    return int(bits(zero / zero) >> 63)
+}
