@@ -107,6 +107,16 @@ func fillrows(mut rows [][]i64, t i64) {
         fill(rows[j], t)
     }
 }
+
+func sumrows(rows [][]i64, mut out *i64) {
+    mut s := i64(0)
+    for j in 0..rows.len {
+        for k in 0..rows[j].len {
+            s = s *% 7 +% rows[j][k]
+        }
+    }
+    *out = s
+}
 """
 
 # Only in the programs that use it: every iteration writes through its row,
@@ -116,6 +126,39 @@ func prows(mut rows [][]i64, t i64) {
     parallel for i in 0..rows.len {
         rows[i][0] = rows[i][0] *% 31 +% t
     }
+}
+"""
+
+
+# Only in the programs that use them: a store through one parameter, and a
+# task reading through another, which is the same memory when the caller
+# hands both one array.
+STORES = """
+func storeread(mut ps [][]i64, qs [][]i64, mut z []i64, t i64, mut out *i64) {
+    ps[0] = z
+    scope {
+        spawn sumrows(qs, out)
+        spawn fill(z, t)
+    }
+}
+
+func storeblock(mut ps [][]i64, qs [][]i64, t i64, mut out *i64, mut a mem.Allocator) {
+    mut w := mem.Alloc[i64](a, 2) orelse return
+    w[0] = t
+    w[1] = t
+    ps[0] = w
+    scope {
+        spawn sumrows(qs, out)
+        spawn fill(w, t)
+    }
+}
+"""
+
+# Only in the programs that use it: where the address of a helper's local
+# slice can be put.
+REF = """
+struct Ref {
+    p *[]i64
 }
 """
 
@@ -156,6 +199,13 @@ class Gen:
         self.heap = self.r.random() < 0.5
         self.helpers = []
         self.escapes = None
+        self.needs_stores = False
+        self.needs_ref = False
+        # A call the parent makes inside a scope, after its spawns.
+        self.pending = None
+        # Some programs hold one of the store shapes and nothing else, so
+        # that no other race in the scope hides whether it is seen.
+        self.focus = self.r.random() < 0.15
 
     def fresh(self, p):
         self.n += 1
@@ -249,11 +299,29 @@ class Gen:
         self.results.append(name)
         return name
 
+    def leave_address(self):
+        """A helper that lets out the address of its local slice: a cell of
+        its frame, wherever the slice points."""
+        fn = self.fresh("leave")
+        if self.r.random() < 0.5:
+            self.helpers.append("func %s(mut given []i64) *[]i64 {\n    mut ys := given\n    return &ys\n}\n" % fn)
+            self.setup += ["if %s(oth[0..2]).len == 0 {" % fn, "    return 1", "}"]
+        else:
+            self.needs_ref = True
+            self.helpers.append("func %s(mut r *Ref, mut given []i64) {\n    mut ys := given\n    r.p = &ys\n}\n" % fn)
+            anchor, h = self.fresh("anchor"), self.fresh("hold")
+            self.setup += ["mut %s := oth[0..0]" % anchor, "mut %s := Ref{p: &%s}" % (h, anchor),
+                           "%s(&%s, oth[0..2])" % (fn, h)]
+        self.escapes = self.escapes or "%s lets out the address of its local slice" % fn
+
     def leave(self):
         """A call to a helper that puts memory where it outlives the helper:
         its own frame's, which must be refused, or what it was given, which
         need not be."""
         r = self.r
+        if r.random() < 0.2:
+            self.leave_address()
+            return
         how, naming = r.choice(LEAVES), r.choice(NAMES)
         own = r.random() < 0.6
         fn = self.fresh("leave")
@@ -299,10 +367,17 @@ class Gen:
     def task(self):
         """One spawn or loop of spawns: (lines, [(reads, writes, inner race)])."""
         r = self.r
-        k = r.randrange(13)
-        while k == 10 and not self.heap:
-            k = r.randrange(13)
+        k = r.randrange(15)
+        if self.focus:
+            k = r.choice((13, 14))
+        while (k == 10 and not self.heap) or (k == 14 and self.pending is not None):
+            k = r.randrange(15)
         t = self.next_tag()
+        if k == 13:
+            return self.stored_through_name(t)
+        if k == 14:
+            self.pending = self.stored_through_param(t)
+            return [], []
         if k in (11, 12):
             # A slice of slices: the rows are elements of their own, but the
             # memory each one leads to can be another row's.
@@ -411,12 +486,93 @@ class Gen:
                 acc.append((set(), {(v.base, v.lo + x) for x in range(o2, min(hi1, o2 + c2))}, None))
         return lines, acc
 
+    def rows(self):
+        """An array of slices in main, and what each of its rows covers."""
+        views = [self.view() for _ in range(self.r.randrange(1, 4))]
+        name = self.fresh("sr")
+        self.setup.append("mut %s := [%d][]i64{%s}" % (name, len(views), ", ".join(v.expr for v in views)))
+        return name, [v.cells() for v in views]
+
+    def stored_through_name(self, t):
+        """A slice stored into a row through one name of the array, and the
+        array read through another, taken before the store or after it."""
+        r = self.r
+        rows, cells = self.rows()
+        x = self.view()
+        j = r.randrange(len(cells))
+        form = r.randrange(4)
+        if form == 0:
+            self.setup.append("%s[%d] = %s" % (rows, j, x.expr))
+            reader = rows + "[..]"
+        elif form == 1:
+            ps = self.fresh("ps")
+            self.setup += ["mut %s := %s[..]" % (ps, rows), "%s[%d] = %s" % (ps, j, x.expr)]
+            reader = rows + "[..]"
+        elif form == 2:
+            reader = self.fresh("qs")
+            self.setup += ["%s := %s[..]" % (reader, rows), "%s[%d] = %s" % (rows, j, x.expr)]
+        else:
+            ps, reader = self.fresh("ps"), self.fresh("qs")
+            self.setup += ["mut %s := %s[..]" % (ps, rows), "%s := %s[..]" % (reader, rows),
+                           "%s[%d] = %s" % (ps, j, x.expr)]
+        old = cells[j]
+        cells[j] = x.cells()
+        out = self.result()
+        lines = ["spawn sumrows(%s, &%s)" % (reader, out)]
+        acc = [(set().union(*cells), set(), None)]
+        k = r.random()
+        if k < 0.4:
+            lines.append("spawn fill(%s, %d)" % (x.expr, t))
+            acc.append((set(), x.cells(), None))
+        elif k < 0.7:
+            # What the row held before the store, which the reader no longer
+            # reaches through that row.
+            w = self.view()
+            lines.append("spawn fill(%s, %d)" % (w.expr, t))
+            acc.append((set(), w.cells(), None))
+        return lines, acc
+
+    def stored_through_param(self, t):
+        """A call that stores into one parameter's array and has a task read
+        another's, given the same array or two different ones."""
+        r = self.r
+        self.needs_stores = True
+        rows, cells = self.rows()
+        same = r.random() < 0.5
+        pa = self.fresh("pa")
+        self.setup.append("mut %s := %s[..]" % (pa, rows))
+        if same:
+            pb, bcells = self.fresh("pb"), cells
+            self.setup.append("%s := %s[..]" % (pb, rows))
+        else:
+            other, bcells = self.rows()
+            pb = other + "[..]"
+        out = self.result()
+        if r.random() < 0.5:
+            x = self.view()
+            line = "storeread(%s, %s, %s, %d, &%s)" % (pa, pb, x.expr, t, out)
+            after = [x.cells()] + bcells[1:] if same else bcells
+            reads = set().union(*after)
+            inner = "storeread reads what it writes" if reads & x.cells() else None
+            return [line], [(reads, x.cells(), inner)]
+        self.needs_arena = True
+        line = "storeblock(%s, %s, %d, &%s, &arena)" % (pa, pb, t, out)
+        reads = set().union(*(bcells[1:] if same else bcells))
+        inner = "storeblock reads the block it writes" if same else None
+        return [line], [(reads, set(), inner)]
+
     def scope(self):
         lines, tasks = [], []
-        for _ in range(self.r.randrange(1, 4)):
+        self.pending = None
+        for _ in range(1 if self.focus else self.r.randrange(1, 4)):
             l, t = self.task()
             lines += l
             tasks += t
+        # The parent's own call runs beside every task spawned before it,
+        # and they all are.
+        if self.pending is not None:
+            lines += self.pending[0]
+            tasks += self.pending[1]
         why = None
         tasks = [t if len(t) == 4 else t + (None,) for t in tasks]
         for reads, writes, inner, _ in tasks:
@@ -435,16 +591,17 @@ class Gen:
 
     def program(self):
         body, why = [], None
-        if self.r.random() < 0.3:
+        if self.r.random() < 0.3 and not self.focus:
             self.leave()
-        for _ in range(self.r.randrange(1, 3)):
+        for _ in range(1 if self.focus else self.r.randrange(1, 3)):
             lines, w = self.scope()
             why = why or w
             body.append("scope {")
             body += ["    " + l for l in lines]
             body.append("}")
         why = why or self.escapes
-        out = [HEADER + (PROWS if self.needs_prows else "") + "".join("\n" + h for h in self.helpers),
+        out = [HEADER + (PROWS if self.needs_prows else "") + (STORES if self.needs_stores else "") +
+               (REF if self.needs_ref else "") + "".join("\n" + h for h in self.helpers),
                "func main() !int {"]
         if self.heap or self.needs_arena:
             out += ["    mut backing := [8192]u8{}", "    mut arena := mem.NewArena(backing[..])"]
