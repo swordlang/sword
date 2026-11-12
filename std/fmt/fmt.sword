@@ -2,6 +2,7 @@ package fmt
 
 import "std/bytes"
 import "std/mem"
+import "std/num"
 
 // Formatting writes into a sink rather than into one particular buffer, so the
 // same code serves a growable buffer, a socket, or a fixed block of stack.
@@ -99,9 +100,7 @@ func Hex(mut out Sink, v u64, width u64) !void {
 const maxFloat = 1.7976931348623157e308
 
 func bitsOf(v f64) u64 {
-    mut x := v
-    p := [*]u64(&x)
-    return p[0]
+    return num.Bits(v)
 }
 
 // The decimal digits of a double, exactly. Every double is m·2^e, so its

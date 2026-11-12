@@ -10,7 +10,8 @@
 #
 # Refusing a program that does not race is not a failure: the checker is
 # cautious on purpose. Those are counted, and the counts are the price of
-# the caution.
+# the caution; the last lines say which rule refused them, by the first
+# error's message with the names taken out.
 #
 # Not part of make test or CI: the four hundred seeds it runs by default
 # took 35 seconds on an M4.
@@ -41,13 +42,19 @@ run() {
 }
 
 holes=0 racy_refused=0 free_refused=0 free_accepted=0
+: > "$out/rules"
 for s in $(seq "$first" "$last"); do
     racy=$(python3 -I "$root/tests/racegen/gen.py" "$s" "$out/$s.sword" |
         sed 's/.*"racy": \([a-z]*\).*/\1/')
     if ! "$shield" "$out/$s.sword" -o "$out/$s.bin" > "$out/$s.log" 2>&1; then
         if grep -q "error:" "$out/$s.log"; then
-            [ "$racy" = true ] && racy_refused=$((racy_refused + 1)) ||
+            if [ "$racy" = true ]; then
+                racy_refused=$((racy_refused + 1))
+            else
                 free_refused=$((free_refused + 1))
+                grep -m1 "error:" "$out/$s.log" |
+                    sed "s/.*error: //; s/'[^' ]*'/'_'/g" >> "$out/rules"
+            fi
         else
             echo "seed $s: the compiler failed without a diagnostic"
             holes=$((holes + 1))
@@ -71,4 +78,5 @@ done
 
 echo "seeds $first..$last: $holes accepted wrongly, $racy_refused racy refused," \
     "$free_accepted race-free accepted, $free_refused race-free refused"
+sort "$out/rules" | uniq -c | sort -rn | sed 's/^/  /'
 [ "$holes" -eq 0 ]

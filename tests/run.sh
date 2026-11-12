@@ -954,6 +954,17 @@ else
     fail=$((fail + 1))
 fi
 
+# Without checks a float past an integer's range saturates, on every machine
+# the same way, where the instruction alone gives different answers.
+got_sat=$(cd "$root" && "$shield" --mode=fast tests/modes/floatsat.sword -o "$tmp/floatsat" 2>&1 &&
+    "$tmp/floatsat")
+if [ "$got_sat" = "0 9223372036854775807 -9223372036854775808 255 0 4294967295" ]; then
+    pass=$((pass + 1))
+else
+    echo "FAIL --mode=fast float to integer: $got_sat"
+    fail=$((fail + 1))
+fi
+
 # `shield checks` lists every bounds check of the program's own package that
 # is still in the code, and with -all the ones proven away too, one line each.
 want_checks='tests/checkslist.sword:8:19: xs[i]: proven in range

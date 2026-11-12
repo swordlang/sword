@@ -1,0 +1,12 @@
+// expect: 134
+// expect-panic: panic: float out of range for the integer at line 10
+// A NaN has no integer: x86-64 would give the most negative i64 and arm64
+// zero, so it panics on both.
+
+import "std/os"
+
+func main() !int {
+    zero := f64(os.Argc() - 1)
+    n := i64(zero / zero)
+    return int(n)
+}

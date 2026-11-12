@@ -4,6 +4,56 @@ Releases are numbered by [semantic versioning](https://semver.org): until 1.0,
 a minor version may change the language, and each one says how. Each release is
 also named for a step in making a blade, in the order they happen.
 
+## 0.4.4 — Temper
+
+*2026-11-11.* A patch to Temper for two places where a det function could
+answer differently on x86-64 and arm64: the bits of a NaN, and a float
+converted to an integer it does not fit.
+
+### What changes for existing programs
+
+Under the same exception as 0.4.1, a det function that could depend on the
+machine is now refused, and one conversion that was undefined now has an
+answer. The suite, the standard library's tests and the documentation's
+examples pass, with one test changed to read its bits through `num.Bits`.
+
+- **A float's memory read as a number takes det away.** IEEE 754 says an
+  invalid operation gives a NaN, not which one: `0.0/0.0` has the sign bit
+  set on x86-64 and clear on arm64. Reading the memory of a float, or of an
+  array or struct holding one, through a raw pointer to something that is
+  not a float (`[*]u64(&x)`, `[*]u8(&x)`) makes a function not det, with the
+  chain to the line. `std/chan` and `std/mem`, which move the bytes without
+  looking at them, keep det (#212).
+- **A float past an integer's range panics.** `i64(x)` and the other
+  conversions to an integer, when `x` is a NaN, an infinity or a value whose
+  whole part the type cannot hold, panic in `debug` and `safe` with
+  `panic: float out of range for the integer at line N`. Before, they gave
+  whatever the processor gave: the most negative value on x86-64, the
+  nearest one and 0 for a NaN on arm64. In `fast` and `small` they give the
+  nearest value and 0 for a NaN, on every machine (#213).
+
+Nothing else that compiled stops compiling.
+
+### Standard library
+
+- `num.Bits(v f64) u64` gives the bits of a double with every NaN as
+  `0x7FF8000000000000`, the one `NaN()` makes. `fmt` formats through it.
+
+### Cost
+
+Nothing on arithmetic: every operation is the same instruction. The range
+check costs where `std/num` converts: on an M4, a million calls of `num.Exp`
+went from 2.234 to 2.364 ns each (1.06 times, median of nine alternating
+rounds), and `num.Sin` from 10.03 to 10.09 ns. In `fast` and `small` the
+saturating conversion is the arm64 instruction itself.
+
+### Tools
+
+- `tests/racegen.sh` writes the shapes of the three holes 0.4.3 closed:
+  against 0.4.2 it finds eight racy programs in seeds 1..400, and none
+  against this release. It ends with the race-free programs it refused,
+  counted by the rule that refused them.
+
 ## 0.4.3 — Temper
 
 *2026-11-10.* A patch to Temper that closes three more ways a wrong program
