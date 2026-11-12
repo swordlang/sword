@@ -7,6 +7,7 @@
 
 import "std/io"
 import "std/mem"
+import "std/num"
 import "std/par"
 import "std/rand"
 
@@ -24,13 +25,7 @@ func less(a f64, b f64) bool {
 
 det func summarise(xs []f64, mut work []f64, mut a mem.Allocator) !u64 {
     try par.Scan[f64](xs, work, addF)
-    mut bits := u64(0)
-    last := work[work.len - 1]
-    mut x := last
-    p := [*]u8(&x)
-    for i in 0..8 {
-        bits |= u64(p[i]) << (u64(i) * 8)
-    }
+    bits := num.Bits(work[work.len - 1])
     kept := try par.Keep[f64](a, xs, work, small)
     first := par.MinIndex[f64](xs, less) orelse 0
     return bits ^ kept ^ (first << 40)

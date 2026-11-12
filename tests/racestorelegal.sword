@@ -1,0 +1,32 @@
+// expect: 13
+// Names that only look alike: a store through a copy of one array of slices
+// says nothing about another array, nor about a slice of numbers.
+
+func reader(ps [][]i64, mut out []i64) {
+    out[0] = ps[0][0]
+}
+
+func writer(mut zs []i64) {
+    zs[0] = 7
+}
+
+func main() int {
+    mut z := [1]i64{0}
+    mut y := [1]i64{3}
+    mut rows := [1][]i64{}
+    mut other := [1][]i64{}
+    mut o := [2]i64{0, 0}
+    rows[0] = y[..]
+    mut ps := other[..]
+    ps[0] = z[..]
+    mut ns := y[..]
+    ns[0] = 2
+    scope {
+        spawn reader(rows[..], o[0..1])
+        spawn writer(z[..])
+    }
+    scope {
+        spawn reader(other[..], o[1..2])
+    }
+    return int(o[0] + o[1]) + 4
+}

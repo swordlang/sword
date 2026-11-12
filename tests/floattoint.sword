@@ -1,0 +1,32 @@
+// expect: 42
+// A float converts to an integer by dropping its fraction, and every value
+// up to the edges of the type converts: only what is past them, or a NaN,
+// panics. The values come from the command line's count so the compiler
+// cannot settle them.
+
+import "std/os"
+
+func main() !int {
+    zero := f64(os.Argc() - 1)
+    // The largest double below 2^63, and -2^63 itself, which is the type's.
+    if i64(9223372036854774784.0 + zero) != 9223372036854774784 {
+        return 1
+    }
+    if i64(-9223372036854775808.0 + zero) != -9223372036854775807 - 1 {
+        return 2
+    }
+    if i32(2147483647.9 + zero) != 2147483647 || i32(-2147483648.9 + zero) != -2147483648 {
+        return 3
+    }
+    if u8(255.9 + zero) != 255 || u8(-0.9 + zero) != 0 {
+        return 4
+    }
+    if u64(18446744073709549568.0 + zero) != 18446744073709549568 {
+        return 5
+    }
+    small := f32(zero) + 3.75
+    if i16(small) != 3 || i16(-small) != -3 {
+        return 6
+    }
+    return 42
+}

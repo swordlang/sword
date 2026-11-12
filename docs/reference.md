@@ -159,6 +159,7 @@ arguments to reach the answer:
 | a channel copied, stored or returned | the compiler can no longer follow it |
 | an `extern` call, or one through an `extern func` | the clock, the operating system, malloc's addresses |
 | an address turned into a number | the layout decides |
+| the memory of a float read as anything but floats | a NaN's bits: `0.0/0.0` has the sign set on x86-64 and not on arm64 |
 | a call through an interface or a function value | unless every target the program has is det |
 | a call to anything that is not det | |
 
@@ -178,7 +179,9 @@ exception is `mem.Arena`'s `Alloc`, which reads its buffer's address to align
 what it hands out. Anything in a frame that holds an array starts on a
 multiple of 16 on every machine, and a buffer inside it sits at an offset the
 layout fixes, so for any alignment up to 16 the arena hands out the same
-offsets wherever the frame lands. An interface nothing in the program implements is never called
+offsets wherever the frame lands. A float's bits are read with `num.Bits`,
+which gives every NaN as the one `NaN()` makes; `std/chan` and `std/mem` copy
+a float's bytes without looking at them and keep det. An interface nothing in the program implements is never called
 through, so a call through it takes nothing away. `shield det` lists every
 function and what it was found to be ([Command line](#command-line)).
 
@@ -833,6 +836,18 @@ would fabricate a non-null guarantee. A raw pointer and an `extern func` convert
 both ways; a `func` converts to an `extern func` of the same signature and to
 nothing else.
 
+A float converts to an integer by dropping its fraction: `i64(-2.7)` is `-2`.
+A NaN, an infinity, or a value whose whole part the type cannot hold panics in
+a mode with checks, since the processors disagree on what to give instead —
+x86-64 answers the most negative value for all of them, arm64 the nearest one.
+In `fast` and `small` it gives the nearest value of the type, and `0` for a
+NaN, on every machine.
+
+```sword
+n := i64(1.0e30)    // panics; in fast, 9223372036854775807
+b := u8(255.9)      // 255
+```
+
 `p[a..b]` on a `[*]T`, with both bounds written, produces a `[]T`. It is the
 crossing from unchecked memory to checked.
 
@@ -1373,6 +1388,7 @@ func Cos(x f64) f64
 func Inf() f64
 func NaN() f64
 func IsNaN(v f64) bool
+func Bits(v f64) u64      // every NaN is 0x7FF8000000000000; an f32 goes through f64(x)
 ```
 
 ### `std/par`
@@ -2263,8 +2279,8 @@ simulator does not simulate yet. See [Simulation](testing.md#simulation).
 | `fast` | no | full |
 | `small` | no | for size |
 
-Shift checks go with bounds and overflow checks. A division is checked in every
-mode.
+Shift checks and the range of a float converted to an integer go with bounds
+and overflow checks. A division is checked in every mode.
 
 `shield checks` lists the bounds checks a program still pays for, one line
 each in the form of a compiler diagnostic, so an editor can go to it:
