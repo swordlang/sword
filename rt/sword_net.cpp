@@ -9,14 +9,12 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-
-#include <mutex>
-#include <vector>
 
 namespace {
 
@@ -58,11 +56,11 @@ struct Limits {
   int64_t deadline = 0; // absolute, for everything on this socket
 };
 
-std::vector<Limits> limits;
-std::mutex limits_lock;
+Vec<Limits> limits;
+Mutex limits_lock;
 
 Limits limits_of(int fd) {
-  std::lock_guard<std::mutex> held(limits_lock);
+  Lock held(limits_lock);
   if (fd < 0 || (size_t)fd >= limits.size()) return Limits{};
   return limits[fd];
 }
@@ -73,7 +71,7 @@ Limits &limits_for(int fd) {
 }
 
 void forget_limits(int fd) {
-  std::lock_guard<std::mutex> held(limits_lock);
+  Lock held(limits_lock);
   if (fd >= 0 && (size_t)fd < limits.size()) limits[fd] = Limits{};
 }
 
@@ -234,7 +232,7 @@ static int connect_within(int fd, const sockaddr *addr, socklen_t len,
                           int64_t millis) {
   adopt(fd);
   if (millis > 0) {
-    std::lock_guard<std::mutex> held(limits_lock);
+    Lock held(limits_lock);
     limits_for(fd).timeout = millis * 1000000;
   }
 
@@ -310,7 +308,7 @@ int32_t sword_net_dial(const char *host, int64_t host_len, int32_t port) {
 }
 
 int32_t sword_net_timeout(int32_t fd, int64_t millis) {
-  std::lock_guard<std::mutex> held(limits_lock);
+  Lock held(limits_lock);
   limits_for(fd).timeout = millis > 0 ? millis * 1000000 : 0;
   return 0;
 }
@@ -318,7 +316,7 @@ int32_t sword_net_timeout(int32_t fd, int64_t millis) {
 // An absolute point on the monotonic clock, after which nothing on this socket
 // waits any longer. Zero clears it.
 int32_t sword_net_deadline(int32_t fd, int64_t at_ns) {
-  std::lock_guard<std::mutex> held(limits_lock);
+  Lock held(limits_lock);
   limits_for(fd).deadline = at_ns;
   return 0;
 }

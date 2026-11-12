@@ -22,7 +22,7 @@ RTOBJ    := rt/sword_rt.o rt/sword_net.o rt/sword_os.o rt/sword_poll.o \
 
 # A section per function, so that a linker outside Apple's can drop what a
 # program never calls (ld64 does it by symbol, and the objects come out the same).
-RT_SECTIONS := -ffunction-sections -fdata-sections
+RT_SECTIONS := -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++
 $(RTOBJ): CXXFLAGS += $(RT_SECTIONS)
 
 # TLS is optional: the protocol is not something to write by hand, so it is
@@ -54,21 +54,6 @@ else
 TLS_STAMP    := rt/.tls-off
 endif
 
-# The runtime is C++, so a program links against whichever standard library the
-# compiler that built it uses: libc++ from Apple's, libstdc++ from GCC's. Asked
-# of the compiler rather than guessed from the system, since clang on Linux can
-# be either. libstdc++ is named by its directory as well: clang links against the
-# newest GCC it finds, and on Ubuntu 24.04 that is a GCC 14 with no libstdc++
-# beside it while g++ is 13.
-CXXLIB := $(if $(shell $(CXX) -std=c++17 -dM -E -x c++ -include cstddef \
-    /dev/null 2>/dev/null | grep _LIBCPP_VERSION),-lc++,-lstdc++)
-ifeq ($(CXXLIB),-lstdc++)
-CXXLIBDIR := $(dir $(shell $(CXX) -print-file-name=libstdc++.so))
-ifneq ($(filter /%,$(CXXLIBDIR)),)
-CXXLIB := -L$(CXXLIBDIR) -lstdc++
-endif
-endif
-
 # std/dl's dlopen is in libc on macOS and on glibc from 2.34; older glibc keeps
 # it in libdl, and naming libdl where it is only a stub costs nothing.
 DLLIB := $(if $(filter Linux,$(shell uname -s)),-ldl)
@@ -93,7 +78,7 @@ $(RT): $(RTOBJ)
 # src/link.cpp leaves out -lssl and -lcrypto for a program that never reaches
 # std/tls, so OpenSSL has to be named by those two words.
 $(RTFLAGS): FORCE
-	@echo '$(TLS_LDFLAGS) $(DLLIB) $(CXXLIB)' > $@
+	@echo '$(TLS_LDFLAGS) $(DLLIB)' > $@
 
 # The decision is in the file's name, so flipping it leaves a prerequisite that
 # does not exist and the object is rebuilt. Comparing timestamps would not do:
@@ -137,7 +122,7 @@ TARGET_FLAGS := libsword_rt-$(TARGET).flags
 TARGET_DIR   := rt/$(TARGET)
 TARGET_OBJ   := $(patsubst rt/%,$(TARGET_DIR)/%,$(RTOBJ))
 TARGET_CXX   := clang++ --target=$(TARGET) $(if $(SYSROOT),--sysroot=$(SYSROOT))
-TARGET_LIBS  ?= $(if $(findstring apple,$(TARGET)),-lc++,-ldl -lstdc++)
+TARGET_LIBS  ?= $(if $(findstring apple,$(TARGET)),,-ldl)
 TARGET_AR    := $(firstword $(shell command -v llvm-ar 2>/dev/null) ar)
 
 all: $(TARGET_RT) $(TARGET_FLAGS)

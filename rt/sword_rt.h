@@ -3,6 +3,176 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+#include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+namespace std {
+
+enum memory_order {
+  memory_order_relaxed = __ATOMIC_RELAXED,
+  memory_order_consume = __ATOMIC_CONSUME,
+  memory_order_acquire = __ATOMIC_ACQUIRE,
+  memory_order_release = __ATOMIC_RELEASE,
+  memory_order_acq_rel = __ATOMIC_ACQ_REL,
+  memory_order_seq_cst = __ATOMIC_SEQ_CST
+};
+
+template <typename T>
+struct atomic {
+  T v;
+  constexpr atomic(T init = 0) : v(init) {}
+  T load(memory_order m = memory_order_seq_cst) const {
+    return __atomic_load_n(&v, (int)m);
+  }
+  void store(T val, memory_order m = memory_order_seq_cst) {
+    __atomic_store_n(&v, val, (int)m);
+  }
+  T exchange(T val, memory_order m = memory_order_seq_cst) {
+    return __atomic_exchange_n(&v, val, (int)m);
+  }
+  T fetch_add(T val, memory_order m = memory_order_seq_cst) {
+    return __atomic_fetch_add(&v, val, (int)m);
+  }
+  T fetch_sub(T val, memory_order m = memory_order_seq_cst) {
+    return __atomic_fetch_sub(&v, val, (int)m);
+  }
+  T fetch_or(T val, memory_order m = memory_order_seq_cst) {
+    return __atomic_fetch_or(&v, val, (int)m);
+  }
+  T fetch_and(T val, memory_order m = memory_order_seq_cst) {
+    return __atomic_fetch_and(&v, val, (int)m);
+  }
+  bool compare_exchange_weak(T &expected, T desired,
+                             memory_order m = memory_order_seq_cst) {
+    int fail = (m == memory_order_acq_rel || m == memory_order_acquire)
+                   ? __ATOMIC_ACQUIRE
+                   : (m == memory_order_release ? __ATOMIC_RELAXED : (int)m);
+    return __atomic_compare_exchange_n(&v, &expected, desired, true, (int)m,
+                                       fail);
+  }
+  bool compare_exchange_strong(T &expected, T desired,
+                               memory_order m = memory_order_seq_cst) {
+    int fail = (m == memory_order_acq_rel || m == memory_order_acquire)
+                   ? __ATOMIC_ACQUIRE
+                   : (m == memory_order_release ? __ATOMIC_RELAXED : (int)m);
+    return __atomic_compare_exchange_n(&v, &expected, desired, false, (int)m,
+                                       fail);
+  }
+};
+
+} // namespace std
+
+struct Mutex {
+  pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+  void init() { pthread_mutex_init(&m, nullptr); }
+  void lock() { pthread_mutex_lock(&m); }
+  void unlock() { pthread_mutex_unlock(&m); }
+};
+
+struct Lock {
+  Mutex &m;
+  explicit Lock(Mutex &m) : m(m) { m.lock(); }
+  ~Lock() { m.unlock(); }
+};
+
+struct Cond {
+  pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+  void init() { pthread_cond_init(&c, nullptr); }
+  void wait(Mutex &m) { pthread_cond_wait(&c, &m.m); }
+  void wait_ns(Mutex &m, int64_t nanos) {
+    timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += nanos / 1000000000;
+    ts.tv_nsec += nanos % 1000000000;
+    if (ts.tv_nsec >= 1000000000) {
+      ts.tv_sec += 1;
+      ts.tv_nsec -= 1000000000;
+    }
+    pthread_cond_timedwait(&c, &m.m, &ts);
+  }
+  void notify_one() { pthread_cond_signal(&c); }
+  void notify_all() { pthread_cond_broadcast(&c); }
+};
+
+template <typename T>
+struct Vec {
+  T *data = nullptr;
+  size_t len = 0;
+  size_t cap = 0;
+
+  ~Vec() { free(data); }
+
+  size_t size() const { return len; }
+  bool empty() const { return len == 0; }
+
+  T &operator[](size_t i) { return data[i]; }
+  const T &operator[](size_t i) const { return data[i]; }
+
+  T *begin() { return data; }
+  T *end() { return data + len; }
+  const T *begin() const { return data; }
+  const T *end() const { return data + len; }
+
+  T &front() { return data[0]; }
+  T &back() { return data[len - 1]; }
+
+  void push_back(const T &val) {
+    if (len == cap) {
+      cap = cap ? cap * 2 : 8;
+      data = (T *)realloc((void *)data, cap * sizeof(T));
+    }
+    data[len++] = val;
+  }
+
+  void pop_back() { len--; }
+  void clear() { len = 0; }
+
+  void resize(size_t n) {
+    if (n > cap) {
+      cap = n;
+      data = (T *)realloc((void *)data, cap * sizeof(T));
+    }
+    if (n > len) memset((void *)(data + len), 0, (n - len) * sizeof(T));
+    len = n;
+  }
+
+  void swap(Vec<T> &other) {
+    T *td = data;
+    data = other.data;
+    other.data = td;
+    size_t tl = len;
+    len = other.len;
+    other.len = tl;
+    size_t tc = cap;
+    cap = other.cap;
+    other.cap = tc;
+  }
+
+  T *erase(T *at) {
+    size_t idx = (size_t)(at - data);
+    if (idx + 1 < len)
+      memmove((void *)(data + idx), (const void *)(data + idx + 1),
+              (len - idx - 1) * sizeof(T));
+    len--;
+    return data + idx;
+  }
+};
+
+inline void sleep_ns(int64_t nanos) {
+  timespec want;
+  want.tv_sec = (time_t)(nanos / 1000000000);
+  want.tv_nsec = (long)(nanos % 1000000000);
+  timespec left;
+  while (nanosleep(&want, &left) != 0 && errno == EINTR) want = left;
+}
+
+#endif
+
 // The ABI between generated code and the scheduler. Every task is a thunk the
 // compiler writes: it unpacks a copied argument block and returns an error
 // code, where zero means success.

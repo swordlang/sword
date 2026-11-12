@@ -2,7 +2,6 @@
 
 #include "sword_rt.h"
 
-#include <atomic>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

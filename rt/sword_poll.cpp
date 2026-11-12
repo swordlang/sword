@@ -1,18 +1,14 @@
 #include "sword_poll.h"
 #include "sword_os.h"
+#include "sword_rt.h"
 
-#include <atomic>
-#include <condition_variable>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <map>
-#include <mutex>
 #include <string.h>
-#include <thread>
 #include <unistd.h>
-#include <vector>
 
 #if defined(__linux__)
 #include <sys/epoll.h>
@@ -34,7 +30,7 @@ struct Waiter {
 };
 
 struct Slot {
-  std::vector<Waiter> waiting;
+  Vec<Waiter> waiting;
 };
 
 // Every forget moves a descriptor's generation on. A wait carries the
@@ -55,11 +51,12 @@ std::atomic<uint64_t> *gen_slot(int fd, bool make) {
   std::atomic<std::atomic<uint64_t> *> &at = gen_chunks[(size_t)fd / kGenChunk];
   std::atomic<uint64_t> *chunk = at.load(std::memory_order_acquire);
   if (!chunk && make) {
-    std::atomic<uint64_t> *fresh = new std::atomic<uint64_t>[kGenChunk]();
+    std::atomic<uint64_t> *fresh = (std::atomic<uint64_t> *)calloc(
+        kGenChunk, sizeof(std::atomic<uint64_t>));
     if (at.compare_exchange_strong(chunk, fresh, std::memory_order_acq_rel))
       chunk = fresh;
     else
-      delete[] fresh;
+      free(fresh);
   }
   return chunk ? &chunk[(size_t)fd % kGenChunk] : nullptr;
 }
@@ -69,32 +66,53 @@ uint64_t generation_of(int fd) {
   return g ? g->load(std::memory_order_acquire) : 0;
 }
 
+struct Timer {
+  int64_t deadline;
+  int slot;
+  uint64_t seq;
+};
+
+struct Sleeper {
+  uint64_t seq;
+  void *token;
+};
+
 struct Poller {
-  int handle = -1;     // the kqueue or epoll descriptor
+  int handle = -1;         // the kqueue or epoll descriptor
   int nudge[2] = {-1, -1}; // a pipe, to cut a wait short when a deadline moves
-  std::thread thread;
+  pthread_t thread = 0;
+  bool thread_started = false;
   std::atomic<bool> stopping{false};
   sword_wake_fn wake = nullptr;
 
-  std::mutex lock;
+  Mutex lock;
   // Indexed by descriptor, two slots each. Descriptors are small and dense, so
   // a vector beats a hash for the lookup that happens on every event.
-  std::vector<Slot> slots;
+  Vec<Slot> slots;
   // deadline -> (slot, seq), where a slot of -1 means the entry is a sleeper
   // waiting on the time alone rather than on any descriptor.
-  std::multimap<int64_t, std::pair<int, uint64_t>> timers;
-  std::map<uint64_t, void *> sleepers;
+  Vec<Timer> timers;
+  Vec<Sleeper> sleepers;
   uint64_t next_seq = 1;
   // Descriptors to close, for the poller thread to close. See sword_poll_close.
   // Each asks with a ticket and waits until `closed_upto` reaches it, so a
   // close has happened by the time the call that asked for it returns.
-  std::vector<int> closing;
+  Vec<int> closing;
   uint64_t close_asked = 0;
   uint64_t closed_upto = 0;
-  std::condition_variable closed;
+  Cond closed;
 };
 
 Poller &poller();
+
+void insert_timer(Poller &p, int64_t deadline, int slot, uint64_t seq) {
+  size_t pos = p.timers.size();
+  while (pos > 0 && p.timers[pos - 1].deadline > deadline) pos--;
+  p.timers.push_back(Timer{deadline, slot, seq});
+  for (size_t i = p.timers.size() - 1; i > pos; i--)
+    p.timers[i] = p.timers[i - 1];
+  p.timers[pos] = Timer{deadline, slot, seq};
+}
 
 size_t slot_of(int fd, int writable) {
   return (size_t)fd * 2 + (writable ? 1 : 0);
@@ -108,9 +126,9 @@ void make_room(Poller &p, size_t slot) {
 // wake. A descriptor that becomes ready and times out in the same breath
 // therefore wakes its tasks once, with whichever answer arrived first.
 void deliver(Poller &p, size_t slot, int result) {
-  std::vector<Waiter> woken;
+  Vec<Waiter> woken;
   {
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     if (slot >= p.slots.size() || p.slots[slot].waiting.empty()) return;
     woken.swap(p.slots[slot].waiting);
   }
@@ -121,20 +139,23 @@ void deliver(Poller &p, size_t slot, int result) {
 void deliver_sleeper(Poller &p, uint64_t seq) {
   void *token = nullptr;
   {
-    std::lock_guard<std::mutex> held(p.lock);
-    auto found = p.sleepers.find(seq);
-    if (found == p.sleepers.end()) return;
-    token = found->second;
-    p.sleepers.erase(found);
+    Lock held(p.lock);
+    for (size_t i = 0; i < p.sleepers.size(); i++) {
+      if (p.sleepers[i].seq != seq) continue;
+      token = p.sleepers[i].token;
+      p.sleepers[i] = p.sleepers.back();
+      p.sleepers.pop_back();
+      break;
+    }
   }
-  p.wake(token, SWORD_POLL_TIMEOUT);
+  if (token) p.wake(token, SWORD_POLL_TIMEOUT);
 }
 
 // One waiter, for a deadline that belongs to it alone.
 void deliver_one(Poller &p, size_t slot, uint64_t seq, int result) {
   void *token = nullptr;
   {
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     if (slot >= p.slots.size()) return;
     auto &waiting = p.slots[slot].waiting;
     for (size_t i = 0; i < waiting.size(); i++) {
@@ -158,7 +179,7 @@ void deliver_one(Poller &p, size_t slot, uint64_t seq, int result) {
 // it moved. With kqueue the close itself also happens under this lock, on the
 // poller's thread — see close_pending.
 bool arm(Poller &p, int fd, int writable, uint64_t generation, bool checked) {
-  std::lock_guard<std::mutex> held(p.lock);
+  Lock held(p.lock);
   if (checked && generation_of(fd) != generation) return false;
 #ifdef SWORD_KQUEUE
   struct kevent change;
@@ -202,10 +223,10 @@ void nudge(Poller &p) {
 // Milliseconds until the nearest deadline, or -1 when there is none. Capped so
 // that a poller with nothing to do still notices a stop.
 int next_timeout(Poller &p) {
-  std::lock_guard<std::mutex> held(p.lock);
+  Lock held(p.lock);
   if (p.timers.empty()) return 200;
   int64_t now = sword_time_mono();
-  int64_t soonest = p.timers.begin()->first;
+  int64_t soonest = p.timers[0].deadline;
   if (soonest <= now) return 0;
   int64_t millis = (soonest - now + 999999) / 1000000;
   return millis > 200 ? 200 : (int)millis;
@@ -213,20 +234,19 @@ int next_timeout(Poller &p) {
 
 void expire(Poller &p) {
   int64_t now = sword_time_mono();
-  std::vector<std::pair<size_t, uint64_t>> due;
+  Vec<Timer> due;
   {
-    std::lock_guard<std::mutex> held(p.lock);
-    auto it = p.timers.begin();
-    while (it != p.timers.end() && it->first <= now) {
-      due.push_back({(size_t)it->second.first, it->second.second});
-      it = p.timers.erase(it);
+    Lock held(p.lock);
+    while (!p.timers.empty() && p.timers[0].deadline <= now) {
+      due.push_back(p.timers[0]);
+      p.timers.erase(p.timers.begin());
     }
   }
   // A registration that has already been answered is simply not there any
   // more, so the sequence number is all the checking this needs.
-  for (const auto &entry : due) {
-    if (entry.first == (size_t)-1) deliver_sleeper(p, entry.second);
-    else deliver_one(p, entry.first, entry.second, SWORD_POLL_TIMEOUT);
+  for (const Timer &entry : due) {
+    if (entry.slot == -1) deliver_sleeper(p, entry.seq);
+    else deliver_one(p, (size_t)entry.slot, entry.seq, SWORD_POLL_TIMEOUT);
   }
 }
 
@@ -256,7 +276,7 @@ void expire(Poller &p) {
 // descriptor still open and "not ready", and register with a generation nothing
 // would ever move again — on the poller's own kqueue, once, which took the
 // number the moment it was free.
-void close_locked(Poller &p, int fd, std::vector<Waiter> &woken) {
+void close_locked(Poller &p, int fd, Vec<Waiter> &woken) {
   for (int writable = 0; writable < 2; writable++) {
     size_t slot = slot_of(fd, writable);
     if (slot >= p.slots.size()) continue;
@@ -270,9 +290,9 @@ void close_locked(Poller &p, int fd, std::vector<Waiter> &woken) {
 }
 
 void close_pending(Poller &p) {
-  std::vector<Waiter> woken;
+  Vec<Waiter> woken;
   {
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     for (int fd : p.closing) close_locked(p, fd, woken);
     p.closing.clear();
     p.closed_upto = p.close_asked;
@@ -290,9 +310,9 @@ void drain_nudge(Poller &p) {
 void loop() {
   Poller &p = poller();
 #ifdef SWORD_KQUEUE
-  std::vector<struct kevent> events(256);
+  struct kevent events[256];
 #else
-  std::vector<epoll_event> events(256);
+  epoll_event events[256];
 #endif
 
   while (!p.stopping.load(std::memory_order_acquire)) {
@@ -302,11 +322,9 @@ void loop() {
     timespec wait;
     wait.tv_sec = timeout / 1000;
     wait.tv_nsec = (long)(timeout % 1000) * 1000000;
-    int count = kevent(p.handle, nullptr, 0, events.data(),
-                       (int)events.size(), &wait);
+    int count = kevent(p.handle, nullptr, 0, events, 256, &wait);
 #else
-    int count = epoll_wait(p.handle, events.data(), (int)events.size(),
-                           timeout);
+    int count = epoll_wait(p.handle, events, 256, timeout);
 #endif
     if (count < 0) {
       if (errno == EINTR) continue;
@@ -344,47 +362,67 @@ void loop() {
   close_pending(p);
 }
 
-Poller &poller() {
-  static Poller *instance = new Poller();
-  return *instance;
-}
+Poller *g_poller = nullptr;
+pthread_once_t g_poller_once = PTHREAD_ONCE_INIT;
 
-std::once_flag started;
+Poller &poller() {
+  pthread_once(&g_poller_once, [] {
+    Poller *p = (Poller *)calloc(1, sizeof(Poller));
+    p->handle = -1;
+    p->nudge[0] = -1;
+    p->nudge[1] = -1;
+    p->next_seq = 1;
+    p->lock.init();
+    p->closed.init();
+    g_poller = p;
+  });
+  return *g_poller;
+}
 
 } // namespace
 
 extern "C" {
 
-void sword_poll_start(sword_wake_fn wake) {
+pthread_once_t started = PTHREAD_ONCE_INIT;
+std::atomic<sword_wake_fn> g_wake_init = nullptr;
+
+void init_poller() {
   Poller &p = poller();
-  std::call_once(started, [&p, wake] {
 #ifdef SWORD_KQUEUE
-    int handle = kqueue();
+  int handle = kqueue();
 #else
-    int handle = epoll_create1(0);
+  int handle = epoll_create1(0);
 #endif
-    {
-      // A close decides under this lock whether the poller is running.
-      std::lock_guard<std::mutex> held(p.lock);
-      p.wake = wake;
-      p.handle = handle;
-    }
-    if (p.handle < 0) {
-      fputs("sword: cannot create the poller\n", stderr);
-      abort();
-    }
-    if (pipe(p.nudge) != 0) {
-      fputs("sword: cannot create the poller's pipe\n", stderr);
-      abort();
-    }
-    // Non-blocking, so draining it never parks the poller itself.
-    for (int end = 0; end < 2; end++) {
-      int flags = fcntl(p.nudge[end], F_GETFL, 0);
-      fcntl(p.nudge[end], F_SETFL, flags | O_NONBLOCK);
-    }
-    arm(p, p.nudge[0], 0, 0, false);
-    p.thread = std::thread(loop);
-  });
+  {
+    // A close decides under this lock whether the poller is running.
+    Lock held(p.lock);
+    p.wake = g_wake_init.load(std::memory_order_acquire);
+    p.handle = handle;
+  }
+  if (p.handle < 0) {
+    fputs("sword: cannot create the poller\n", stderr);
+    abort();
+  }
+  if (pipe(p.nudge) != 0) {
+    fputs("sword: cannot create the poller's pipe\n", stderr);
+    abort();
+  }
+  // Non-blocking, so draining it never parks the poller itself.
+  for (int end = 0; end < 2; end++) {
+    int flags = fcntl(p.nudge[end], F_GETFL, 0);
+    fcntl(p.nudge[end], F_SETFL, flags | O_NONBLOCK);
+  }
+  arm(p, p.nudge[0], 0, 0, false);
+  pthread_create(&p.thread, nullptr, [](void *) -> void * {
+    loop();
+    return nullptr;
+  }, nullptr);
+  p.thread_started = true;
+}
+
+void sword_poll_start(sword_wake_fn wake) {
+  g_wake_init.store(wake, std::memory_order_release);
+  pthread_once(&started, init_poller);
 }
 
 void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
@@ -394,14 +432,14 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
   uint64_t seq;
   bool gone;
   {
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     make_room(p, slot);
     gone = generation_of(fd) != generation;
     if (!gone) {
       seq = p.next_seq++;
       p.slots[slot].waiting.push_back(Waiter{token, seq});
       if (deadline_ns > 0)
-        p.timers.insert({deadline_ns, {(int)slot, seq}});
+        insert_timer(p, deadline_ns, (int)slot, seq);
     }
   }
   // A descriptor can be forgotten between the call that answered EAGAIN and
@@ -424,10 +462,10 @@ void sword_poll_wait(int fd, int writable, void *token, int64_t deadline_ns,
 void sword_poll_sleep(void *token, int64_t deadline_ns) {
   Poller &p = poller();
   {
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     uint64_t seq = p.next_seq++;
-    p.sleepers[seq] = token;
-    p.timers.insert({deadline_ns, {-1, seq}});
+    p.sleepers.push_back(Sleeper{seq, token});
+    insert_timer(p, deadline_ns, -1, seq);
   }
   nudge(p);
 }
@@ -440,7 +478,7 @@ void sword_poll_forget(int fd) {
   Poller &p = poller();
   {
     // Under the lock, so a registration already under way finishes first.
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     if (std::atomic<uint64_t> *g = gen_slot(fd, true))
       g->fetch_add(1, std::memory_order_acq_rel);
   }
@@ -462,7 +500,7 @@ uint64_t sword_poll_generation(int fd) { return generation_of(fd); }
 void sword_poll_fresh(int fd) {
   (void)fd;
   Poller &p = poller();
-  std::lock_guard<std::mutex> held(p.lock);
+  Lock held(p.lock);
 }
 
 // The caller waits for the poller to have done it: a socket that is still open
@@ -477,21 +515,22 @@ void sword_poll_fresh(int fd) {
 // and the close.
 void sword_poll_close(int fd) {
   Poller &p = poller();
-  std::unique_lock<std::mutex> held(p.lock);
+  p.lock.lock();
 #ifdef SWORD_KQUEUE
   if (p.handle >= 0 && !p.stopping.load(std::memory_order_acquire)) {
     p.closing.push_back(fd);
     uint64_t ticket = ++p.close_asked;
-    held.unlock();
+    p.lock.unlock();
     nudge(p);
-    held.lock();
-    p.closed.wait(held, [&p, ticket] { return p.closed_upto >= ticket; });
+    p.lock.lock();
+    while (p.closed_upto < ticket) p.closed.wait(p.lock);
+    p.lock.unlock();
     return;
   }
 #endif
-  std::vector<Waiter> woken;
+  Vec<Waiter> woken;
   close_locked(p, fd, woken);
-  held.unlock();
+  p.lock.unlock();
   for (const Waiter &w : woken) p.wake(w.token, SWORD_POLL_FAILED);
 }
 
@@ -501,10 +540,13 @@ void sword_poll_stop(void) {
   {
     // Under the lock, so a close either is queued before the poller's last
     // pass or sees it is stopping and closes in place.
-    std::lock_guard<std::mutex> held(p.lock);
+    Lock held(p.lock);
     p.stopping.store(true, std::memory_order_release);
   }
   nudge(p);
-  if (p.thread.joinable()) p.thread.join();
+  if (p.thread_started) {
+    pthread_join(p.thread, nullptr);
+    p.thread_started = false;
+  }
 }
 }
