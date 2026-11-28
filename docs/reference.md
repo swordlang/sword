@@ -1841,6 +1841,23 @@ func (s Stats) Running() i64      // Started - Finished
 | `StackBytes` | what one task's stack reserves, which `SWORD_STACK_KB` sets |
 | `IoThreads` | threads kept for calls that cannot be put down, capped by `SWORD_IO_THREADS` |
 
+The worker count is the program's to set as well:
+
+```sword
+func SetThreads(n u64) !void      // NoThreads for 0, ThreadsStarted after the first spawn
+```
+
+`SWORD_THREADS` stays the default, and the call overrides it. **It holds only
+until the first spawn**, because that is when the workers start, and a running
+worker cannot be stopped without first emptying its queue. Every call after
+that fails with `ThreadsStarted`, even one asking for the count already in
+force, so the answer does not depend on how many cores the machine has. Under
+`shield test` the workers are up before any test runs. A count above
+`SWORD_MAX_THREADS` raises that ceiling. Under `SWORD_SIM_SEED` the program
+stays on its one thread and the call changes nothing. What a `parallel for`
+computes does not depend on the count, since its cut is made from the range
+alone.
+
 ### `std/net`
 
 TCP and UDP. `Listen` and `ListenUDP` bind loopback only; the `On` forms take
