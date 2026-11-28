@@ -676,7 +676,10 @@ A loop with real work in the body, 8192 iterations, on a ten-core machine:
 | 8 | 0.100 s | 5.07× |
 
 `SWORD_THREADS` overrides the worker count, which defaults to one per core.
-Useful for measuring, and for pinning down whether a bug is a race.
+Useful for measuring, and for pinning down whether a bug is a race. A program
+that knows its own count says so with `runtime.SetThreads(n)` before its
+first spawn, and that wins over the variable
+([reference](reference.md#stdruntime)).
 
 ## The scheduler
 
@@ -810,7 +813,7 @@ Three numbers control the shape of it:
 
 | Variable | Meaning |
 |---|---|
-| `SWORD_THREADS` | Workers. Defaults to one per core. |
+| `SWORD_THREADS` | Workers. Defaults to one per core; `runtime.SetThreads` overrides it. |
 | `SWORD_MAX_THREADS` | How large the pool may grow to cover threads stuck in the kernel. Defaults to 512. |
 | `SWORD_STACK_KB` | How much stack a task gets. Defaults to 1024, held between 64 and 262144. |
 | `SWORD_IO_THREADS` | Threads for calls that cannot be put down — file I/O, name resolution. Defaults to the core count, at least 4. |

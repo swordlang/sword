@@ -1,5 +1,26 @@
 package runtime
 
+error ThreadsStarted = "the worker threads have already started"
+error NoThreads      = "a program needs at least one worker thread"
+
+extern func sword_set_threads(n u64) i32
+
+// How many workers run the program's tasks, from the program instead of from
+// SWORD_THREADS, which stays the default this overrides. The workers start at
+// the first spawn and keep their number from then on, so a call after it is
+// ThreadsStarted; under `shield test` they are already up. A count above
+// SWORD_MAX_THREADS raises that ceiling. With SWORD_SIM_SEED set the program
+// keeps its one thread and the call changes nothing.
+func SetThreads(n u64) !void {
+    status := sword_set_threads(n)
+    if status == 1 {
+        return error.ThreadsStarted
+    }
+    if status == 2 {
+        return error.NoThreads
+    }
+}
+
 // What the scheduler is doing, for whoever has to run the program rather than
 // write it. Nothing here costs more than a few relaxed loads, so it is cheap
 // enough to read on a timer or to answer a request with.
