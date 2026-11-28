@@ -826,6 +826,22 @@ else
     fail=$((fail + 1))
 fi
 
+# runtime.SetThreads holds outside the simulator; a seed keeps its one thread.
+if "$shield" "$root/tests/simprograms/threads.sword" -o "$tmp/simthreads" \
+        > "$tmp/simthreads.log" 2>&1; then
+    a=$("$tmp/simthreads")
+    b=$(SWORD_SIM_SEED=3 "$tmp/simthreads")
+    if [ "$a" = 3 ] && [ "$b" = 1 ]; then
+        pass=$((pass + 1))
+    else
+        echo "FAIL simulated threads: '$a' unsimulated, '$b' under a seed; want 3 and 1"
+        fail=$((fail + 1))
+    fi
+else
+    echo "FAIL simulated threads: compilation failed"
+    fail=$((fail + 1))
+fi
+
 # crypto.Random under a seed is the seed's: the same one gives the same bytes,
 # another gives others, and outside the simulator no two runs agree.
 if "$shield" "$root/tests/simprograms/random.sword" -o "$tmp/simrandom" \

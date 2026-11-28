@@ -1,7 +1,7 @@
-// expect: 77
+// expect: 79
 // An error that reaches main becomes the exit status. The standard library's
-// 75 errors keep codes 1 to 75 in every program, and a program's own come after
-// them in the order they first appear, so Second is 77. A new error in std
+// 77 errors keep codes 1 to 77 in every program, and a program's own come after
+// them in the order they first appear, so Second is 79. A new error in std
 // moves this number, and every program's codes with it.
 
 

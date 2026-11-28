@@ -1,0 +1,47 @@
+// expect: 42
+// The program picks its worker count, over whatever SWORD_THREADS says (the
+// thread sweep runs this at several), until the first spawn starts them.
+
+import "std/runtime"
+
+func touch(mut n *atomic[u64]) {
+    n.Add(1)
+}
+
+func main() !int {
+    mut refused := false
+    runtime.SetThreads(0) catch |e| {
+        refused = e == error.NoThreads
+    }
+    if !refused {
+        return 1
+    }
+    try runtime.SetThreads(64)
+    try runtime.SetThreads(3)
+    // Nothing has been spawned, so the one thread is the one main runs on.
+    if runtime.Read().Threads != 1 {
+        return 2
+    }
+
+    mut done := atomic[u64](0)
+    scope {
+        for i in 0..8 {
+            spawn touch(&done)
+        }
+    }
+    if done.Load() != 8 {
+        return 3
+    }
+    if runtime.Read().Threads != 3 {
+        return 4
+    }
+
+    // Started now, and the count stays, even asked for the one it has.
+    runtime.SetThreads(3) catch |e| {
+        if e != error.ThreadsStarted {
+            return 5
+        }
+        return 42
+    }
+    return 6
+}

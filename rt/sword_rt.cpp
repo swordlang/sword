@@ -789,6 +789,19 @@ int thread_count() {
 
 void stop_pool();
 
+// A queue per worker, and a ceiling never below them. Called with the pool
+// fresh, and by sword_set_threads before any worker but the first has started.
+void size_pool(Pool &p, int64_t n) {
+  p.target = n;
+  p.ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
+  if (p.ceiling < p.target) p.ceiling = p.target;
+  while ((int64_t)p.workers.size() > n) {
+    delete p.workers.back();
+    p.workers.pop_back();
+  }
+  while ((int64_t)p.workers.size() < n) p.workers.push_back(new Worker());
+}
+
 Pool &pool() {
   static Pool *instance = [] {
     Pool *p = new Pool();
@@ -798,11 +811,7 @@ Pool &pool() {
       g_sim_rng = g_sim_seed;
       g_sim_entropy = ~g_sim_seed;
     }
-    int n = g_sim ? 1 : thread_count();
-    p->target = n;
-    p->ceiling = env_count("SWORD_MAX_THREADS", kDefaultCeiling);
-    if (p->ceiling < p->target) p->ceiling = p->target;
-    for (int i = 0; i < n; i++) p->workers.push_back(new Worker());
+    size_pool(*p, g_sim ? 1 : thread_count());
     tl_worker = 0; // the thread that starts the pool owns queue 0
     watch_for_overflow();
     atexit(stop_pool);
@@ -1778,6 +1787,24 @@ void sword_runtime_stats(struct sword_stats *out) {
   out->started = p->started.load(std::memory_order_relaxed);
   out->finished = p->finished.load(std::memory_order_relaxed);
   out->io_threads = offload_threads();
+}
+
+// Only before the first spawn, while `main` is the one task and runs on queue
+// 0: nothing else walks the queues yet, so they can be remade under the lock
+// that start_workers takes. Afterwards the threads exist, and shrinking would
+// mean draining a running worker first.
+int32_t sword_set_threads(uint64_t n) {
+  if (n == 0) return 2;
+  Pool &p = pool();
+  std::lock_guard<std::mutex> held(p.start_lock);
+  if (p.workers_up.load(std::memory_order_acquire) ||
+      p.stopping.load(std::memory_order_acquire))
+    return 1;
+  // A seed means one thread, and that belongs to whoever runs the simulation.
+  if (g_sim) return 0;
+  std::lock_guard<std::mutex> hiring(p.hire_lock);
+  size_pool(p, n > (uint64_t)INT32_MAX ? INT32_MAX : (int64_t)n);
+  return 0;
 }
 
 void sword_forget_fd(int32_t fd) { sword_poll_forget((int)fd); }
