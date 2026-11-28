@@ -1,0 +1,19 @@
+// Prints the worker count once tasks have run. run.sh runs it with and
+// without a seed: the seed keeps its one thread whatever the program asked.
+
+import "std/io"
+import "std/runtime"
+
+func touch(mut n *atomic[u64]) {
+    n.Add(1)
+}
+
+func main() !void {
+    try runtime.SetThreads(3)
+    mut done := atomic[u64](0)
+    scope {
+        spawn touch(&done)
+        spawn touch(&done)
+    }
+    try io.Printf("{}\n", runtime.Read().Threads)
+}
